@@ -133,6 +133,14 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleGetDefaultRoles))
 	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleSetDefaultRoles))
 
+	// Admin: One-Time Tokens
+	h.mux.HandleFunc("GET /api/admin/tokens", h.requireMasterAdmin(h.handleListTokens))
+	h.mux.HandleFunc("POST /api/admin/tokens", h.requireMasterAdmin(h.handleCreateToken))
+	h.mux.HandleFunc("DELETE /api/admin/tokens/{token}", h.requireMasterAdmin(h.handleDeleteToken))
+
+	// Public: Self-Register with token
+	h.mux.HandleFunc("POST /api/register", h.handleSelfRegister)
+
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))
 	h.mux.HandleFunc("POST /api/admin/restore", h.requireMasterAdmin(h.handleRestore))
