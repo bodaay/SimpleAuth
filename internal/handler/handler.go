@@ -81,10 +81,18 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	// JWKS
 	h.mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
 
-	// Health
+	// Health & Server Info
 	h.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
 	})
+	h.mux.HandleFunc("GET /api/admin/server-info", h.requireMasterAdmin(func(w http.ResponseWriter, r *http.Request) {
+		jsonResp(w, map[string]interface{}{
+			"hostname":     h.cfg.Hostname,
+			"project_name": h.cfg.ProjectName,
+			"jwt_issuer":   h.cfg.JWTIssuer,
+			"version":      "dev",
+		}, http.StatusOK)
+	}))
 
 	// Admin: Apps
 	h.mux.HandleFunc("GET /api/admin/apps", h.adminAuth(h.handleListApps))
@@ -152,6 +160,9 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 
 	// Admin: Audit Log
 	h.mux.HandleFunc("GET /api/admin/audit", h.requireMasterAdmin(h.handleQueryAudit))
+
+	// OIDC / Keycloak-compatible endpoints
+	h.registerOIDCRoutes()
 
 	// Hosted login page + UI
 	if uiFS != nil {

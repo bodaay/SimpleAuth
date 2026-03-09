@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -38,6 +39,25 @@ type Claims struct {
 	Impersonated   bool     `json:"impersonated,omitempty"`
 	ImpersonatedBy string   `json:"impersonated_by,omitempty"`
 	FamilyID       string   `json:"family_id,omitempty"`
+
+	// OIDC / Keycloak-compatible claims
+	PreferredUsername string                     `json:"preferred_username,omitempty"`
+	RealmAccess       *RealmAccess               `json:"realm_access,omitempty"`
+	ResourceAccess    map[string]*ResourceAccess `json:"resource_access,omitempty"`
+	Scope             string                     `json:"scope,omitempty"`
+	Nonce             string                     `json:"nonce,omitempty"`
+	AtHash            string                     `json:"at_hash,omitempty"`
+	Typ               string                     `json:"typ,omitempty"`
+	Azp               string                     `json:"azp,omitempty"`
+	SessionState      string                     `json:"session_state,omitempty"`
+}
+
+type RealmAccess struct {
+	Roles []string `json:"roles"`
+}
+
+type ResourceAccess struct {
+	Roles []string `json:"roles"`
 }
 
 func NewJWTManager(dataDir, issuer string) (*JWTManager, error) {
@@ -190,4 +210,53 @@ func (m *JWTManager) JWKS() JWKSResponse {
 func (m *JWTManager) JWKSHandler() []byte {
 	data, _ := json.Marshal(m.JWKS())
 	return data
+}
+
+// Issuer returns the configured JWT issuer.
+func (m *JWTManager) Issuer() string {
+	return m.issuer
+}
+
+// Kid returns the key ID.
+func (m *JWTManager) Kid() string {
+	return m.kid
+}
+
+// IssueAccessTokenWithIssuer issues an access token with a custom issuer (for OIDC).
+func (m *JWTManager) IssueAccessTokenWithIssuer(c Claims, ttl time.Duration, issuer string) (string, error) {
+	now := time.Now().UTC()
+	c.RegisteredClaims = jwt.RegisteredClaims{
+		Issuer:    issuer,
+		Subject:   c.Subject,
+		Audience:  c.Audience,
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		ID:        uuid.New().String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, c)
+	token.Header["kid"] = m.kid
+	return token.SignedString(m.privateKey)
+}
+
+// IssueIDToken issues an OIDC ID token.
+func (m *JWTManager) IssueIDToken(c Claims, ttl time.Duration, issuer string) (string, error) {
+	now := time.Now().UTC()
+	c.RegisteredClaims = jwt.RegisteredClaims{
+		Issuer:    issuer,
+		Subject:   c.Subject,
+		Audience:  c.Audience,
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		ID:        uuid.New().String(),
+	}
+	c.Typ = "ID"
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, c)
+	token.Header["kid"] = m.kid
+	return token.SignedString(m.privateKey)
+}
+
+// ComputeAtHash computes the at_hash value for an OIDC ID token (RS256 = SHA-256).
+func ComputeAtHash(accessToken string) string {
+	h := sha256.Sum256([]byte(accessToken))
+	return base64.RawURLEncoding.EncodeToString(h[:16]) // left half
 }
