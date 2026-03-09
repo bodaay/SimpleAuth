@@ -644,6 +644,73 @@ func (h *Handler) issueTokenPair(user *store.User, appID string, roles, perms, g
 	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
 }
 
+// handleResetPassword allows an authenticated user to change their password.
+// POST /api/auth/reset-password with Authorization: Bearer <access_token>
+func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	// Validate current token
+	tokenStr := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if tokenStr == "" {
+		jsonError(w, "authorization required", http.StatusUnauthorized)
+		return
+	}
+
+	claims, err := h.jwt.ValidateToken(tokenStr)
+	if err != nil {
+		jsonError(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.NewPassword == "" {
+		jsonError(w, "new_password required", http.StatusBadRequest)
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		jsonError(w, "new_password must be at least 6 characters", http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.store.ResolveUser(claims.Subject)
+	if err != nil {
+		jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify current password if user has one set
+	if user.PasswordHash != "" {
+		if req.CurrentPassword == "" {
+			jsonError(w, "current_password required", http.StatusBadRequest)
+			return
+		}
+		if !auth.CheckPassword(user.PasswordHash, req.CurrentPassword) {
+			jsonError(w, "current password is incorrect", http.StatusForbidden)
+			return
+		}
+	}
+
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		jsonError(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+	user.PasswordHash = hash
+	if err := h.store.UpdateUser(user); err != nil {
+		jsonError(w, "failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	ip := getClientIP(r)
+	h.audit("password_changed", user.GUID, ip, nil)
+	jsonResp(w, map[string]string{"status": "password updated"}, http.StatusOK)
+}
+
 // handleNegotiate handles Kerberos/SPNEGO authentication.
 // GET /api/auth/negotiate?app_id=X
 // Browser sends Authorization: Negotiate <base64-token>

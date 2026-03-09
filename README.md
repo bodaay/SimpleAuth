@@ -90,6 +90,9 @@ All configuration is via environment variables:
 | `AUTH_TLS_CERT` | | TLS certificate file path |
 | `AUTH_TLS_KEY` | | TLS private key file path |
 | `AUTH_AUDIT_RETENTION` | `2160h` | Audit log retention (90 days) |
+| `AUTH_RATE_LIMIT_MAX` | `10` | Max login attempts per IP per window |
+| `AUTH_RATE_LIMIT_WINDOW` | `1m` | Rate limit sliding window duration |
+| `AUTH_CORS_ORIGINS` | | Allowed CORS origins (comma-separated, or `*`) |
 
 ## API Reference
 
@@ -100,6 +103,7 @@ All configuration is via environment variables:
 | `POST` | `/api/auth/login` | Authenticate user, get tokens |
 | `POST` | `/api/auth/refresh` | Rotate refresh token, get new access token |
 | `GET` | `/api/auth/userinfo` | Get current user info from JWT |
+| `POST` | `/api/auth/reset-password` | Change password (authenticated) |
 | `GET` | `/api/auth/negotiate` | Kerberos/SPNEGO login |
 | `POST` | `/api/auth/impersonate` | Generate token as another user (admin only) |
 | `GET` | `/login` | Hosted login page (redirect-based flow) |
@@ -180,6 +184,10 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 | `DELETE` | `/api/admin/users/:guid` | Delete user |
 | `POST` | `/api/admin/users/merge` | Merge duplicate users |
 | `POST` | `/api/admin/users/:guid/unmerge` | Undo merge |
+| `PUT` | `/api/admin/users/:guid/password` | Set user password (admin) |
+| `PUT` | `/api/admin/users/:guid/disabled` | Enable/disable user |
+| `GET` | `/api/admin/users/:guid/sessions` | List active sessions |
+| `DELETE` | `/api/admin/users/:guid/sessions` | Revoke all sessions |
 
 #### Identity Mappings
 

@@ -301,6 +301,47 @@ func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{"guid": guid, "disabled": user.Disabled}, http.StatusOK)
 }
 
+// --- Sessions ---
+
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	guid := pathParam(r, "guid")
+	sessions, err := h.store.ListUserSessions(guid)
+	if err != nil {
+		jsonError(w, "failed to list sessions", http.StatusInternalServerError)
+		return
+	}
+	if sessions == nil {
+		sessions = []*store.RefreshToken{}
+	}
+	// Return safe subset (no raw token IDs)
+	type sessionInfo struct {
+		FamilyID  string    `json:"family_id"`
+		AppID     string    `json:"app_id"`
+		CreatedAt time.Time `json:"created_at"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	result := make([]sessionInfo, len(sessions))
+	for i, s := range sessions {
+		result[i] = sessionInfo{
+			FamilyID:  s.FamilyID,
+			AppID:     s.AppID,
+			CreatedAt: s.CreatedAt,
+			ExpiresAt: s.ExpiresAt,
+		}
+	}
+	jsonResp(w, result, http.StatusOK)
+}
+
+func (h *Handler) handleRevokeSessions(w http.ResponseWriter, r *http.Request) {
+	guid := pathParam(r, "guid")
+	if err := h.store.RevokeUserTokens(guid); err != nil {
+		jsonError(w, "failed to revoke sessions", http.StatusInternalServerError)
+		return
+	}
+	h.audit("sessions_revoked", "admin", getClientIP(r), map[string]interface{}{"target_guid": guid})
+	jsonResp(w, map[string]string{"status": "all sessions revoked"}, http.StatusOK)
+}
+
 // --- Identity Mappings ---
 
 func (h *Handler) handleListAllMappings(w http.ResponseWriter, r *http.Request) {

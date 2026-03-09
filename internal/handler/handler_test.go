@@ -587,3 +587,139 @@ func TestUserMerge(t *testing.T) {
 		t.Fatalf("expected merged_into=%s, got %v", mergedGUID, merged["merged_into"])
 	}
 }
+
+func TestSessionManagement(t *testing.T) {
+	h, s := testSetup(t)
+	adm := adminHeaders()
+
+	// Create app + user, login to generate sessions
+	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Session App"}, adm)
+	var app map[string]interface{}
+	parseJSON(t, w, &app)
+	appID := app["app_id"].(string)
+
+	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+		"display_name": "SessionUser", "password": "pass123",
+	}, adm)
+	var user map[string]interface{}
+	parseJSON(t, w, &user)
+	guid := user["guid"].(string)
+	s.SetIdentityMapping("local", "sessionuser", guid)
+
+	// Login to create a session
+	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
+		"username": "sessionuser", "password": "pass123", "app_id": appID,
+	}, nil)
+	if w.Code != 200 {
+		t.Fatalf("login: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// List sessions
+	w = doJSON(h, "GET", "/api/admin/users/"+guid+"/sessions", nil, adm)
+	if w.Code != 200 {
+		t.Fatalf("list sessions: expected 200, got %d", w.Code)
+	}
+	var sessions []map[string]interface{}
+	parseJSON(t, w, &sessions)
+	if len(sessions) == 0 {
+		t.Fatal("expected at least 1 session")
+	}
+
+	// Revoke all sessions
+	w = doJSON(h, "DELETE", "/api/admin/users/"+guid+"/sessions", nil, adm)
+	if w.Code != 200 {
+		t.Fatalf("revoke sessions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify sessions gone
+	w = doJSON(h, "GET", "/api/admin/users/"+guid+"/sessions", nil, adm)
+	parseJSON(t, w, &sessions)
+	if len(sessions) != 0 {
+		t.Fatalf("expected 0 sessions after revoke, got %d", len(sessions))
+	}
+}
+
+func TestPasswordReset(t *testing.T) {
+	h, s := testSetup(t)
+	adm := adminHeaders()
+
+	// Create app + user
+	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "PW App"}, adm)
+	var app map[string]interface{}
+	parseJSON(t, w, &app)
+	appID := app["app_id"].(string)
+
+	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+		"display_name": "PWUser", "password": "oldpass",
+	}, adm)
+	var user map[string]interface{}
+	parseJSON(t, w, &user)
+	guid := user["guid"].(string)
+	s.SetIdentityMapping("local", "pwuser", guid)
+
+	// Login to get a token
+	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
+		"username": "pwuser", "password": "oldpass", "app_id": appID,
+	}, nil)
+	var tokens map[string]interface{}
+	parseJSON(t, w, &tokens)
+	accessToken := tokens["access_token"].(string)
+
+	// Reset password with wrong current password
+	w = doJSON(h, "POST", "/api/auth/reset-password", map[string]interface{}{
+		"current_password": "wrongpass", "new_password": "newpass123",
+	}, map[string]string{"Authorization": "Bearer " + accessToken})
+	if w.Code != 403 {
+		t.Fatalf("wrong current pw: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Reset password with correct current password
+	w = doJSON(h, "POST", "/api/auth/reset-password", map[string]interface{}{
+		"current_password": "oldpass", "new_password": "newpass123",
+	}, map[string]string{"Authorization": "Bearer " + accessToken})
+	if w.Code != 200 {
+		t.Fatalf("reset password: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify new password works
+	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
+		"username": "pwuser", "password": "newpass123", "app_id": appID,
+	}, nil)
+	if w.Code != 200 {
+		t.Fatalf("login with new password: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify old password fails
+	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
+		"username": "pwuser", "password": "oldpass", "app_id": appID,
+	}, nil)
+	if w.Code != 401 {
+		t.Fatalf("login with old password: expected 401, got %d", w.Code)
+	}
+}
+
+func TestCORSHeaders(t *testing.T) {
+	h, _ := testSetup(t)
+	h.cfg.CORSOrigins = "https://myapp.com,https://other.com"
+
+	// OPTIONS preflight
+	req := httptest.NewRequest("OPTIONS", "/api/auth/login", nil)
+	req.Header.Set("Origin", "https://myapp.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 204 {
+		t.Fatalf("preflight: expected 204, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "https://myapp.com" {
+		t.Fatalf("expected CORS origin header, got %s", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// Disallowed origin
+	req = httptest.NewRequest("OPTIONS", "/api/auth/login", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("should not set CORS header for disallowed origin")
+	}
+}

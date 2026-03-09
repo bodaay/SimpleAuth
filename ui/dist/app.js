@@ -119,11 +119,23 @@ function Dashboard() {
 // === Users Page ===
 function UsersPage() {
   const [users, setUsers] = useState([]);
+  const [apps, setApps] = useState([]);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
   const [toast, setToast] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [roles, setRoles] = useState([]);
+  const [perms, setPerms] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [selectedApp, setSelectedApp] = useState('');
+  const [roleInput, setRoleInput] = useState('');
+  const [permInput, setPermInput] = useState('');
+  const [search, setSearch] = useState('');
 
-  const load = () => api('GET', '/api/admin/users').then(setUsers).catch(() => {});
+  const load = () => {
+    api('GET', '/api/admin/users').then(setUsers).catch(() => {});
+    api('GET', '/api/admin/apps').then(setApps).catch(() => {});
+  };
   useEffect(load, []);
 
   const showToast = (message, type = 'success') => {
@@ -147,6 +159,7 @@ function UsersPage() {
     try {
       await api('DELETE', `/api/admin/users/${guid}`);
       load();
+      if (detail && detail.guid === guid) setDetail(null);
       showToast('User deleted');
     } catch (e) { showToast(e.message, 'error'); }
   };
@@ -159,10 +172,104 @@ function UsersPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const setPassword = async () => {
+    try {
+      await api('PUT', `/api/admin/users/${detail.guid}/password`, { password: form.new_password });
+      setModal(null);
+      setForm({});
+      showToast('Password updated');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const openDetail = async (user) => {
+    setDetail(user);
+    setSessions([]);
+    setRoles([]);
+    setPerms([]);
+    setSelectedApp(apps.length > 0 ? apps[0].app_id : '');
+    api('GET', `/api/admin/users/${user.guid}/sessions`).then(setSessions).catch(() => {});
+    if (apps.length > 0) loadRolesPerms(user.guid, apps[0].app_id);
+  };
+
+  const loadRolesPerms = async (guid, appId) => {
+    if (!appId) return;
+    try {
+      const r = await api('GET', `/api/admin/apps/${appId}/users/${guid}/roles`);
+      setRoles(r || []);
+    } catch { setRoles([]); }
+    try {
+      const p = await api('GET', `/api/admin/apps/${appId}/users/${guid}/permissions`);
+      setPerms(p || []);
+    } catch { setPerms([]); }
+  };
+
+  const onAppChange = (appId) => {
+    setSelectedApp(appId);
+    if (detail) loadRolesPerms(detail.guid, appId);
+  };
+
+  const addRole = async () => {
+    if (!roleInput.trim() || !selectedApp) return;
+    const updated = [...roles, roleInput.trim()];
+    try {
+      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/roles`, updated);
+      setRoles(updated);
+      setRoleInput('');
+      showToast('Role added');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const removeRole = async (role) => {
+    const updated = roles.filter(r => r !== role);
+    try {
+      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/roles`, updated);
+      setRoles(updated);
+      showToast('Role removed');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const addPerm = async () => {
+    if (!permInput.trim() || !selectedApp) return;
+    const updated = [...perms, permInput.trim()];
+    try {
+      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/permissions`, updated);
+      setPerms(updated);
+      setPermInput('');
+      showToast('Permission added');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const removePerm = async (perm) => {
+    const updated = perms.filter(p => p !== perm);
+    try {
+      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/permissions`, updated);
+      setPerms(updated);
+      showToast('Permission removed');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const revokeSessions = async () => {
+    if (!confirm('Revoke all sessions for this user? They will be logged out everywhere.')) return;
+    try {
+      await api('DELETE', `/api/admin/users/${detail.guid}/sessions`);
+      setSessions([]);
+      showToast('All sessions revoked');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const filtered = users.filter(u => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (u.display_name || '').toLowerCase().includes(q) ||
+           (u.email || '').toLowerCase().includes(q) ||
+           u.guid.toLowerCase().includes(q);
+  });
+
   return html`
     <div class="page-header">
       <h2>Users</h2>
       <div class="page-header-actions">
+        <input class="form-input" style="max-width:250px" placeholder="Search users..." value=${search} onInput=${e => setSearch(e.target.value)} />
         <button class="btn btn-primary" onClick=${() => { setForm({}); setModal('create'); }}>${icons.plus} New User</button>
       </div>
     </div>
@@ -170,10 +277,10 @@ function UsersPage() {
       <table>
         <thead><tr><th>GUID</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>
-          ${users.length === 0
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>No users yet</p></div></td></tr>`
-            : users.map(u => html`
-              <tr>
+          ${filtered.length === 0
+            ? html`<tr><td colspan="6"><div class="empty-state"><p>No users found</p></div></td></tr>`
+            : filtered.map(u => html`
+              <tr style="cursor:pointer" onClick=${() => openDetail(u)}>
                 <td><span class="guid">${u.guid.substring(0, 8)}...</span></td>
                 <td>${u.display_name || '—'}</td>
                 <td style="color:var(--text-secondary)">${u.email || '—'}</td>
@@ -186,7 +293,7 @@ function UsersPage() {
                   }
                 </td>
                 <td style="font-size:0.75rem;color:var(--text-muted)">${new Date(u.created_at).toLocaleDateString()}</td>
-                <td>
+                <td onClick=${e => e.stopPropagation()}>
                   <button class="btn btn-sm btn-secondary" onClick=${() => toggleDisabled(u)}>${u.disabled ? 'Enable' : 'Disable'}</button>
                   <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteUser(u.guid)}>Delete</button>
                 </td>
@@ -221,6 +328,92 @@ function UsersPage() {
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
           <button class="btn btn-primary" onClick=${createUser}>Create User</button>
         </div>
+      <//>
+    `}
+
+    ${modal === 'password' && html`
+      <${Modal} title="Set Password" onClose=${() => setModal(null)}>
+        <div class="form-group">
+          <label class="form-label">New Password</label>
+          <input class="form-input" type="password" value=${form.new_password || ''} onInput=${e => setForm({ ...form, new_password: e.target.value })} placeholder="Minimum 6 characters" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" onClick=${setPassword}>Set Password</button>
+        </div>
+      <//>
+    `}
+
+    ${detail && html`
+      <${Modal} title="User Detail" onClose=${() => setDetail(null)}>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:var(--sp-2) var(--sp-4);font-size:0.875rem;margin-bottom:var(--sp-4)">
+          <span style="color:var(--text-muted)">GUID</span><span class="guid" style="font-size:0.8rem">${detail.guid}</span>
+          <span style="color:var(--text-muted)">Name</span><span>${detail.display_name || '—'}</span>
+          <span style="color:var(--text-muted)">Email</span><span>${detail.email || '—'}</span>
+          <span style="color:var(--text-muted)">Status</span><span>${detail.disabled ? 'Disabled' : detail.merged_into ? 'Merged into ' + detail.merged_into.substring(0,8) + '...' : 'Active'}</span>
+        </div>
+
+        <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4)">
+          <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({}); setModal('password'); }}>Set Password</button>
+          <button class="btn btn-sm btn-danger" onClick=${revokeSessions}>Revoke All Sessions</button>
+        </div>
+
+        <div style="margin-bottom:var(--sp-4)">
+          <div style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+            <strong style="font-size:0.875rem">Sessions</strong>
+            <span style="color:var(--text-muted);font-size:0.75rem">(${sessions.length} active)</span>
+          </div>
+          ${sessions.length === 0
+            ? html`<p style="color:var(--text-muted);font-size:0.8rem">No active sessions</p>`
+            : html`<div style="max-height:120px;overflow-y:auto">
+                ${sessions.map(s => html`
+                  <div style="display:flex;justify-content:space-between;padding:var(--sp-1) 0;font-size:0.8rem;border-bottom:1px solid var(--border)">
+                    <span>${s.app_id || 'no app'}</span>
+                    <span style="color:var(--text-muted)">expires ${new Date(s.expires_at).toLocaleDateString()}</span>
+                  </div>
+                `)}
+              </div>`
+          }
+        </div>
+
+        ${apps.length > 0 && html`
+          <div>
+            <div style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+              <strong style="font-size:0.875rem">Roles & Permissions</strong>
+              <select class="form-input" style="max-width:200px;padding:4px 8px;font-size:0.8rem" value=${selectedApp} onChange=${e => onAppChange(e.target.value)}>
+                ${apps.map(a => html`<option value=${a.app_id}>${a.name}</option>`)}
+              </select>
+            </div>
+
+            <div style="margin-bottom:var(--sp-3)">
+              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Roles</label>
+              <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
+                ${roles.map(r => html`
+                  <span class="badge" style="cursor:pointer" onClick=${() => removeRole(r)}>${r} ×</span>
+                `)}
+                ${roles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
+              </div>
+              <div style="display:flex;gap:var(--sp-1)">
+                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
+                <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
+              </div>
+            </div>
+
+            <div>
+              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Permissions</label>
+              <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
+                ${perms.map(p => html`
+                  <span class="badge" style="cursor:pointer" onClick=${() => removePerm(p)}>${p} ×</span>
+                `)}
+                ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
+              </div>
+              <div style="display:flex;gap:var(--sp-1)">
+                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+                <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
+              </div>
+            </div>
+          </div>
+        `}
       <//>
     `}
     ${toast && html`<${Toast} ...${toast} />`}
