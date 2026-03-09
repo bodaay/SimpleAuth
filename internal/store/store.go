@@ -40,6 +40,9 @@ type User struct {
 	PasswordHash string    `json:"password_hash,omitempty"`
 	DisplayName  string    `json:"display_name"`
 	Email        string    `json:"email"`
+	Department   string    `json:"department,omitempty"`
+	Company      string    `json:"company,omitempty"`
+	JobTitle     string    `json:"job_title,omitempty"`
 	Disabled     bool      `json:"disabled"`
 	MergedInto   string    `json:"merged_into,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -71,6 +74,9 @@ type LDAPProvider struct {
 	SkipTLSVerify   bool   `json:"skip_tls_verify"`
 	DisplayNameAttr string `json:"display_name_attr"`
 	EmailAttr       string `json:"email_attr"`
+	DepartmentAttr  string `json:"department_attr"`
+	CompanyAttr     string `json:"company_attr"`
+	JobTitleAttr    string `json:"job_title_attr"`
 	GroupsAttr      string `json:"groups_attr"`
 	Priority        int    `json:"priority"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -602,6 +608,33 @@ func (s *Store) GetUsersWithRolesInApp(appID string) ([]string, error) {
 		return nil
 	})
 	return guids, err
+}
+
+// --- Config (generic key-value in config bucket) ---
+
+func (s *Store) SetConfigValue(key string, value []byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketConfig).Put([]byte(key), value)
+	})
+}
+
+func (s *Store) GetConfigValue(key string) ([]byte, error) {
+	var val []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketConfig).Get([]byte(key))
+		if data != nil {
+			val = make([]byte, len(data))
+			copy(val, data)
+		}
+		return nil
+	})
+	return val, err
+}
+
+func (s *Store) DeleteConfigValue(key string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketConfig).Delete([]byte(key))
+	})
 }
 
 // GetDefaultRoles returns default roles for new users in an app.

@@ -1,6 +1,6 @@
-import { h, render, Component } from 'https://esm.sh/preact@10.19.3';
-import { useState, useEffect, useCallback } from 'https://esm.sh/preact@10.19.3/hooks';
-import htm from 'https://esm.sh/htm@3.1.1';
+import { h, render, Component } from 'preact';
+import { useState, useEffect, useCallback } from 'preact/hooks';
+import htm from 'htm';
 
 const html = htm.bind(h);
 
@@ -325,6 +325,20 @@ function UsersPage() {
             <input class="form-input" type="email" value=${form.email || ''} onInput=${e => setForm({ ...form, email: e.target.value })} />
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Department</label>
+            <input class="form-input" value=${form.department || ''} onInput=${e => setForm({ ...form, department: e.target.value })} />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Job Title</label>
+            <input class="form-input" value=${form.job_title || ''} onInput=${e => setForm({ ...form, job_title: e.target.value })} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Company</label>
+          <input class="form-input" value=${form.company || ''} onInput=${e => setForm({ ...form, company: e.target.value })} />
+        </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
           <button class="btn btn-primary" onClick=${createUser}>Create User</button>
@@ -351,6 +365,9 @@ function UsersPage() {
           <span style="color:var(--text-muted)">GUID</span><span class="guid" style="font-size:0.8rem">${detail.guid}</span>
           <span style="color:var(--text-muted)">Name</span><span>${detail.display_name || '—'}</span>
           <span style="color:var(--text-muted)">Email</span><span>${detail.email || '—'}</span>
+          <span style="color:var(--text-muted)">Department</span><span>${detail.department || '—'}</span>
+          <span style="color:var(--text-muted)">Company</span><span>${detail.company || '—'}</span>
+          <span style="color:var(--text-muted)">Job Title</span><span>${detail.job_title || '—'}</span>
           <span style="color:var(--text-muted)">Status</span><span>${detail.disabled ? 'Disabled' : detail.merged_into ? 'Merged into ' + detail.merged_into.substring(0,8) + '...' : 'Active'}</span>
         </div>
 
@@ -540,8 +557,12 @@ function LDAPPage() {
   const [form, setForm] = useState({});
   const [testResult, setTestResult] = useState(null);
   const [toast, setToast] = useState(null);
+  const [krbStatus, setKrbStatus] = useState(null);
 
-  const load = () => api('GET', '/api/admin/ldap').then(setProviders).catch(() => {});
+  const load = () => {
+    api('GET', '/api/admin/ldap').then(setProviders).catch(() => {});
+    api('GET', '/api/admin/kerberos/status').then(setKrbStatus).catch(() => {});
+  };
   useEffect(load, []);
 
   const showToast = (message, type = 'success') => {
@@ -572,19 +593,432 @@ function LDAPPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  const autoDiscover = async () => {
+  const generateScript = () => {
+    const acct = form.script_account || 'svc-simpleauth';
+    const pw = form.script_password || '';
+    if (!pw) { showToast('Password is required', 'error'); return; }
+    // Escape for PowerShell single-quoted strings: ' becomes ''
+    const psEscSingle = (s) => s.replace(/'/g, "''");
+    const safeAcct = psEscSingle(acct);
+    const safePw = psEscSingle(pw);
+    // Build script as array of lines to avoid template literal issues
+    const lines = [
+      '#Requires -Modules ActiveDirectory',
+      '<#',
+      '.SYNOPSIS',
+      '    SimpleAuth AD Setup / Cleanup Script',
+      '.DESCRIPTION',
+      '    Interactive script to set up or remove a SimpleAuth service account in AD.',
+      '    Run on a Domain Controller or a machine with RSAT AD tools.',
+      '    Requires Domain Admin or Account Operator privileges.',
+      '#>',
+      '',
+      '$ErrorActionPreference = "Stop"',
+      "$AccountName = '" + safeAcct + "'",
+      "$AccountPassword = '" + safePw + "'",
+      '',
+      '# -- Check admin privileges ----------------------------------------',
+      '$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()',
+      '$adminRole = [Security.Principal.WindowsBuiltInRole]::Administrator',
+      '$isAdmin = (New-Object Security.Principal.WindowsPrincipal($currentUser)).IsInRole($adminRole)',
+      '',
+      '# -- Header -------------------------------------------------------',
+      'Write-Host ""',
+      'Write-Host "  ========================================" -ForegroundColor Cyan',
+      'Write-Host "       SimpleAuth  AD  Manager" -ForegroundColor Cyan',
+      'Write-Host "  ========================================" -ForegroundColor Cyan',
+      'Write-Host ""',
+      'if (-not $isAdmin) {',
+      '    Write-Host "  WARNING: Not running as Administrator." -ForegroundColor Yellow',
+      '    Write-Host "  You may get Access Denied errors. Right-click PowerShell" -ForegroundColor Yellow',
+      '    Write-Host "  and select Run as Administrator if this fails." -ForegroundColor Yellow',
+      '    Write-Host ""',
+      '}',
+      '',
+      '# -- Detect domain ------------------------------------------------',
+      '$domain = Get-ADDomain',
+      '$domainDNS = $domain.DNSRoot',
+      '$domainDN = $domain.DistinguishedName',
+      '$dc = (Get-ADDomainController -Discover -DomainName $domainDNS).HostName[0]',
+      '',
+      'Write-Host "  Domain:    $domainDNS" -ForegroundColor White',
+      'Write-Host "  Base DN:   $domainDN" -ForegroundColor White',
+      'Write-Host "  DC:        $dc" -ForegroundColor White',
+      'Write-Host ""',
+      '',
+      '# -- Check if account already exists --------------------------------',
+      '$adFilter = "sAMAccountName -eq \'$AccountName\'"',
+      '$existingUser = Get-ADUser -Filter $adFilter -Properties servicePrincipalName -ErrorAction SilentlyContinue',
+      '',
+      'if ($existingUser) {',
+      '    $existingSPNs = $existingUser.servicePrincipalName',
+      '    Write-Host "  Account \'$AccountName\' already exists in AD." -ForegroundColor Yellow',
+      '    if ($existingSPNs) {',
+      '        Write-Host "  SPNs registered: $($existingSPNs -join \', \')" -ForegroundColor Yellow',
+      '    }',
+      '    Write-Host ""',
+      '    Write-Host "  What would you like to do?" -ForegroundColor White',
+      '    Write-Host "    1) Re-run setup (update password, re-export config)" -ForegroundColor White',
+      '    Write-Host "    2) Remove everything (delete SPNs, disable/delete account)" -ForegroundColor White',
+      '    Write-Host "    3) Exit" -ForegroundColor White',
+      '    Write-Host ""',
+      '    $choice = Read-Host "Enter choice [1]"',
+      '    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }',
+      '    Write-Host ""',
+      '',
+      '    if ($choice -eq "3") {',
+      '        Write-Host "  Exiting." -ForegroundColor White',
+      '        exit 0',
+      '    }',
+      '',
+      '    if ($choice -eq "2") {',
+      '        # ---- CLEANUP MODE ----',
+      '        Write-Host "  ---- Cleanup Mode ----" -ForegroundColor Red',
+      '        Write-Host ""',
+      '',
+      '        # Remove SPNs',
+      '        if ($existingSPNs) {',
+      '            foreach ($s in $existingSPNs) {',
+      '                Write-Host "  Removing SPN: $s" -ForegroundColor White',
+      '                try {',
+      '                    $null = & setspn -D $s $AccountName 2>&1',
+      '                    Write-Host "    Removed." -ForegroundColor Green',
+      '                } catch {',
+      '                    Write-Host "    Failed to remove: $_" -ForegroundColor Yellow',
+      '                }',
+      '            }',
+      '        } else {',
+      '            Write-Host "  No SPNs to remove." -ForegroundColor White',
+      '        }',
+      '        Write-Host ""',
+      '',
+      '        # Delete or disable account',
+      '        Write-Host "  Delete the account entirely, or just disable it?" -ForegroundColor White',
+      '        Write-Host "    1) Delete account" -ForegroundColor White',
+      '        Write-Host "    2) Disable account (keep for reference)" -ForegroundColor White',
+      '        Write-Host ""',
+      '        $delChoice = Read-Host "Enter choice [1]"',
+      '        if ([string]::IsNullOrWhiteSpace($delChoice)) { $delChoice = "1" }',
+      '',
+      '        if ($delChoice -eq "2") {',
+      '            Disable-ADAccount -Identity $existingUser',
+      '            Write-Host "  Account \'$AccountName\' disabled." -ForegroundColor Green',
+      '        } else {',
+      '            $confirm = Read-Host "  Type YES to permanently delete \'$AccountName\'"',
+      '            if ($confirm -eq "YES") {',
+      '                Remove-ADUser -Identity $existingUser -Confirm:$false',
+      '                Write-Host "  Account \'$AccountName\' deleted." -ForegroundColor Green',
+      '            } else {',
+      '                Write-Host "  Aborted. Account not deleted." -ForegroundColor Yellow',
+      '            }',
+      '        }',
+      '',
+      '        # Clean up config file if present',
+      '        $outFile = Join-Path (Get-Location) "simpleauth-config.json"',
+      '        if (Test-Path $outFile) {',
+      '            $delCfg = Read-Host "  Delete simpleauth-config.json too? [y/N]"',
+      '            if ($delCfg -eq "y" -or $delCfg -eq "Y") {',
+      '                Remove-Item $outFile',
+      '                Write-Host "  Config file deleted." -ForegroundColor Green',
+      '            }',
+      '        }',
+      '',
+      '        Write-Host ""',
+      '        Write-Host "  ========================================" -ForegroundColor Green',
+      '        Write-Host "           Cleanup Complete" -ForegroundColor Green',
+      '        Write-Host "  ========================================" -ForegroundColor Green',
+      '        Write-Host ""',
+      '        Write-Host "  Remember to also remove the LDAP provider" -ForegroundColor Yellow',
+      '        Write-Host "  and Kerberos config in the SimpleAuth admin UI." -ForegroundColor Yellow',
+      '        Write-Host ""',
+      '        Read-Host "Press Enter to exit"',
+      '        exit 0',
+      '    }',
+      '',
+      '    # choice "1" falls through to setup below',
+      '}',
+      '',
+      '# ==================================================================',
+      '# SETUP MODE',
+      '# ==================================================================',
+      '',
+      '# -- Select OU -----------------------------------------------------',
+      'Write-Host "[1/4] Select where to create the service account" -ForegroundColor Yellow',
+      'Write-Host ""',
+      '',
+      '$ous = @()',
+      '$ous += [PSCustomObject]@{ Index = 0; Name = "(Default Users container)"; DN = $domain.UsersContainer }',
+      '$ouList = Get-ADOrganizationalUnit -Filter * -Properties CanonicalName | Sort-Object CanonicalName',
+      '$i = 1',
+      'foreach ($ou in $ouList) {',
+      '    $ous += [PSCustomObject]@{ Index = $i; Name = $ou.CanonicalName; DN = $ou.DistinguishedName }',
+      '    $i++',
+      '}',
+      '',
+      'if ($existingUser) {',
+      '    Write-Host "  (Account already exists, OU selection skipped)" -ForegroundColor White',
+      '    $targetOU = ($existingUser.DistinguishedName -replace "^CN=[^,]+,", "")',
+      '} else {',
+      '    foreach ($entry in $ous) {',
+      '        $idx = $entry.Index.ToString().PadLeft(3)',
+      '        if ($entry.Index -eq 0) {',
+      '            Write-Host "  $idx) $($entry.Name)" -ForegroundColor Green',
+      '        } else {',
+      '            Write-Host "  $idx) $($entry.Name)" -ForegroundColor White',
+      '        }',
+      '    }',
+      '    Write-Host ""',
+      '    $selection = Read-Host "Enter number [0]"',
+      '    if ([string]::IsNullOrWhiteSpace($selection)) { $selection = "0" }',
+      '    $selectedIdx = [int]$selection',
+      '    if ($selectedIdx -lt 0 -or $selectedIdx -ge $ous.Count) {',
+      '        Write-Host "  Invalid selection, using default" -ForegroundColor Yellow',
+      '        $selectedIdx = 0',
+      '    }',
+      '    $targetOU = $ous[$selectedIdx].DN',
+      '    Write-Host "  Selected: $($ous[$selectedIdx].Name)" -ForegroundColor Cyan',
+      '}',
+      'Write-Host ""',
+      '',
+      '# -- Create or update account --------------------------------------',
+      'Write-Host "[2/4] Setting up service account..." -ForegroundColor Yellow',
+      '$securePw = ConvertTo-SecureString $AccountPassword -AsPlainText -Force',
+      '',
+      'if ($existingUser) {',
+      '    try {',
+      '        Set-ADAccountPassword -Identity $existingUser -NewPassword $securePw -Reset',
+      '        Enable-ADAccount -Identity $existingUser',
+      '        Write-Host "  Password updated, account enabled." -ForegroundColor Green',
+      '    } catch {',
+      '        Write-Host "  ERROR: Failed to update account: $_" -ForegroundColor Red',
+      '        Read-Host "Press Enter to exit"',
+      '        exit 1',
+      '    }',
+      '} else {',
+      '    $newUserParams = @{',
+      '        Name                 = $AccountName',
+      '        SamAccountName       = $AccountName',
+      '        UserPrincipalName    = "$AccountName@$domainDNS"',
+      '        Path                 = $targetOU',
+      '        AccountPassword      = $securePw',
+      '        Enabled              = $true',
+      '        PasswordNeverExpires = $true',
+      '        CannotChangePassword = $true',
+      '        Description          = "SimpleAuth LDAP bind account (do not delete)"',
+      '    }',
+      '    try {',
+      '        New-ADUser @newUserParams',
+      '        Write-Host "  Account created in: $targetOU" -ForegroundColor Green',
+      '    } catch {',
+      '        Write-Host "  ERROR: Failed to create account: $_" -ForegroundColor Red',
+      '        Write-Host ""',
+      '        Write-Host "  Possible causes:" -ForegroundColor Yellow',
+      '        Write-Host "    - Access denied: run as Domain Admin or Account Operator" -ForegroundColor White',
+      '        Write-Host "    - No permission on OU: try the default Users container" -ForegroundColor White',
+      '        Write-Host "    - Password does not meet complexity requirements" -ForegroundColor White',
+      '        Write-Host ""',
+      '        Read-Host "Press Enter to exit"',
+      '        exit 1',
+      '    }',
+      '}',
+      'Write-Host ""',
+      '',
+      '# -- Kerberos SPN (optional) ---------------------------------------',
+      'Write-Host "[3/4] Kerberos / SPNEGO setup (optional)" -ForegroundColor Yellow',
+      '',
+      '# Check for existing SPNs and offer to manage them',
+      '$currentSPNs = (Get-ADUser -Filter $adFilter -Properties servicePrincipalName).servicePrincipalName',
+      'if ($currentSPNs) {',
+      '    Write-Host "  Existing SPNs on ${AccountName}:" -ForegroundColor White',
+      '    foreach ($s in $currentSPNs) { Write-Host "    - $s" -ForegroundColor White }',
+      '    Write-Host ""',
+      '    Write-Host "  Options:" -ForegroundColor White',
+      '    Write-Host "    1) Keep existing SPNs" -ForegroundColor White',
+      '    Write-Host "    2) Remove all SPNs and set a new one" -ForegroundColor White',
+      '    Write-Host "    3) Add an additional SPN" -ForegroundColor White',
+      '    Write-Host ""',
+      '    $spnChoice = Read-Host "Enter choice [1]"',
+      '    if ([string]::IsNullOrWhiteSpace($spnChoice)) { $spnChoice = "1" }',
+      '',
+      '    $spnResult = $null',
+      '    if ($spnChoice -eq "2") {',
+      '        foreach ($s in $currentSPNs) {',
+      '            Write-Host "  Removing SPN: $s" -ForegroundColor White',
+      '            try { $null = & setspn -D $s $AccountName 2>&1 } catch {}',
+      '        }',
+      '        Write-Host "  All SPNs removed." -ForegroundColor Green',
+      '        Write-Host ""',
+      '        Write-Host "  Enter the FQDN clients use to reach SimpleAuth" -ForegroundColor White',
+      '        Write-Host "  (e.g. simpleauth.corp.local) or press Enter to skip." -ForegroundColor White',
+      '        $spnAnswer = Read-Host "SimpleAuth hostname"',
+      '        if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
+      '            $spn = "HTTP/$spnAnswer"',
+      '            try {',
+      '                $null = & setspn -A $spn $AccountName 2>&1',
+      '                Write-Host "  SPN registered: $spn" -ForegroundColor Green',
+      '                $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
+      '            } catch {',
+      '                Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
+      '                $spnResult = @{ service_hostname = $spnAnswer }',
+      '            }',
+      '        }',
+      '    } elseif ($spnChoice -eq "3") {',
+      '        Write-Host "  Enter additional FQDN for SPN:" -ForegroundColor White',
+      '        $spnAnswer = Read-Host "SimpleAuth hostname"',
+      '        if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
+      '            $spn = "HTTP/$spnAnswer"',
+      '            try {',
+      '                $null = & setspn -A $spn $AccountName 2>&1',
+      '                Write-Host "  SPN registered: $spn" -ForegroundColor Green',
+      '                $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
+      '            } catch {',
+      '                Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
+      '                $spnResult = @{ service_hostname = $spnAnswer }',
+      '            }',
+      '        }',
+      '    } else {',
+      '        # Keep existing - use first HTTP SPN if any',
+      '        foreach ($s in $currentSPNs) {',
+      '            if ($s -like "HTTP/*") {',
+      '                $hostname = $s -replace "^HTTP/", ""',
+      '                $spnResult = @{ spn = $s; service_hostname = $hostname }',
+      '                break',
+      '            }',
+      '        }',
+      '    }',
+      '} else {',
+      '    Write-Host "  Enter the FQDN clients use to reach SimpleAuth" -ForegroundColor White',
+      '    Write-Host "  (e.g. simpleauth.corp.local) or press Enter to skip." -ForegroundColor White',
+      '    Write-Host ""',
+      '    $spnAnswer = Read-Host "SimpleAuth hostname"',
+      '    $spnResult = $null',
+      '    if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
+      '        $spn = "HTTP/$spnAnswer"',
+      '        Write-Host "  Registering SPN: $spn on $AccountName" -ForegroundColor White',
+      '        try {',
+      '            $null = & setspn -A $spn $AccountName 2>&1',
+      '            Write-Host "  SPN registered successfully" -ForegroundColor Green',
+      '            $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
+      '        } catch {',
+      '            Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
+      '            Write-Host "  Run manually: setspn -A $spn $AccountName" -ForegroundColor Yellow',
+      '            $spnResult = @{ service_hostname = $spnAnswer }',
+      '        }',
+      '    }',
+      '}',
+      'Write-Host ""',
+      '',
+      '# -- Export config -------------------------------------------------',
+      'Write-Host "[4/4] Exporting config..." -ForegroundColor Yellow',
+      '',
+      '$config = [ordered]@{',
+      '    server   = $dc',
+      '    username = "$AccountName@$domainDNS"',
+      '    password = $AccountPassword',
+      '    domain   = $domainDNS',
+      '    base_dn  = $domainDN',
+      '}',
+      'if ($spnResult) {',
+      '    foreach ($key in $spnResult.Keys) { $config[$key] = $spnResult[$key] }',
+      '}',
+      '',
+      '$outFile = Join-Path (Get-Location) "simpleauth-config.json"',
+      '$config | ConvertTo-Json | Set-Content -Path $outFile -Encoding UTF8',
+      '',
+      'Write-Host ""',
+      'Write-Host "  ========================================" -ForegroundColor Green',
+      'Write-Host "           Setup Complete!" -ForegroundColor Green',
+      'Write-Host "  ========================================" -ForegroundColor Green',
+      'Write-Host ""',
+      'Write-Host "  Config file: $outFile" -ForegroundColor White',
+      'Write-Host ""',
+      'Write-Host "  Next steps:" -ForegroundColor Yellow',
+      'Write-Host "    1. Copy simpleauth-config.json to your workstation" -ForegroundColor White',
+      'Write-Host "    2. Open SimpleAuth admin UI -> LDAP Providers" -ForegroundColor White',
+      'Write-Host "    3. Click Import Config and upload the file" -ForegroundColor White',
+      'Write-Host ""',
+      'Read-Host "Press Enter to exit"',
+    ];
+    const script = lines.join('\r\n');
+    // UTF-8 BOM so Windows PowerShell reads encoding correctly
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, script], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'Setup-SimpleAuth.ps1'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('Script downloaded');
+  };
+
+  const importConfig = async () => {
     try {
+      const cfg = JSON.parse(form.import_json);
+      // First auto-discover to create the provider
       const result = await api('POST', '/api/admin/ldap/auto-discover', {
-        domain: form.domain,
-        bind_dn: form.bind_dn,
-        bind_password: form.bind_password,
-        provider_id: form.provider_id,
-        save: true,
+        server: cfg.server,
+        username: cfg.username,
+        password: cfg.password,
+      });
+      // If config has Kerberos info, auto-setup keytab via import endpoint
+      let msg = `Provider configured: ${result.provider_id}`;
+      if (cfg.service_hostname && result.provider_id) {
+        try {
+          const importResult = await api('POST', '/api/admin/ldap/import', {
+            ldap_providers: [result],
+            service_hostname: cfg.service_hostname,
+            spn: cfg.spn || ('HTTP/' + cfg.service_hostname),
+          });
+          if (importResult.kerberos) {
+            msg = `Provider + Kerberos configured: ${importResult.kerberos.spn}`;
+          } else if (importResult.kerberos_error) {
+            msg = `Provider configured. Kerberos failed: ${importResult.kerberos_error}`;
+          }
+        } catch (e) {
+          msg += ` (Kerberos setup failed: ${e.message})`;
+        }
+      }
+      setModal(null);
+      setForm({});
+      load();
+      showToast(msg);
+    } catch (e) {
+      showToast(e.message || 'Invalid config file', 'error');
+    }
+  };
+
+  const handleFileImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setForm({ ...form, import_json: ev.target.result });
+    reader.readAsText(file);
+  };
+
+  const setupKerberos = async () => {
+    try {
+      const result = await api('POST', `/api/admin/ldap/${form.provider_id}/setup-kerberos`, {
+        service_hostname: form.service_hostname,
       });
       setModal(null);
       setForm({});
       load();
-      showToast(`Discovered ${result.discovered_dcs?.length || 0} DCs, provider saved`);
+      const msg = result.spn_warning
+        ? `Kerberos configured (warning: ${result.spn_warning})`
+        : `Kerberos configured: ${result.spn}`;
+      showToast(msg);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const cleanupKerberos = async () => {
+    try {
+      await api('POST', `/api/admin/ldap/${form.provider_id}/cleanup-kerberos`, {
+        username: form.cleanup_username || undefined,
+        password: form.cleanup_password || undefined,
+      });
+      setModal(null);
+      setForm({});
+      load();
+      showToast('Kerberos configuration removed');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
@@ -601,8 +1035,9 @@ function LDAPPage() {
     <div class="page-header">
       <h2>LDAP Providers</h2>
       <div class="page-header-actions">
-        <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('discover'); }}>Auto-Discover</button>
-        <button class="btn btn-primary" onClick=${() => { setForm({ user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', groups_attr: 'memberOf' }); setModal('create'); }}>${icons.plus} Add Provider</button>
+        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-simpleauth' }); setModal('generate-script'); }}>Generate AD Script</button>
+        <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('import-config'); }}>Import Config</button>
+        <button class="btn btn-primary" onClick=${() => { setForm({ user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', groups_attr: 'memberOf' }); setModal('create'); }}>${icons.plus} Manual Setup</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -618,8 +1053,12 @@ function LDAPPage() {
                 <td style="color:var(--text-secondary);font-size:0.875rem">${p.url}</td>
                 <td style="font-size:0.75rem;color:var(--text-muted)">${p.base_dn}</td>
                 <td>${p.priority}</td>
-                <td>
+                <td style="white-space:nowrap">
                   <button class="btn btn-sm btn-secondary" onClick=${() => testConnection(p.provider_id)}>Test</button>
+                  ${krbStatus?.configured && krbStatus?.provider_id === p.provider_id
+                    ? html`<button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-cleanup'); }}>Remove Kerberos</button>`
+                    : html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-setup'); }}>Setup Kerberos</button>`
+                  }
                   <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteProvider(p.provider_id)}>Delete</button>
                 </td>
               </tr>
@@ -675,28 +1114,107 @@ function LDAPPage() {
       <//>
     `}
 
-    ${modal === 'discover' && html`
-      <${Modal} title="Auto-Discover LDAP" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter a domain name and service account credentials. SimpleAuth will auto-configure via DNS SRV and RootDSE.</p>
-        <div class="form-group">
-          <label class="form-label">Domain</label>
-          <input class="form-input" value=${form.domain || ''} onInput=${e => setForm({ ...form, domain: e.target.value })} placeholder="corp.local" />
+    ${krbStatus?.configured && html`
+      <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-3);margin-bottom:var(--sp-4);display:flex;align-items:center;gap:var(--sp-3)">
+        <span style="color:var(--success);font-size:1.25rem">&#9679;</span>
+        <div style="flex:1">
+          <strong>Kerberos Active</strong>
+          <span style="color:var(--text-secondary);margin-left:var(--sp-2);font-size:0.875rem">
+            ${krbStatus.spn || ''} ${krbStatus.realm ? `@ ${krbStatus.realm}` : ''} (${krbStatus.source})
+          </span>
+          <div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px">SPNEGO test will authenticate via Kerberos and look up user data across all LDAP providers</div>
         </div>
+        <a href="/auth/test-negotiate" target="_blank" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 12px;text-decoration:none">Test SPNEGO</a>
+      </div>
+    `}
+
+    ${modal === 'krb-setup' && html`
+      <${Modal} title="Setup Kerberos / SPNEGO" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter the hostname that clients use to reach SimpleAuth. A keytab will be generated and the SPN registered in AD.</p>
         <div class="form-group">
-          <label class="form-label">Provider ID (optional)</label>
-          <input class="form-input" value=${form.provider_id || ''} onInput=${e => setForm({ ...form, provider_id: e.target.value })} placeholder="corp" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Bind DN</label>
-          <input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} placeholder="CN=svc-auth,OU=Service Accounts,DC=corp,DC=local" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Bind Password</label>
-          <input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} />
+          <label class="form-label">Service Hostname</label>
+          <input class="form-input" value=${form.service_hostname || ''} onInput=${e => setForm({ ...form, service_hostname: e.target.value })} placeholder="simpleauth.corp.local" />
+          <div class="form-help">The FQDN clients use to access SimpleAuth (becomes HTTP/hostname SPN)</div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${autoDiscover}>Discover & Save</button>
+          <button class="btn btn-primary" onClick=${setupKerberos}>Setup Kerberos</button>
+        </div>
+      <//>
+    `}
+
+    ${modal === 'krb-cleanup' && html`
+      <${Modal} title="Remove Kerberos" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">This will delete the local keytab and disable Kerberos. Optionally provide AD admin credentials to also remove the SPN from Active Directory.</p>
+        <div class="form-group">
+          <label class="form-label">AD Admin Username (optional)</label>
+          <input class="form-input" value=${form.cleanup_username || ''} onInput=${e => setForm({ ...form, cleanup_username: e.target.value })} placeholder="admin@corp.local" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">AD Admin Password (optional)</label>
+          <input class="form-input" type="password" value=${form.cleanup_password || ''} onInput=${e => setForm({ ...form, cleanup_password: e.target.value })} />
+        </div>
+        <div class="form-help" style="margin-bottom:var(--sp-3)">Leave empty to only remove local config without touching AD.</div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-danger" onClick=${cleanupKerberos}>Remove Kerberos</button>
+        </div>
+      <//>
+    `}
+
+    ${modal === 'generate-script' && html`
+      <${Modal} title="Generate AD Setup Script" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Generate a PowerShell script to run on a Domain Controller. The script will interactively guide the AD admin through creating a service account, selecting an OU, and optionally setting up Kerberos.</p>
+        <div class="form-group">
+          <label class="form-label">Service Account Name</label>
+          <input class="form-input" value=${form.script_account || ''} onInput=${e => setForm({ ...form, script_account: e.target.value })} placeholder="svc-simpleauth" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <div style="display:flex;gap:var(--sp-2)">
+            <input class="form-input" style="flex:1" value=${form.script_password || ''} onInput=${e => setForm({ ...form, script_password: e.target.value })} placeholder="Strong password for the service account" />
+            <button class="btn btn-secondary" style="white-space:nowrap" onClick=${() => {
+              const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%&*';
+              let pw = ''; for (let i = 0; i < 24; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+              setForm({ ...form, script_password: pw });
+            }}>Generate</button>
+          </div>
+        </div>
+        <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-3);margin-top:var(--sp-3);font-size:0.8rem;color:var(--text-secondary)">
+          <strong style="color:var(--text-primary)">The script will interactively:</strong>
+          <ul style="margin:var(--sp-1) 0 0 var(--sp-3);padding:0">
+            <li>Auto-detect domain, base DN, and domain controller</li>
+            <li>List OUs and let the admin pick where to create the account</li>
+            <li>Ask if Kerberos SSO should be enabled</li>
+            <li>Export <code>simpleauth-config.json</code> to bring back here</li>
+          </ul>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" onClick=${generateScript}>Download Script</button>
+        </div>
+      <//>
+    `}
+
+    ${modal === 'import-config' && html`
+      <${Modal} title="Import AD Config" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the setup script. SimpleAuth will connect and configure everything automatically.</p>
+        <div class="form-group">
+          <label class="form-label">Config File</label>
+          <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-2)" />
+        </div>
+        ${form.import_json && html`
+          <div class="form-group">
+            <label class="form-label">Preview</label>
+            <pre style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-2);font-size:0.8rem;overflow-x:auto;max-height:200px">${(() => {
+              try { const c = JSON.parse(form.import_json); return JSON.stringify({...c, password: '***'}, null, 2); }
+              catch { return 'Invalid JSON'; }
+            })()}</pre>
+          </div>
+        `}
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import & Configure</button>
         </div>
       <//>
     `}

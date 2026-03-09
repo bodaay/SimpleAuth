@@ -18,6 +18,9 @@ type LDAPConfig struct {
 	SkipTLSVerify   bool
 	DisplayNameAttr string
 	EmailAttr       string
+	DepartmentAttr  string
+	CompanyAttr     string
+	JobTitleAttr    string
 	GroupsAttr      string
 }
 
@@ -26,6 +29,9 @@ type LDAPResult struct {
 	Username    string
 	DisplayName string
 	Email       string
+	Department  string
+	Company     string
+	JobTitle    string
 	Groups      []string
 }
 
@@ -61,16 +67,7 @@ func LDAPSearchUser(cfg *LDAPConfig, field, value string) (*LDAPResult, error) {
 
 	filter := fmt.Sprintf("(%s=%s)", ldap.EscapeFilter(field), ldap.EscapeFilter(value))
 
-	attrs := []string{"dn", "sAMAccountName"}
-	if cfg.DisplayNameAttr != "" {
-		attrs = append(attrs, cfg.DisplayNameAttr)
-	}
-	if cfg.EmailAttr != "" {
-		attrs = append(attrs, cfg.EmailAttr)
-	}
-	if cfg.GroupsAttr != "" {
-		attrs = append(attrs, cfg.GroupsAttr)
-	}
+	attrs := ldapAttrs(cfg)
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
 		cfg.BaseDN,
@@ -103,16 +100,7 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 
 	// Search for user
 	filter := strings.Replace(cfg.UserFilter, "{{username}}", ldap.EscapeFilter(username), -1)
-	attrs := []string{"dn", "sAMAccountName"}
-	if cfg.DisplayNameAttr != "" {
-		attrs = append(attrs, cfg.DisplayNameAttr)
-	}
-	if cfg.EmailAttr != "" {
-		attrs = append(attrs, cfg.EmailAttr)
-	}
-	if cfg.GroupsAttr != "" {
-		attrs = append(attrs, cfg.GroupsAttr)
-	}
+	attrs := ldapAttrs(cfg)
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
 		cfg.BaseDN,
@@ -150,6 +138,16 @@ func LDAPTestConnection(cfg *LDAPConfig) error {
 	return nil
 }
 
+func ldapAttrs(cfg *LDAPConfig) []string {
+	attrs := []string{"dn", "sAMAccountName"}
+	for _, a := range []string{cfg.DisplayNameAttr, cfg.EmailAttr, cfg.DepartmentAttr, cfg.CompanyAttr, cfg.JobTitleAttr, cfg.GroupsAttr} {
+		if a != "" {
+			attrs = append(attrs, a)
+		}
+	}
+	return attrs
+}
+
 func entryToResult(entry *ldap.Entry, cfg *LDAPConfig) *LDAPResult {
 	result := &LDAPResult{
 		DN:       entry.DN,
@@ -160,6 +158,15 @@ func entryToResult(entry *ldap.Entry, cfg *LDAPConfig) *LDAPResult {
 	}
 	if cfg.EmailAttr != "" {
 		result.Email = entry.GetAttributeValue(cfg.EmailAttr)
+	}
+	if cfg.DepartmentAttr != "" {
+		result.Department = entry.GetAttributeValue(cfg.DepartmentAttr)
+	}
+	if cfg.CompanyAttr != "" {
+		result.Company = entry.GetAttributeValue(cfg.CompanyAttr)
+	}
+	if cfg.JobTitleAttr != "" {
+		result.JobTitle = entry.GetAttributeValue(cfg.JobTitleAttr)
 	}
 	if cfg.GroupsAttr != "" {
 		result.Groups = entry.GetAttributeValues(cfg.GroupsAttr)
