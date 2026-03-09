@@ -45,6 +45,11 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/auth/refresh", h.handleRefresh)
 	h.mux.HandleFunc("GET /api/auth/userinfo", h.handleUserInfo)
 	h.mux.HandleFunc("POST /api/auth/impersonate", h.requireMasterAdmin(h.handleImpersonate))
+	h.mux.HandleFunc("GET /api/auth/negotiate", h.handleNegotiate)
+
+	// Hosted login page
+	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)
+	h.mux.HandleFunc("POST /login", h.handleHostedLoginSubmit)
 
 	// JWKS
 	h.mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)
@@ -85,6 +90,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/users/{guid}/unmerge", h.requireMasterAdmin(h.handleUnmergeUser))
 
 	// Admin: Identity Mappings
+	h.mux.HandleFunc("GET /api/admin/mappings", h.adminAuth(h.handleListAllMappings))
 	h.mux.HandleFunc("GET /api/admin/users/{guid}/mappings", h.requireMasterAdmin(h.handleGetMappings))
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/mappings", h.adminAuth(h.handleSetMapping))
 	h.mux.HandleFunc("DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}", h.adminAuth(h.handleDeleteMapping))

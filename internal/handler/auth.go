@@ -1,9 +1,16 @@
 package handler
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/jcmturner/gokrb5/v8/keytab"
+	krbmsg "github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/spnego"
 
 	"simpleauth/internal/auth"
 	"simpleauth/internal/store"
@@ -474,9 +481,307 @@ func (h *Handler) handleJWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if len(auth) > 7 && auth[:7] == "Bearer " {
-		return auth[7:]
+	a := r.Header.Get("Authorization")
+	if len(a) > 7 && a[:7] == "Bearer " {
+		return a[7:]
 	}
 	return ""
+}
+
+// authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
+// Shared by API login and hosted login.
+func (h *Handler) authenticateUser(username, password, appID string) (string, []string, error) {
+	var userGUID string
+	var ldapGroups []string
+	var authenticated bool
+
+	if appID != "" {
+		// Try existing identity mapping
+		guid, err := h.store.ResolveMapping("app:"+appID, username)
+		if err == nil {
+			userGUID = guid
+		} else {
+			// Check app's provider_mappings
+			app, appErr := h.store.GetApp(appID)
+			if appErr != nil {
+				return "", nil, fmt.Errorf("invalid app_id")
+			}
+			if app.ProviderMappings != nil {
+				guid, result := h.searchProviderMappings(app, username)
+				if guid != "" {
+					userGUID = guid
+					if result != nil {
+						ldapGroups = result.Groups
+					}
+				}
+			}
+		}
+	}
+
+	if userGUID != "" {
+		user, err := h.store.ResolveUser(userGUID)
+		if err != nil {
+			return "", nil, fmt.Errorf("user resolution failed")
+		}
+		userGUID = user.GUID
+		if user.Disabled {
+			return "", nil, fmt.Errorf("account disabled")
+		}
+
+		// Try LDAP auth via mapped providers
+		mappings, _ := h.store.GetMappingsForUser(userGUID)
+		for _, m := range mappings {
+			if len(m.Provider) > 5 && m.Provider[:5] == "ldap:" {
+				providerID := m.Provider[5:]
+				provider, err := h.store.GetLDAPProvider(providerID)
+				if err != nil {
+					continue
+				}
+				cfg := ldapConfigFromProvider(provider)
+				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, password)
+				if err == nil {
+					ldapGroups = result.Groups
+					authenticated = true
+					break
+				}
+			}
+		}
+
+		// Fallback: local password
+		if !authenticated && user.PasswordHash != "" {
+			if auth.CheckPassword(user.PasswordHash, password) {
+				authenticated = true
+			}
+		}
+	} else {
+		// No app_id or no mapping — try LDAP directly
+		providers, _ := h.store.ListLDAPProviders()
+		sort.Slice(providers, func(i, j int) bool {
+			return providers[i].Priority < providers[j].Priority
+		})
+		for _, p := range providers {
+			cfg := ldapConfigFromProvider(p)
+			result, err := auth.LDAPAuthenticate(cfg, username, password)
+			if err == nil {
+				ldapGroups = result.Groups
+				authenticated = true
+				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, username)
+				if mapErr == nil {
+					userGUID = guid
+				} else {
+					newUser := &store.User{DisplayName: result.DisplayName, Email: result.Email}
+					h.store.CreateUser(newUser)
+					userGUID = newUser.GUID
+					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
+				}
+				if appID != "" {
+					h.store.SetIdentityMapping("app:"+appID, username, userGUID)
+				}
+				break
+			}
+		}
+
+		// Fallback: local users
+		if !authenticated {
+			users, _ := h.store.ListUsers()
+			for _, u := range users {
+				if u.PasswordHash != "" {
+					mappings, _ := h.store.GetMappingsForUser(u.GUID)
+					for _, m := range mappings {
+						if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
+							userGUID = u.GUID
+							authenticated = true
+							break
+						}
+					}
+					if authenticated {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !authenticated {
+		return "", nil, fmt.Errorf("invalid credentials")
+	}
+	return userGUID, ldapGroups, nil
+}
+
+// issueTokenPair creates access + refresh tokens and stores the refresh token.
+func (h *Handler) issueTokenPair(user *store.User, appID string, roles, perms, groups []string) (string, string, int, error) {
+	claims := auth.Claims{
+		Name:        user.DisplayName,
+		Email:       user.Email,
+		AppID:       appID,
+		Roles:       roles,
+		Permissions: perms,
+		Groups:      groups,
+	}
+	claims.Subject = user.GUID
+
+	accessToken, err := h.jwt.IssueAccessToken(claims, h.cfg.AccessTTL)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	refreshToken, tokenID, err := h.jwt.IssueRefreshToken(user.GUID, appID, "", h.cfg.RefreshTTL)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	rtClaims, _ := h.jwt.ValidateToken(refreshToken)
+	rt := &store.RefreshToken{
+		TokenID:   tokenID,
+		FamilyID:  rtClaims.FamilyID,
+		UserGUID:  user.GUID,
+		AppID:     appID,
+		ExpiresAt: time.Now().UTC().Add(h.cfg.RefreshTTL),
+		CreatedAt: time.Now().UTC(),
+	}
+	h.store.SaveRefreshToken(rt)
+
+	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
+}
+
+// handleNegotiate handles Kerberos/SPNEGO authentication.
+// GET /api/auth/negotiate?app_id=X
+// Browser sends Authorization: Negotiate <base64-token>
+func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.KRB5Keytab == "" {
+		jsonError(w, "Kerberos not configured", http.StatusNotImplemented)
+		return
+	}
+
+	appID := r.URL.Query().Get("app_id")
+	if appID == "" {
+		jsonError(w, "app_id query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	app, err := h.store.GetApp(appID)
+	if err != nil {
+		jsonError(w, "invalid app_id", http.StatusBadRequest)
+		return
+	}
+	_ = app // used later for token issuance
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Negotiate ") {
+		w.Header().Set("WWW-Authenticate", "Negotiate")
+		jsonError(w, "Kerberos authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	// Decode SPNEGO token
+	tokenB64 := authHeader[10:]
+	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		jsonError(w, "invalid Negotiate token encoding", http.StatusBadRequest)
+		return
+	}
+
+	// Load keytab
+	kt, err := keytab.Load(h.cfg.KRB5Keytab)
+	if err != nil {
+		jsonError(w, "failed to load keytab", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse SPNEGO token
+	var spnegoToken spnego.SPNEGOToken
+	if err := spnegoToken.Unmarshal(tokenBytes); err != nil {
+		jsonError(w, "invalid SPNEGO token", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract the Kerberos AP-REQ from the SPNEGO mechToken
+	if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
+		jsonError(w, "no mech token in SPNEGO", http.StatusUnauthorized)
+		return
+	}
+
+	var apReq krbmsg.APReq
+	if err := apReq.Unmarshal(spnegoToken.NegTokenInit.MechTokenBytes); err != nil {
+		jsonError(w, "invalid AP-REQ", http.StatusUnauthorized)
+		return
+	}
+
+	// Decrypt and validate the ticket
+	if err = apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
+		jsonError(w, "Kerberos ticket validation failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract principal name
+	principal := apReq.Ticket.SName.PrincipalNameString()
+	// The client principal is in the encrypted part
+	cname := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
+	if cname == "" {
+		cname = principal
+	}
+
+	// Strip realm if present (user@REALM -> user)
+	username := cname
+	if idx := strings.Index(cname, "@"); idx > 0 {
+		username = cname[:idx]
+	}
+
+	ip := getClientIP(r)
+
+	// Look up user by kerberos identity mapping
+	userGUID, err := h.store.ResolveMapping("kerberos", cname)
+	if err != nil {
+		// Try without realm
+		userGUID, err = h.store.ResolveMapping("kerberos", username)
+	}
+	if err != nil {
+		// Auto-provision: look for a user with matching display name
+		users, _ := h.store.ListUsers()
+		for _, u := range users {
+			if u.DisplayName == username || u.Email == username {
+				userGUID = u.GUID
+				// Create identity mapping for next time
+				h.store.SetIdentityMapping("kerberos", cname, userGUID)
+				break
+			}
+		}
+		if userGUID == "" {
+			h.audit("negotiate_failed", "", ip, map[string]interface{}{
+				"principal": cname, "app_id": appID, "reason": "no matching user",
+			})
+			jsonError(w, "no user found for Kerberos principal: "+cname, http.StatusUnauthorized)
+			return
+		}
+	}
+
+	user, err := h.store.ResolveUser(userGUID)
+	if err != nil {
+		jsonError(w, "user not found", http.StatusUnauthorized)
+		return
+	}
+	if user.Disabled {
+		jsonError(w, "account disabled", http.StatusForbidden)
+		return
+	}
+
+	// Issue tokens
+	roles, _ := h.store.GetUserRoles(user.GUID, appID)
+	perms, _ := h.store.GetUserPermissions(user.GUID, appID)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, appID, roles, perms, nil)
+	if err != nil {
+		jsonError(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("login_success", user.GUID, ip, map[string]interface{}{
+		"app_id": appID, "flow": "kerberos", "principal": cname,
+	})
+
+	jsonResp(w, map[string]interface{}{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    expiresIn,
+		"token_type":    "Bearer",
+	}, http.StatusOK)
 }

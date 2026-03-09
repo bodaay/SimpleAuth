@@ -303,6 +303,18 @@ func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
 
 // --- Identity Mappings ---
 
+func (h *Handler) handleListAllMappings(w http.ResponseWriter, r *http.Request) {
+	mappings, err := h.store.ListAllMappings()
+	if err != nil {
+		jsonError(w, "failed to list mappings", http.StatusInternalServerError)
+		return
+	}
+	if mappings == nil {
+		mappings = []store.IdentityMappingEntry{}
+	}
+	jsonResp(w, mappings, http.StatusOK)
+}
+
 func (h *Handler) handleGetMappings(w http.ResponseWriter, r *http.Request) {
 	guid := pathParam(r, "guid")
 	mappings, err := h.store.GetMappingsForUser(guid)
@@ -602,17 +614,29 @@ func (h *Handler) handleBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="auth-backup-%s.db"`, time.Now().Format("2006-01-02")))
 
-	// Write directly to response
-	err := h.store.BackupWriter(nil) // We need to handle this differently
-	if err != nil {
+	if err := h.store.BackupWriter(w); err != nil {
 		jsonError(w, "backup failed", http.StatusInternalServerError)
 		return
 	}
 }
 
 func (h *Handler) handleRestore(w http.ResponseWriter, r *http.Request) {
-	// For now, a placeholder — restore requires careful handling
-	jsonError(w, "restore via API not yet implemented — use file-based restore", http.StatusNotImplemented)
+	// Limit upload to 500MB
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		jsonError(w, "file upload required (multipart field 'file')", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	if err := h.store.Restore(file); err != nil {
+		jsonError(w, "restore failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	jsonResp(w, map[string]string{"status": "restored"}, http.StatusOK)
 }
 
 // --- Audit Log ---
