@@ -259,20 +259,13 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 
 	// Detect user filter: check if this is Active Directory or standard LDAP
 	userFilter := "(uid={{username}})"
-	// Try to detect AD by searching for sAMAccountName attribute
-	testSearch, err := conn.Search(ldaplib.NewSearchRequest(
-		baseDN, ldaplib.ScopeSingleLevel, ldaplib.NeverDerefAliases, 1, 5, false,
-		"(objectClass=organizationalUnit)", []string{"objectClass"}, nil,
+	// Try to detect AD by directly searching for any object with sAMAccountName
+	adTest, _ := conn.Search(ldaplib.NewSearchRequest(
+		baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
+		"(&(objectClass=person)(sAMAccountName=*))", []string{"sAMAccountName"}, nil,
 	))
-	if err == nil && len(testSearch.Entries) > 0 {
-		// Likely AD — check for person with sAMAccountName
-		adTest, _ := conn.Search(ldaplib.NewSearchRequest(
-			baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
-			"(&(objectClass=person)(sAMAccountName=*))", []string{"sAMAccountName"}, nil,
-		))
-		if adTest != nil && len(adTest.Entries) > 0 {
-			userFilter = "(sAMAccountName={{username}})"
-		}
+	if adTest != nil && len(adTest.Entries) > 0 {
+		userFilter = "(sAMAccountName={{username}})"
 	}
 
 	// Generate provider ID from domain or server

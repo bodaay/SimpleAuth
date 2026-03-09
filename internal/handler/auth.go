@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/base64"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"sort"
@@ -814,6 +815,9 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Patch keytab kvno to match ticket (AD increments kvno on password changes)
+	patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
+
 	// Decrypt and validate the ticket
 	if err = apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
 		jsonError(w, "Kerberos ticket validation failed", http.StatusUnauthorized)
@@ -938,12 +942,36 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log raw token info for debugging
+	log.Printf("[spnego] Token length: %d bytes, first bytes: %x", len(tokenBytes), tokenBytes[:min(16, len(tokenBytes))])
+
 	var spnegoToken spnego.SPNEGOToken
 	if err := spnegoToken.Unmarshal(tokenBytes); err != nil {
-		// Can't parse SPNEGO — fall back to login form
+		log.Printf("[spnego] SPNEGO unmarshal failed: %v", err)
+		// Maybe it's a raw Kerberos AP-REQ (not wrapped in SPNEGO)
+		var apReq krbmsg.APReq
+		if err2 := apReq.Unmarshal(tokenBytes); err2 == nil {
+			log.Printf("[spnego] Token is raw AP-REQ (not SPNEGO-wrapped)")
+			patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
+			if err3 := apReq.Ticket.DecryptEncPart(kt, nil); err3 != nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				fmt.Fprintf(w, negotiateTestKrbFailedHTML,
+					"Kerberos ticket decryption failed: "+err3.Error())
+				return
+			}
+			// Jump to success handling below
+			h.completeKerberosAuth(w, r, &apReq, kt)
+			return
+		}
+		// Can't parse as SPNEGO or raw AP-REQ — fall back to login form
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Invalid SPNEGO token: "+err.Error())
 		return
+	}
+
+	// Log SPNEGO OIDs for debugging
+	for i, oid := range spnegoToken.NegTokenInit.MechTypes {
+		log.Printf("[spnego] MechType[%d]: %s", i, oid.String())
 	}
 
 	if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
@@ -953,20 +981,28 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mechBytes := spnegoToken.NegTokenInit.MechTokenBytes
+	log.Printf("[spnego] MechToken length: %d, first bytes: %x", len(mechBytes), mechBytes[:min(16, len(mechBytes))])
+
 	if isNTLMToken(mechBytes) {
+		log.Printf("[spnego] NTLM token detected inside SPNEGO")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, negotiateTestNTLMFallbackHTML)
 		return
 	}
 
+	// Strip GSS-API OID wrapper if present (Windows wraps AP-REQ in GSS-API header)
+	mechBytes = stripGSSAPIWrapper(mechBytes)
+
 	var apReq krbmsg.APReq
 	if err := apReq.Unmarshal(mechBytes); err != nil {
+		log.Printf("[spnego] AP-REQ unmarshal failed: %v, mechToken first bytes: %x", err, mechBytes[:min(32, len(mechBytes))])
 		// AP-REQ parse failed — fall back to login form
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Kerberos ticket could not be parsed: "+err.Error())
 		return
 	}
 
+	patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
 	if err = apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
 		// Ticket decryption failed — keytab mismatch
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -976,6 +1012,11 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.completeKerberosAuth(w, r, &apReq, kt)
+}
+
+// completeKerberosAuth handles the success path after a valid AP-REQ is decrypted.
+func (h *Handler) completeKerberosAuth(w http.ResponseWriter, r *http.Request, apReq *krbmsg.APReq, kt *keytab.Keytab) {
 	cname := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
 	username := cname
 	if idx := strings.Index(cname, "@"); idx > 0 {
@@ -1035,7 +1076,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 		}
 		log.Printf("[test-negotiate] All providers failed for user=%q: %s", username, errMsg)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, negotiateTestLoginFailedHTML)
+		fmt.Fprintf(w, negotiateTestLoginFailedHTML, html.EscapeString(errMsg))
 		return
 	}
 
@@ -1072,6 +1113,28 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 // isNTLMToken checks if bytes are an NTLM message (raw or SPNEGO-wrapped).
 func isNTLMToken(b []byte) bool {
 	return len(b) > 7 && string(b[:7]) == "NTLMSSP"
+}
+
+// stripGSSAPIWrapper removes the GSS-API OID header wrapping a Kerberos AP-REQ.
+// Windows sends mechTokens as: 60 <len> 06 09 <krb5-oid> 00 <ap-req...>
+// The AP-REQ itself starts with tag 0x6e (ASN.1 Application 14).
+func stripGSSAPIWrapper(b []byte) []byte {
+	// Look for AP-REQ tag (0x6e) in the first 20 bytes
+	for i := 0; i < len(b) && i < 20; i++ {
+		if b[i] == 0x6e {
+			return b[i:]
+		}
+	}
+	return b
+}
+
+// patchKeytabKVNO sets all keytab entries to match the ticket's kvno,
+// so decryption works regardless of kvno mismatch between keytab and AD.
+func patchKeytabKVNO(kt *keytab.Keytab, ticketKVNO int) {
+	for i := range kt.Entries {
+		kt.Entries[i].KVNO = uint32(ticketKVNO)
+		kt.Entries[i].KVNO8 = uint8(ticketKVNO)
+	}
 }
 
 // enrichUserInfoFromLDAP looks up a username across all LDAP providers.
@@ -1245,7 +1308,7 @@ const negotiateTestLoginFailedHTML = `<!DOCTYPE html>
 <div class="card">
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
-<div class="error">Invalid credentials. Check your username and password.</div>
+<div class="error">Authentication failed: %s</div>
 <form method="POST" action="/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>

@@ -99,7 +99,8 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 	}
 
 	// Search for user
-	filter := strings.Replace(cfg.UserFilter, "{{username}}", ldap.EscapeFilter(username), -1)
+	escapedUser := ldap.EscapeFilter(username)
+	filter := strings.Replace(cfg.UserFilter, "{{username}}", escapedUser, -1)
 	attrs := ldapAttrs(cfg)
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
@@ -109,6 +110,27 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 	))
 	if err != nil {
 		return nil, fmt.Errorf("ldap search: %w", err)
+	}
+	// If primary filter found nothing, try common AD/LDAP alternatives
+	if len(sr.Entries) == 0 {
+		fallbackFilters := []string{
+			fmt.Sprintf("(sAMAccountName=%s)", escapedUser),
+			fmt.Sprintf("(userPrincipalName=%s)", escapedUser),
+			fmt.Sprintf("(uid=%s)", escapedUser),
+		}
+		for _, fb := range fallbackFilters {
+			if fb == filter {
+				continue // skip if same as primary
+			}
+			sr, err = conn.Search(ldap.NewSearchRequest(
+				cfg.BaseDN,
+				ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1, 30, false,
+				fb, attrs, nil,
+			))
+			if err == nil && len(sr.Entries) > 0 {
+				break
+			}
+		}
 	}
 	if len(sr.Entries) == 0 {
 		return nil, fmt.Errorf("user not found: %s", username)

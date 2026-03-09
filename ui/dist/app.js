@@ -571,6 +571,26 @@ function LDAPPage() {
     toastTimeout = setTimeout(() => setToast(null), 3000);
   };
 
+  const saveProvider = async () => {
+    const payload = {
+      ...form,
+      use_tls: form.use_tls === true || form.use_tls === 'true',
+      skip_tls_verify: form.skip_tls_verify === true || form.skip_tls_verify === 'true',
+      priority: parseInt(form.priority) || 0,
+    };
+    try {
+      if (form._editing) {
+        await api('PUT', `/api/admin/ldap/${form.provider_id}`, payload);
+      } else {
+        await api('POST', '/api/admin/ldap', payload);
+      }
+      setModal(null);
+      setForm({});
+      load();
+      showToast(form._editing ? 'Provider updated' : 'Provider added');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   const createProvider = async () => {
     try {
       await api('POST', '/api/admin/ldap', {
@@ -1054,7 +1074,8 @@ function LDAPPage() {
                 <td style="font-size:0.75rem;color:var(--text-muted)">${p.base_dn}</td>
                 <td>${p.priority}</td>
                 <td style="white-space:nowrap">
-                  <button class="btn btn-sm btn-secondary" onClick=${() => testConnection(p.provider_id)}>Test</button>
+                  <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({ ...p, _editing: true }); setModal('create'); }}>Edit</button>
+                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => testConnection(p.provider_id)}>Test</button>
                   ${krbStatus?.configured && krbStatus?.provider_id === p.provider_id
                     ? html`<button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-cleanup'); }}>Remove Kerberos</button>`
                     : html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-setup'); }}>Setup Kerberos</button>`
@@ -1069,11 +1090,11 @@ function LDAPPage() {
     </div>
 
     ${modal === 'create' && html`
-      <${Modal} title="Add LDAP Provider" onClose=${() => setModal(null)}>
+      <${Modal} title=${form._editing ? 'Edit LDAP Provider' : 'Add LDAP Provider'} onClose=${() => setModal(null)}>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Provider ID</label>
-            <input class="form-input" value=${form.provider_id || ''} onInput=${e => setForm({ ...form, provider_id: e.target.value })} placeholder="corp" />
+            <input class="form-input" value=${form.provider_id || ''} onInput=${e => setForm({ ...form, provider_id: e.target.value })} placeholder="corp" disabled=${form._editing} />
           </div>
           <div class="form-group">
             <label class="form-label">Name</label>
@@ -1101,15 +1122,49 @@ function LDAPPage() {
         <div class="form-group">
           <label class="form-label">User Filter</label>
           <input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} />
+          <div class="form-help">Use ${'{{username}}'} as placeholder. E.g. (sAMAccountName=${'{{username}}'}) for AD, (uid=${'{{username}}'}) for LDAP</div>
         </div>
         <div class="form-group">
           <label class="form-label">Priority</label>
           <input class="form-input" type="number" value=${form.priority || '0'} onInput=${e => setForm({ ...form, priority: e.target.value })} />
           <div class="form-help">Lower = tried first</div>
         </div>
+        <details style="margin-top:var(--sp-2)">
+          <summary style="cursor:pointer;font-weight:600;margin-bottom:var(--sp-2)">Attribute Mapping</summary>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Display Name Attr</label>
+              <input class="form-input" value=${form.display_name_attr || ''} onInput=${e => setForm({ ...form, display_name_attr: e.target.value })} placeholder="displayName" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Email Attr</label>
+              <input class="form-input" value=${form.email_attr || ''} onInput=${e => setForm({ ...form, email_attr: e.target.value })} placeholder="mail" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Department Attr</label>
+              <input class="form-input" value=${form.department_attr || ''} onInput=${e => setForm({ ...form, department_attr: e.target.value })} placeholder="department" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Company Attr</label>
+              <input class="form-input" value=${form.company_attr || ''} onInput=${e => setForm({ ...form, company_attr: e.target.value })} placeholder="company" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Job Title Attr</label>
+              <input class="form-input" value=${form.job_title_attr || ''} onInput=${e => setForm({ ...form, job_title_attr: e.target.value })} placeholder="title" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Groups Attr</label>
+              <input class="form-input" value=${form.groups_attr || ''} onInput=${e => setForm({ ...form, groups_attr: e.target.value })} placeholder="memberOf" />
+            </div>
+          </div>
+        </details>
         <div class="modal-footer">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${createProvider}>Add Provider</button>
+          <button class="btn btn-primary" onClick=${saveProvider}>${form._editing ? 'Save Changes' : 'Add Provider'}</button>
         </div>
       <//>
     `}
