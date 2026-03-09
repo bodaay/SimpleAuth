@@ -1,0 +1,20 @@
+# Binary
+simpleauth
+
+# Data directory
+data/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Node (UI build)
+ui/node_modules/
+ui/dist/
+
+# Environment
+.env
