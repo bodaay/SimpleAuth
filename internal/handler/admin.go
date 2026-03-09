@@ -159,6 +159,9 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Password    string `json:"password"`
 		DisplayName string `json:"display_name"`
 		Email       string `json:"email"`
+		Department  string `json:"department"`
+		Company     string `json:"company"`
+		JobTitle    string `json:"job_title"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -168,6 +171,9 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	user := &store.User{
 		DisplayName: req.DisplayName,
 		Email:       req.Email,
+		Department:  req.Department,
+		Company:     req.Company,
+		JobTitle:    req.JobTitle,
 	}
 
 	if req.Password != "" {
@@ -220,6 +226,9 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DisplayName *string `json:"display_name"`
 		Email       *string `json:"email"`
+		Department  *string `json:"department"`
+		Company     *string `json:"company"`
+		JobTitle    *string `json:"job_title"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -231,6 +240,15 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email != nil {
 		user.Email = *req.Email
+	}
+	if req.Department != nil {
+		user.Department = *req.Department
+	}
+	if req.Company != nil {
+		user.Company = *req.Company
+	}
+	if req.JobTitle != nil {
+		user.JobTitle = *req.JobTitle
 	}
 
 	if err := h.store.UpdateUser(user); err != nil {

@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -130,6 +131,9 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					newUser := &store.User{
 						DisplayName: result.DisplayName,
 						Email:       result.Email,
+						Department:  result.Department,
+						Company:     result.Company,
+						JobTitle:    result.JobTitle,
 					}
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
@@ -182,14 +186,31 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	userGUID = finalUser.GUID
 
 	// Update user info from LDAP if available
-	if ldapResult != nil && (finalUser.DisplayName == "" || finalUser.Email == "") {
-		if ldapResult.DisplayName != "" {
+	if ldapResult != nil {
+		changed := false
+		if ldapResult.DisplayName != "" && finalUser.DisplayName != ldapResult.DisplayName {
 			finalUser.DisplayName = ldapResult.DisplayName
+			changed = true
 		}
-		if ldapResult.Email != "" {
+		if ldapResult.Email != "" && finalUser.Email != ldapResult.Email {
 			finalUser.Email = ldapResult.Email
+			changed = true
 		}
-		h.store.UpdateUser(finalUser)
+		if ldapResult.Department != "" && finalUser.Department != ldapResult.Department {
+			finalUser.Department = ldapResult.Department
+			changed = true
+		}
+		if ldapResult.Company != "" && finalUser.Company != ldapResult.Company {
+			finalUser.Company = ldapResult.Company
+			changed = true
+		}
+		if ldapResult.JobTitle != "" && finalUser.JobTitle != ldapResult.JobTitle {
+			finalUser.JobTitle = ldapResult.JobTitle
+			changed = true
+		}
+		if changed {
+			h.store.UpdateUser(finalUser)
+		}
 	}
 
 	// Assign default roles if first time in this app
@@ -232,6 +253,9 @@ func (h *Handler) searchProviderMappings(app *store.App, username string) (strin
 			newUser := &store.User{
 				DisplayName: result.DisplayName,
 				Email:       result.Email,
+				Department:  result.Department,
+				Company:     result.Company,
+				JobTitle:    result.JobTitle,
 			}
 			h.store.CreateUser(newUser)
 			guid = newUser.GUID
@@ -251,6 +275,9 @@ func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, ap
 	claims := auth.Claims{
 		Name:        user.DisplayName,
 		Email:       user.Email,
+		Department:  user.Department,
+		Company:     user.Company,
+		JobTitle:    user.JobTitle,
 		AppID:       appID,
 		Roles:       roles,
 		Permissions: perms,
@@ -350,6 +377,9 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	newClaims := auth.Claims{
 		Name:        user.DisplayName,
 		Email:       user.Email,
+		Department:  user.Department,
+		Company:     user.Company,
+		JobTitle:    user.JobTitle,
 		AppID:       claims.AppID,
 		Roles:       roles,
 		Permissions: perms,
@@ -411,6 +441,9 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"guid":         user.GUID,
 		"display_name": user.DisplayName,
 		"email":        user.Email,
+		"department":   user.Department,
+		"company":      user.Company,
+		"job_title":    user.JobTitle,
 		"app_id":       claims.AppID,
 		"roles":        claims.Roles,
 		"permissions":  claims.Permissions,
@@ -447,6 +480,9 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	claims := auth.Claims{
 		Name:           target.DisplayName,
 		Email:          target.Email,
+		Department:     target.Department,
+		Company:        target.Company,
+		JobTitle:       target.JobTitle,
 		AppID:          req.AppID,
 		Roles:          roles,
 		Permissions:    perms,
@@ -569,7 +605,7 @@ func (h *Handler) authenticateUser(username, password, appID string) (string, []
 				if mapErr == nil {
 					userGUID = guid
 				} else {
-					newUser := &store.User{DisplayName: result.DisplayName, Email: result.Email}
+					newUser := &store.User{DisplayName: result.DisplayName, Email: result.Email, Department: result.Department, Company: result.Company, JobTitle: result.JobTitle}
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
 					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
@@ -613,6 +649,9 @@ func (h *Handler) issueTokenPair(user *store.User, appID string, roles, perms, g
 	claims := auth.Claims{
 		Name:        user.DisplayName,
 		Email:       user.Email,
+		Department:  user.Department,
+		Company:     user.Company,
+		JobTitle:    user.JobTitle,
 		AppID:       appID,
 		Roles:       roles,
 		Permissions: perms,
@@ -715,7 +754,8 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 // GET /api/auth/negotiate?app_id=X
 // Browser sends Authorization: Negotiate <base64-token>
 func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.KRB5Keytab == "" {
+	keytabPath := h.getKeytabPath()
+	if keytabPath == "" {
 		jsonError(w, "Kerberos not configured", http.StatusNotImplemented)
 		return
 	}
@@ -749,7 +789,7 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load keytab
-	kt, err := keytab.Load(h.cfg.KRB5Keytab)
+	kt, err := keytab.Load(keytabPath)
 	if err != nil {
 		jsonError(w, "failed to load keytab", http.StatusInternalServerError)
 		return
@@ -852,3 +892,387 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		"token_type":    "Bearer",
 	}, http.StatusOK)
 }
+
+// handleNegotiateTest serves a Kerberos/SPNEGO test page.
+// GET /auth/test-negotiate — browser triggers SPNEGO, falls back to login form.
+func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+
+	// No auth header — send Negotiate challenge + page with fallback form
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Negotiate ") {
+		keytabPath := h.getKeytabPath()
+		if keytabPath != "" {
+			w.Header().Set("WWW-Authenticate", "Negotiate")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, negotiateTestWaitHTML)
+		return
+	}
+
+	// Decode SPNEGO token
+	tokenB64 := authHeader[10:]
+	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		http.Error(w, "invalid Negotiate token encoding", http.StatusBadRequest)
+		return
+	}
+
+	// Check if this is NTLM instead of Kerberos
+	if isNTLMToken(tokenBytes) {
+		// NTLM fallback: show form with explanation
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, negotiateTestNTLMFallbackHTML)
+		return
+	}
+
+	keytabPath := h.getKeytabPath()
+	if keytabPath == "" {
+		http.Error(w, "Kerberos not configured", http.StatusNotImplemented)
+		return
+	}
+
+	kt, err := keytab.Load(keytabPath)
+	if err != nil {
+		http.Error(w, "failed to load keytab", http.StatusInternalServerError)
+		return
+	}
+
+	var spnegoToken spnego.SPNEGOToken
+	if err := spnegoToken.Unmarshal(tokenBytes); err != nil {
+		// Can't parse SPNEGO — fall back to login form
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Invalid SPNEGO token: "+err.Error())
+		return
+	}
+
+	if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "No mechanism token in SPNEGO negotiation.")
+		return
+	}
+
+	mechBytes := spnegoToken.NegTokenInit.MechTokenBytes
+	if isNTLMToken(mechBytes) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, negotiateTestNTLMFallbackHTML)
+		return
+	}
+
+	var apReq krbmsg.APReq
+	if err := apReq.Unmarshal(mechBytes); err != nil {
+		// AP-REQ parse failed — fall back to login form
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Kerberos ticket could not be parsed: "+err.Error())
+		return
+	}
+
+	if err = apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
+		// Ticket decryption failed — keytab mismatch
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, negotiateTestKrbFailedHTML,
+			"Kerberos ticket decryption failed: "+err.Error()+
+				". The keytab may not match the AD account (password changed, wrong encryption type, or SPN mismatch).")
+		return
+	}
+
+	cname := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
+	username := cname
+	if idx := strings.Index(cname, "@"); idx > 0 {
+		username = cname[:idx]
+	}
+
+	userInfo := map[string]string{
+		"auth_method": "Kerberos/SPNEGO",
+		"principal":   cname,
+		"realm":       h.getKRB5Realm(),
+		"username":    username,
+	}
+
+	h.enrichUserInfoFromLDAP(userInfo, username)
+	h.renderNegotiateSuccess(w, userInfo)
+}
+
+// handleNegotiateTestForm handles the fallback login form (POST).
+func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form data", http.StatusBadRequest)
+		return
+	}
+
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	if username == "" || password == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, negotiateTestFormErrorHTML)
+		return
+	}
+
+	// Try LDAP authentication against all providers
+	providers, _ := h.store.ListLDAPProviders()
+	var authResult *auth.LDAPResult
+	var matchedProvider *store.LDAPProvider
+	var lastErr error
+	log.Printf("[test-negotiate] Form login attempt for user=%q against %d provider(s)", username, len(providers))
+	for _, p := range providers {
+		cfg := ldapConfigFromProvider(p)
+		log.Printf("[test-negotiate] Trying provider %q (URL=%s, BaseDN=%s, Filter=%s)", p.Name, p.URL, p.BaseDN, p.UserFilter)
+		result, err := auth.LDAPAuthenticate(cfg, username, password)
+		if err == nil {
+			authResult = result
+			matchedProvider = p
+			log.Printf("[test-negotiate] Auth succeeded via provider %q", p.Name)
+			break
+		}
+		lastErr = err
+		log.Printf("[test-negotiate] Auth failed via provider %q: %v", p.Name, err)
+	}
+
+	if authResult == nil || matchedProvider == nil {
+		errMsg := "no LDAP providers configured"
+		if lastErr != nil {
+			errMsg = lastErr.Error()
+		}
+		log.Printf("[test-negotiate] All providers failed for user=%q: %s", username, errMsg)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, negotiateTestLoginFailedHTML)
+		return
+	}
+
+	userInfo := map[string]string{
+		"auth_method":   "LDAP Bind",
+		"principal":     username,
+		"realm":         matchedProvider.Name,
+		"username":      authResult.Username,
+		"provider_id":   matchedProvider.ProviderID,
+		"provider_name": matchedProvider.Name,
+	}
+	if authResult.DisplayName != "" {
+		userInfo["display_name"] = authResult.DisplayName
+	}
+	if authResult.Email != "" {
+		userInfo["email"] = authResult.Email
+	}
+	if authResult.Department != "" {
+		userInfo["department"] = authResult.Department
+	}
+	if authResult.Company != "" {
+		userInfo["company"] = authResult.Company
+	}
+	if authResult.JobTitle != "" {
+		userInfo["job_title"] = authResult.JobTitle
+	}
+	if len(authResult.Groups) > 0 {
+		userInfo["groups"] = strings.Join(authResult.Groups, ", ")
+	}
+
+	h.renderNegotiateSuccess(w, userInfo)
+}
+
+// isNTLMToken checks if bytes are an NTLM message (raw or SPNEGO-wrapped).
+func isNTLMToken(b []byte) bool {
+	return len(b) > 7 && string(b[:7]) == "NTLMSSP"
+}
+
+// enrichUserInfoFromLDAP looks up a username across all LDAP providers.
+func (h *Handler) enrichUserInfoFromLDAP(userInfo map[string]string, username string) {
+	providers, _ := h.store.ListLDAPProviders()
+	for _, p := range providers {
+		cfg := ldapConfigFromProvider(p)
+		result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+		if err == nil {
+			userInfo["provider_id"] = p.ProviderID
+			userInfo["provider_name"] = p.Name
+			if result.DisplayName != "" {
+				userInfo["display_name"] = result.DisplayName
+			}
+			if result.Email != "" {
+				userInfo["email"] = result.Email
+			}
+			if result.Department != "" {
+				userInfo["department"] = result.Department
+			}
+			if result.Company != "" {
+				userInfo["company"] = result.Company
+			}
+			if result.JobTitle != "" {
+				userInfo["job_title"] = result.JobTitle
+			}
+			if len(result.Groups) > 0 {
+				userInfo["groups"] = strings.Join(result.Groups, ", ")
+			}
+			break
+		}
+	}
+}
+
+// renderNegotiateSuccess renders the success page with user info.
+func (h *Handler) renderNegotiateSuccess(w http.ResponseWriter, userInfo map[string]string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, negotiateTestSuccessHTML,
+		userInfo["auth_method"],
+		mapGet(userInfo, "principal", "-"),
+		mapGet(userInfo, "realm", "-"),
+		mapGet(userInfo, "username", "-"),
+		mapGet(userInfo, "provider_name", "none"),
+		mapGet(userInfo, "provider_id", "-"),
+		mapGet(userInfo, "display_name", "-"),
+		mapGet(userInfo, "email", "-"),
+		mapGet(userInfo, "department", "-"),
+		mapGet(userInfo, "company", "-"),
+		mapGet(userInfo, "job_title", "-"),
+		mapGet(userInfo, "groups", "-"),
+	)
+}
+
+func mapGet(m map[string]string, key, fallback string) string {
+	if v, ok := m[key]; ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+const negotiateTestCSS = `:root{--bg:#FAFAF8;--card:#FFF;--text:#333F48;--muted:#A59F8A;--border:#D6D1CA;--burgundy:#8B153D;--burgundy-hover:#6E1030;--error-bg:#F8E4E4;--error-text:#8B153D;--green:#2D7A3A;--green-bg:#E8F5E9;--gold-light:#F8E08E;--gold-dark:#8F6A2A}
+@media(prefers-color-scheme:dark){:root{--bg:#1A1E22;--card:#242A30;--text:#E8E4DE;--muted:#6B6760;--border:#3A424A;--burgundy:#A02050;--burgundy-hover:#B82D60;--error-bg:rgba(139,21,61,0.2);--error-text:#D4A0A0;--green:#4CAF50;--green-bg:rgba(45,122,58,0.15)}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{width:480px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px}
+.card h1{font-size:1.5rem;margin-bottom:8px;text-align:center}
+.card p{color:var(--muted);margin-bottom:16px;text-align:center;font-size:0.9rem}
+.gold-bar{height:3px;background:linear-gradient(90deg,var(--gold-light),var(--gold-dark));border-radius:999px;margin-bottom:24px}
+.error{background:var(--error-bg);color:var(--error-text);padding:12px 16px;border-radius:8px;font-size:0.85rem;margin-bottom:16px}
+.success{background:var(--green-bg);color:var(--green);padding:16px;border-radius:8px;text-align:center;margin-bottom:24px;font-weight:600;font-size:1.1rem}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--burgundy);border-radius:50%%;animation:spin 0.8s linear infinite;margin-bottom:16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:6px}
+input[type=text],input[type=password]{width:100%%;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:14px}
+input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
+button{width:100%%;padding:10px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
+button:hover{background:var(--burgundy-hover)}
+table{width:100%%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border)}
+th{font-size:0.8rem;text-transform:uppercase;color:var(--muted);width:130px}
+td{font-size:0.9rem}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600}
+.badge-krb{background:var(--green-bg);color:var(--green)}
+.badge-ldap{background:rgba(139,21,61,0.1);color:var(--burgundy)}
+#fallback{display:none}
+`
+
+const negotiateTestWaitHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — SimpleAuth</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<div id="spnego" style="text-align:center">
+<div class="spinner"></div>
+<h1>Kerberos/SPNEGO</h1>
+<p>Attempting automatic sign-in...</p>
+</div>
+<div id="fallback">
+<h1>Sign In</h1>
+<p>Kerberos not available — enter your AD credentials</p>
+<div class="gold-bar"></div>
+<form method="POST" action="/auth/test-negotiate">
+<label>Username</label>
+<input type="text" name="username" placeholder="Enter your AD username" autofocus required>
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+</div>
+</div>
+<script>setTimeout(function(){document.getElementById('spnego').style.display='none';document.getElementById('fallback').style.display='block';},2000);</script>
+</body></html>`
+
+const negotiateTestNTLMFallbackHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — SimpleAuth</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<h1>Sign In</h1>
+<p>Kerberos unavailable (browser sent NTLM) — use credentials instead</p>
+<div class="gold-bar"></div>
+<div class="error">Your browser could not obtain a Kerberos ticket and fell back to NTLM. Check that the SPN matches the URL hostname and you are on the domain.</div>
+<form method="POST" action="/auth/test-negotiate">
+<label>Username</label>
+<input type="text" name="username" placeholder="Enter your AD username" autofocus required>
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+</div></body></html>`
+
+const negotiateTestFormErrorHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — SimpleAuth</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<h1>Sign In</h1>
+<div class="gold-bar"></div>
+<div class="error">Username and password are required.</div>
+<form method="POST" action="/auth/test-negotiate">
+<label>Username</label>
+<input type="text" name="username" placeholder="Enter your AD username" autofocus required>
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+</div></body></html>`
+
+const negotiateTestKrbFailedHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — SimpleAuth</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<h1>Sign In</h1>
+<p>Kerberos authentication failed — use credentials instead</p>
+<div class="gold-bar"></div>
+<div class="error">%s</div>
+<form method="POST" action="/auth/test-negotiate">
+<label>Username</label>
+<input type="text" name="username" placeholder="Enter your AD username" autofocus required>
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+</div></body></html>`
+
+const negotiateTestLoginFailedHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — SimpleAuth</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<h1>Sign In</h1>
+<div class="gold-bar"></div>
+<div class="error">Invalid credentials. Check your username and password.</div>
+<form method="POST" action="/auth/test-negotiate">
+<label>Username</label>
+<input type="text" name="username" placeholder="Enter your AD username" autofocus required>
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+</div></body></html>`
+
+const negotiateTestSuccessHTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Authentication Test — Success</title>
+<style>` + negotiateTestCSS + `</style></head><body>
+<div class="card">
+<div class="success">Authentication Successful</div>
+<h1>Authenticated User</h1>
+<table>
+<tr><th>Method</th><td>%s</td></tr>
+<tr><th>Principal</th><td>%s</td></tr>
+<tr><th>Realm</th><td>%s</td></tr>
+<tr><th>Username</th><td>%s</td></tr>
+<tr><th>LDAP Provider</th><td>%s <span style="color:var(--muted);font-size:0.8rem">(%s)</span></td></tr>
+<tr><th>Display Name</th><td>%s</td></tr>
+<tr><th>Email</th><td>%s</td></tr>
+<tr><th>Department</th><td>%s</td></tr>
+<tr><th>Company</th><td>%s</td></tr>
+<tr><th>Job Title</th><td>%s</td></tr>
+<tr><th>Groups</th><td>%s</td></tr>
+</table>
+</div></body></html>`

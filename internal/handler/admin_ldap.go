@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 
@@ -116,7 +115,9 @@ func (h *Handler) handleExportLDAP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		LDAPProviders []store.LDAPProvider `json:"ldap_providers"`
+		LDAPProviders   []store.LDAPProvider `json:"ldap_providers"`
+		ServiceHostname string               `json:"service_hostname"`
+		SPN             string               `json:"spn"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -124,6 +125,7 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	imported := 0
+	var lastProviderID string
 	for _, p := range req.LDAPProviders {
 		if p.ProviderID == "" {
 			continue
@@ -136,71 +138,70 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 			p.CreatedAt = existing.CreatedAt
 			h.store.UpdateLDAPProvider(&p)
 		}
+		lastProviderID = p.ProviderID
 		imported++
 	}
 
-	jsonResp(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"status":   "ok",
 		"imported": imported,
-	}, http.StatusOK)
+	}
+
+	// Auto-trigger Kerberos setup if the config includes SPN/service_hostname
+	if req.ServiceHostname != "" && lastProviderID != "" {
+		krbResult, krbErr := h.autoSetupKerberos(lastProviderID, req.ServiceHostname, r)
+		if krbErr != nil {
+			resp["kerberos_error"] = krbErr.Error()
+		} else {
+			resp["kerberos"] = krbResult
+		}
+	}
+
+	jsonResp(w, resp, http.StatusOK)
 }
 
 func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Domain       string `json:"domain"`
-		BindDN       string `json:"bind_dn"`
-		BindPassword string `json:"bind_password"`
-		ProviderID   string `json:"provider_id"`
-		Save         bool   `json:"save"`
+		Server   string `json:"server"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Domain == "" || req.BindDN == "" || req.BindPassword == "" {
-		jsonError(w, "domain, bind_dn, and bind_password required", http.StatusBadRequest)
+	if req.Server == "" || req.Username == "" || req.Password == "" {
+		jsonError(w, "server, username, and password required", http.StatusBadRequest)
 		return
 	}
 
-	if req.ProviderID == "" {
-		req.ProviderID = strings.ReplaceAll(req.Domain, ".", "-")
+	// Normalize server URL
+	serverURL := req.Server
+	if !strings.Contains(serverURL, "://") {
+		serverURL = "ldap://" + serverURL
 	}
-
-	// Step 1: DNS SRV lookup
-	_, addrs, err := net.LookupSRV("ldap", "tcp", req.Domain)
-	if err != nil || len(addrs) == 0 {
-		jsonError(w, fmt.Sprintf("DNS SRV lookup failed for _ldap._tcp.%s: %v", req.Domain, err), http.StatusBadRequest)
-		return
-	}
-
-	var discoveredDCs []string
-	for _, a := range addrs {
-		host := strings.TrimSuffix(a.Target, ".")
-		discoveredDCs = append(discoveredDCs, fmt.Sprintf("%s:%d", host, a.Port))
-	}
-
-	// Step 2: Connect to the first reachable DC
-	var conn *ldaplib.Conn
-	var connURL string
-	for _, dc := range discoveredDCs {
-		url := fmt.Sprintf("ldap://%s", dc)
-		c, err := ldaplib.DialURL(url)
-		if err == nil {
-			conn = c
-			connURL = url
-			break
+	// Add default port if missing
+	afterScheme := serverURL[strings.Index(serverURL, "://")+3:]
+	if !strings.Contains(afterScheme, ":") {
+		if strings.HasPrefix(serverURL, "ldaps://") {
+			serverURL += ":636"
+		} else {
+			serverURL += ":389"
 		}
 	}
-	if conn == nil {
-		jsonError(w, "could not connect to any discovered DC", http.StatusBadGateway)
+
+	// Step 1: Connect
+	conn, err := ldaplib.DialURL(serverURL)
+	if err != nil {
+		jsonError(w, fmt.Sprintf("failed to connect to %s: %v", serverURL, err), http.StatusBadGateway)
 		return
 	}
 	defer conn.Close()
 
-	// Step 3: Query RootDSE
+	// Step 2: Query RootDSE (anonymous) to get base DN and domain info
 	sr, err := conn.Search(ldaplib.NewSearchRequest(
 		"", ldaplib.ScopeBaseObject, ldaplib.NeverDerefAliases, 0, 10, false,
-		"(objectClass=*)", []string{"defaultNamingContext", "rootDomainNamingContext"}, nil,
+		"(objectClass=*)", []string{"defaultNamingContext", "rootDomainNamingContext", "dnsHostName"}, nil,
 	))
 	if err != nil {
 		jsonError(w, fmt.Sprintf("RootDSE query failed: %v", err), http.StatusBadGateway)
@@ -211,55 +212,111 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	if len(sr.Entries) > 0 {
 		baseDN = sr.Entries[0].GetAttributeValue("defaultNamingContext")
 	}
-	if baseDN == "" {
-		// Derive from domain
-		parts := strings.Split(req.Domain, ".")
-		for i, p := range parts {
-			if i > 0 {
-				baseDN += ","
+
+	// Derive domain from baseDN (DC=corp,DC=local -> corp.local)
+	domain := ""
+	if baseDN != "" {
+		var domainParts []string
+		for _, part := range strings.Split(baseDN, ",") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(strings.ToUpper(part), "DC=") {
+				domainParts = append(domainParts, part[3:])
 			}
-			baseDN += "DC=" + p
+		}
+		domain = strings.Join(domainParts, ".")
+	}
+
+	// Build bind DN from username - support multiple formats
+	bindDN := req.Username
+	if !strings.Contains(bindDN, "=") && !strings.Contains(bindDN, "@") && !strings.Contains(bindDN, "\\") {
+		// Plain username like "admin" - try UPN format first if we know the domain
+		if domain != "" {
+			bindDN = req.Username + "@" + domain
 		}
 	}
 
-	// Step 4: Test bind
-	if err := conn.Bind(req.BindDN, req.BindPassword); err != nil {
-		jsonError(w, fmt.Sprintf("bind test failed: %v", err), http.StatusBadRequest)
+	// Step 3: Bind with credentials
+	if err := conn.Bind(bindDN, req.Password); err != nil {
+		jsonError(w, fmt.Sprintf("authentication failed: %v", err), http.StatusUnauthorized)
 		return
 	}
 
+	// If we still don't have baseDN, try RootDSE again after bind
+	if baseDN == "" {
+		sr2, err := conn.Search(ldaplib.NewSearchRequest(
+			"", ldaplib.ScopeBaseObject, ldaplib.NeverDerefAliases, 0, 10, false,
+			"(objectClass=*)", []string{"defaultNamingContext"}, nil,
+		))
+		if err == nil && len(sr2.Entries) > 0 {
+			baseDN = sr2.Entries[0].GetAttributeValue("defaultNamingContext")
+		}
+	}
+
+	if baseDN == "" {
+		jsonError(w, "connected and authenticated, but could not determine base DN — use manual setup", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// Detect user filter: check if this is Active Directory or standard LDAP
+	userFilter := "(uid={{username}})"
+	// Try to detect AD by searching for sAMAccountName attribute
+	testSearch, err := conn.Search(ldaplib.NewSearchRequest(
+		baseDN, ldaplib.ScopeSingleLevel, ldaplib.NeverDerefAliases, 1, 5, false,
+		"(objectClass=organizationalUnit)", []string{"objectClass"}, nil,
+	))
+	if err == nil && len(testSearch.Entries) > 0 {
+		// Likely AD — check for person with sAMAccountName
+		adTest, _ := conn.Search(ldaplib.NewSearchRequest(
+			baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
+			"(&(objectClass=person)(sAMAccountName=*))", []string{"sAMAccountName"}, nil,
+		))
+		if adTest != nil && len(adTest.Entries) > 0 {
+			userFilter = "(sAMAccountName={{username}})"
+		}
+	}
+
+	// Generate provider ID from domain or server
+	providerID := "ldap"
+	if domain != "" {
+		providerID = strings.ReplaceAll(domain, ".", "-")
+	} else {
+		// Use server hostname
+		host := afterScheme
+		if idx := strings.Index(host, ":"); idx >= 0 {
+			host = host[:idx]
+		}
+		providerID = strings.ReplaceAll(host, ".", "-")
+	}
+
+	providerName := serverURL + " (auto-discovered)"
+	if domain != "" {
+		providerName = domain + " (auto-discovered)"
+	}
+
 	provider := &store.LDAPProvider{
-		ProviderID:      req.ProviderID,
-		Name:            req.Domain + " (auto-discovered)",
-		URL:             connURL,
+		ProviderID:      providerID,
+		Name:            providerName,
+		URL:             serverURL,
 		BaseDN:          baseDN,
-		BindDN:          req.BindDN,
-		BindPassword:    req.BindPassword,
-		UserFilter:      "(sAMAccountName={{username}})",
-		UseTLS:          false,
+		BindDN:          bindDN,
+		BindPassword:    req.Password,
+		UserFilter:      userFilter,
+		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
 		DisplayNameAttr: "displayName",
 		EmailAttr:       "mail",
+		DepartmentAttr:  "department",
+		CompanyAttr:     "company",
+		JobTitleAttr:    "title",
 		GroupsAttr:      "memberOf",
 	}
 
-	if req.Save {
-		if err := h.store.CreateLDAPProvider(provider); err != nil {
-			jsonError(w, "auto-discover succeeded but save failed", http.StatusInternalServerError)
-			return
-		}
-		h.audit("ldap_provider_added", "admin", getClientIP(r), map[string]interface{}{
-			"provider_id": provider.ProviderID, "auto_discovered": true,
-		})
+	if err := h.store.CreateLDAPProvider(provider); err != nil {
+		jsonError(w, "auto-discover succeeded but save failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+	h.audit("ldap_provider_added", "admin", getClientIP(r), map[string]interface{}{
+		"provider_id": provider.ProviderID, "auto_discovered": true,
+	})
 
-	type response struct {
-		*store.LDAPProvider
-		DiscoveredDCs []string `json:"discovered_dcs"`
-		Saved         bool     `json:"saved"`
-	}
-	jsonResp(w, response{
-		LDAPProvider:  provider,
-		DiscoveredDCs: discoveredDCs,
-		Saved:         req.Save,
-	}, http.StatusOK)
+	jsonResp(w, provider, http.StatusOK)
 }
