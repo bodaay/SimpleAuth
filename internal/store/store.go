@@ -1,75 +1,64 @@
 package store
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	_ "modernc.org/sqlite"
+	bolt "go.etcd.io/bbolt"
+	"github.com/google/uuid"
+)
+
+var (
+	bucketConfig          = []byte("config")
+	bucketLDAPProviders   = []byte("ldap_providers")
+	bucketApps            = []byte("apps")
+	bucketUsers           = []byte("users")
+	bucketIdentityMappings = []byte("identity_mappings")
+	bucketUserRoles       = []byte("user_roles")
+	bucketUserPermissions = []byte("user_permissions")
+	bucketRefreshTokens   = []byte("refresh_tokens")
+	bucketAuditLog        = []byte("audit_log")
+	bucketIdxMappingsByGUID = []byte("idx_mappings_by_guid")
+	bucketIdxAppsByAPIKey   = []byte("idx_apps_by_api_key")
 )
 
 type Store struct {
-	db *sql.DB
+	db *bolt.DB
 }
 
-func New(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0750); err != nil {
-		return nil, err
-	}
+// --- Data Types ---
 
-	dbPath := filepath.Join(dataDir, "auth.db")
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	s := &Store{db: db}
-	if err := s.migrate(); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return s, nil
+type User struct {
+	GUID         string    `json:"guid"`
+	PasswordHash string    `json:"password_hash,omitempty"`
+	DisplayName  string    `json:"display_name"`
+	Email        string    `json:"email"`
+	Disabled     bool      `json:"disabled"`
+	MergedInto   string    `json:"merged_into,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
-func (s *Store) Close() error {
-	return s.db.Close()
+type App struct {
+	AppID            string                       `json:"app_id"`
+	Name             string                       `json:"name"`
+	Description      string                       `json:"description"`
+	APIKey           string                       `json:"api_key"`
+	RedirectURIs     []string                     `json:"redirect_uris"`
+	ProviderMappings map[string]ProviderMapping   `json:"provider_mappings,omitempty"`
+	CreatedAt        time.Time                    `json:"created_at"`
 }
 
-func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS config (
-			key   TEXT PRIMARY KEY,
-			value TEXT NOT NULL DEFAULT ''
-		);
-
-		CREATE TABLE IF NOT EXISTS users (
-			username      TEXT PRIMARY KEY,
-			password_hash TEXT NOT NULL DEFAULT '',
-			display_name  TEXT NOT NULL DEFAULT '',
-			email         TEXT NOT NULL DEFAULT '',
-			disabled      BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS user_roles (
-			username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-			role     TEXT NOT NULL,
-			PRIMARY KEY (username, role)
-		);
-
-		CREATE TABLE IF NOT EXISTS user_permissions (
-			username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-			permission TEXT NOT NULL,
-			PRIMARY KEY (username, permission)
-		);
-	`)
-	return err
+type ProviderMapping struct {
+	Field string `json:"field"`
 }
 
-// --- Config (LDAP settings) ---
-
-type LDAPConfig struct {
+type LDAPProvider struct {
+	ProviderID      string `json:"provider_id"`
+	Name            string `json:"name"`
 	URL             string `json:"url"`
 	BaseDN          string `json:"base_dn"`
 	BindDN          string `json:"bind_dn"`
@@ -80,290 +69,827 @@ type LDAPConfig struct {
 	DisplayNameAttr string `json:"display_name_attr"`
 	EmailAttr       string `json:"email_attr"`
 	GroupsAttr      string `json:"groups_attr"`
+	Priority        int    `json:"priority"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
-var ldapConfigKeys = []string{
-	"ldap_url", "ldap_base_dn", "ldap_bind_dn", "ldap_bind_password",
-	"ldap_user_filter", "ldap_use_tls", "ldap_skip_tls_verify",
-	"ldap_display_name_attr", "ldap_email_attr", "ldap_groups_attr",
+type IdentityMapping struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
 }
 
-func (s *Store) GetLDAP() *LDAPConfig {
-	cfg := &LDAPConfig{}
-	var val string
+type RefreshToken struct {
+	TokenID   string    `json:"token_id"`
+	FamilyID  string    `json:"family_id"`
+	UserGUID  string    `json:"user_guid"`
+	AppID     string    `json:"app_id"`
+	Used      bool      `json:"used"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
-	for _, key := range ldapConfigKeys {
-		err := s.db.QueryRow("SELECT value FROM config WHERE key = ?", key).Scan(&val)
-		if err != nil {
-			continue
-		}
-		switch key {
-		case "ldap_url":
-			cfg.URL = val
-		case "ldap_base_dn":
-			cfg.BaseDN = val
-		case "ldap_bind_dn":
-			cfg.BindDN = val
-		case "ldap_bind_password":
-			cfg.BindPassword = val
-		case "ldap_user_filter":
-			cfg.UserFilter = val
-		case "ldap_use_tls":
-			cfg.UseTLS = val == "true"
-		case "ldap_skip_tls_verify":
-			cfg.SkipTLSVerify = val == "true"
-		case "ldap_display_name_attr":
-			cfg.DisplayNameAttr = val
-		case "ldap_email_attr":
-			cfg.EmailAttr = val
-		case "ldap_groups_attr":
-			cfg.GroupsAttr = val
-		}
+type AuditEntry struct {
+	ID        string                 `json:"id"`
+	Timestamp time.Time              `json:"timestamp"`
+	Event     string                 `json:"event"`
+	Actor     string                 `json:"actor"`
+	IP        string                 `json:"ip"`
+	Data      map[string]interface{} `json:"data"`
+}
+
+// --- Store Init ---
+
+func Open(dataDir string) (*Store, error) {
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-
-	if cfg.URL == "" {
-		return nil
-	}
-	return cfg
-}
-
-func (s *Store) SetLDAP(cfg *LDAPConfig) error {
-	tx, err := s.db.Begin()
+	dbPath := filepath.Join(dataDir, "auth.db")
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open bolt db: %w", err)
 	}
-	defer tx.Rollback()
-
-	set := func(key, value string) error {
-		_, err := tx.Exec(
-			"INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-			key, value, value,
-		)
-		return err
+	s := &Store{db: db}
+	if err := s.init(); err != nil {
+		db.Close()
+		return nil, err
 	}
-
-	boolStr := func(b bool) string {
-		if b {
-			return "true"
-		}
-		return "false"
-	}
-
-	if err := set("ldap_url", cfg.URL); err != nil {
-		return err
-	}
-	if err := set("ldap_base_dn", cfg.BaseDN); err != nil {
-		return err
-	}
-	if err := set("ldap_bind_dn", cfg.BindDN); err != nil {
-		return err
-	}
-	if err := set("ldap_bind_password", cfg.BindPassword); err != nil {
-		return err
-	}
-	if err := set("ldap_user_filter", cfg.UserFilter); err != nil {
-		return err
-	}
-	if err := set("ldap_use_tls", boolStr(cfg.UseTLS)); err != nil {
-		return err
-	}
-	if err := set("ldap_skip_tls_verify", boolStr(cfg.SkipTLSVerify)); err != nil {
-		return err
-	}
-	if err := set("ldap_display_name_attr", cfg.DisplayNameAttr); err != nil {
-		return err
-	}
-	if err := set("ldap_email_attr", cfg.EmailAttr); err != nil {
-		return err
-	}
-	if err := set("ldap_groups_attr", cfg.GroupsAttr); err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return s, nil
 }
 
-func (s *Store) DeleteLDAP() error {
-	_, err := s.db.Exec("DELETE FROM config WHERE key LIKE 'ldap_%'")
-	return err
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func (s *Store) init() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		for _, b := range [][]byte{
+			bucketConfig, bucketLDAPProviders, bucketApps, bucketUsers,
+			bucketIdentityMappings, bucketUserRoles, bucketUserPermissions,
+			bucketRefreshTokens, bucketAuditLog,
+			bucketIdxMappingsByGUID, bucketIdxAppsByAPIKey,
+		} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // --- Users ---
 
-type User struct {
-	Username     string   `json:"username"`
-	PasswordHash string   `json:"-"`
-	DisplayName  string   `json:"display_name"`
-	Email        string   `json:"email"`
-	Disabled     bool     `json:"disabled"`
-	Roles        []string `json:"roles"`
-	Permissions  []string `json:"permissions"`
+func (s *Store) CreateUser(u *User) error {
+	if u.GUID == "" {
+		u.GUID = uuid.New().String()
+	}
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = time.Now().UTC()
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(u)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUsers).Put([]byte(u.GUID), data)
+	})
 }
 
-func (s *Store) GetUser(username string) (*User, error) {
-	u := &User{}
-	err := s.db.QueryRow(
-		"SELECT username, password_hash, display_name, email, disabled FROM users WHERE username = ?",
-		username,
-	).Scan(&u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Disabled)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+func (s *Store) GetUser(guid string) (*User, error) {
+	var u User
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketUsers).Get([]byte(guid))
+		if data == nil {
+			return fmt.Errorf("user not found: %s", guid)
+		}
+		return json.Unmarshal(data, &u)
+	})
 	if err != nil {
 		return nil, err
 	}
+	return &u, nil
+}
 
-	u.Roles, _ = s.getUserStrings("user_roles", "role", username)
-	u.Permissions, _ = s.getUserStrings("user_permissions", "permission", username)
+// ResolveUser follows merged_into chains to find the active user.
+func (s *Store) ResolveUser(guid string) (*User, error) {
+	u, err := s.GetUser(guid)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{guid: true}
+	for u.MergedInto != "" {
+		if seen[u.MergedInto] {
+			return nil, fmt.Errorf("merge cycle detected for %s", guid)
+		}
+		seen[u.MergedInto] = true
+		u, err = s.GetUser(u.MergedInto)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return u, nil
 }
 
-func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query("SELECT username, display_name, email, disabled FROM users ORDER BY username")
+func (s *Store) UpdateUser(u *User) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		existing := tx.Bucket(bucketUsers).Get([]byte(u.GUID))
+		if existing == nil {
+			return fmt.Errorf("user not found: %s", u.GUID)
+		}
+		data, err := json.Marshal(u)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUsers).Put([]byte(u.GUID), data)
+	})
+}
+
+func (s *Store) DeleteUser(guid string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUsers).Delete([]byte(guid))
+	})
+}
+
+func (s *Store) ListUsers() ([]*User, error) {
+	var users []*User
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUsers).ForEach(func(k, v []byte) error {
+			var u User
+			if err := json.Unmarshal(v, &u); err != nil {
+				return err
+			}
+			users = append(users, &u)
+			return nil
+		})
+	})
+	return users, err
+}
+
+// --- Apps ---
+
+func (s *Store) CreateApp(a *App) error {
+	if a.AppID == "" {
+		a.AppID = "app-" + uuid.New().String()[:8]
+	}
+	if a.APIKey == "" {
+		a.APIKey = "sk-" + uuid.New().String()
+	}
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(a)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketApps).Put([]byte(a.AppID), data); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketIdxAppsByAPIKey).Put([]byte(a.APIKey), []byte(a.AppID))
+	})
+}
+
+func (s *Store) GetApp(appID string) (*App, error) {
+	var a App
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketApps).Get([]byte(appID))
+		if data == nil {
+			return fmt.Errorf("app not found: %s", appID)
+		}
+		return json.Unmarshal(data, &a)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return &a, nil
+}
 
-	var users []User
-	for rows.Next() {
+func (s *Store) GetAppByAPIKey(apiKey string) (*App, error) {
+	var appID string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketIdxAppsByAPIKey).Get([]byte(apiKey))
+		if v == nil {
+			return fmt.Errorf("invalid api key")
+		}
+		appID = string(v)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.GetApp(appID)
+}
+
+func (s *Store) UpdateApp(a *App) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		existing := tx.Bucket(bucketApps).Get([]byte(a.AppID))
+		if existing == nil {
+			return fmt.Errorf("app not found: %s", a.AppID)
+		}
+		// Remove old API key index
+		var old App
+		if err := json.Unmarshal(existing, &old); err == nil && old.APIKey != a.APIKey {
+			tx.Bucket(bucketIdxAppsByAPIKey).Delete([]byte(old.APIKey))
+		}
+		data, err := json.Marshal(a)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketApps).Put([]byte(a.AppID), data); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketIdxAppsByAPIKey).Put([]byte(a.APIKey), []byte(a.AppID))
+	})
+}
+
+func (s *Store) DeleteApp(appID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketApps).Get([]byte(appID))
+		if data != nil {
+			var a App
+			if err := json.Unmarshal(data, &a); err == nil {
+				tx.Bucket(bucketIdxAppsByAPIKey).Delete([]byte(a.APIKey))
+			}
+		}
+		return tx.Bucket(bucketApps).Delete([]byte(appID))
+	})
+}
+
+func (s *Store) ListApps() ([]*App, error) {
+	var apps []*App
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketApps).ForEach(func(k, v []byte) error {
+			var a App
+			if err := json.Unmarshal(v, &a); err != nil {
+				return err
+			}
+			apps = append(apps, &a)
+			return nil
+		})
+	})
+	return apps, err
+}
+
+func (s *Store) RotateAppKey(appID string) (string, error) {
+	newKey := "sk-" + uuid.New().String()
+	app, err := s.GetApp(appID)
+	if err != nil {
+		return "", err
+	}
+	app.APIKey = newKey
+	if err := s.UpdateApp(app); err != nil {
+		return "", err
+	}
+	return newKey, nil
+}
+
+// --- LDAP Providers ---
+
+func (s *Store) CreateLDAPProvider(p *LDAPProvider) error {
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now().UTC()
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(p)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketLDAPProviders).Put([]byte(p.ProviderID), data)
+	})
+}
+
+func (s *Store) GetLDAPProvider(providerID string) (*LDAPProvider, error) {
+	var p LDAPProvider
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketLDAPProviders).Get([]byte(providerID))
+		if data == nil {
+			return fmt.Errorf("ldap provider not found: %s", providerID)
+		}
+		return json.Unmarshal(data, &p)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (s *Store) UpdateLDAPProvider(p *LDAPProvider) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(p)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketLDAPProviders).Put([]byte(p.ProviderID), data)
+	})
+}
+
+func (s *Store) DeleteLDAPProvider(providerID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLDAPProviders).Delete([]byte(providerID))
+	})
+}
+
+func (s *Store) ListLDAPProviders() ([]*LDAPProvider, error) {
+	var providers []*LDAPProvider
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLDAPProviders).ForEach(func(k, v []byte) error {
+			var p LDAPProvider
+			if err := json.Unmarshal(v, &p); err != nil {
+				return err
+			}
+			providers = append(providers, &p)
+			return nil
+		})
+	})
+	return providers, err
+}
+
+// --- Identity Mappings ---
+
+func mappingKey(provider, externalID string) []byte {
+	return []byte(provider + ":" + externalID)
+}
+
+func (s *Store) SetIdentityMapping(provider, externalID, userGUID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		key := mappingKey(provider, externalID)
+		if err := tx.Bucket(bucketIdentityMappings).Put(key, []byte(userGUID)); err != nil {
+			return err
+		}
+		// Update reverse index
+		return s.addMappingToIndex(tx, userGUID, IdentityMapping{Provider: provider, ExternalID: externalID})
+	})
+}
+
+func (s *Store) ResolveMapping(provider, externalID string) (string, error) {
+	var guid string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketIdentityMappings).Get(mappingKey(provider, externalID))
+		if v == nil {
+			return fmt.Errorf("mapping not found: %s:%s", provider, externalID)
+		}
+		guid = string(v)
+		return nil
+	})
+	return guid, err
+}
+
+func (s *Store) DeleteIdentityMapping(provider, externalID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		key := mappingKey(provider, externalID)
+		// Find the GUID first for reverse index cleanup
+		guid := tx.Bucket(bucketIdentityMappings).Get(key)
+		if guid == nil {
+			return nil
+		}
+		if err := tx.Bucket(bucketIdentityMappings).Delete(key); err != nil {
+			return err
+		}
+		return s.removeMappingFromIndex(tx, string(guid), IdentityMapping{Provider: provider, ExternalID: externalID})
+	})
+}
+
+func (s *Store) GetMappingsForUser(userGUID string) ([]IdentityMapping, error) {
+	var mappings []IdentityMapping
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(userGUID))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &mappings)
+	})
+	return mappings, err
+}
+
+func (s *Store) addMappingToIndex(tx *bolt.Tx, userGUID string, m IdentityMapping) error {
+	var mappings []IdentityMapping
+	data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(userGUID))
+	if data != nil {
+		json.Unmarshal(data, &mappings)
+	}
+	// Avoid duplicates
+	for _, existing := range mappings {
+		if existing.Provider == m.Provider && existing.ExternalID == m.ExternalID {
+			return nil
+		}
+	}
+	mappings = append(mappings, m)
+	newData, err := json.Marshal(mappings)
+	if err != nil {
+		return err
+	}
+	return tx.Bucket(bucketIdxMappingsByGUID).Put([]byte(userGUID), newData)
+}
+
+func (s *Store) removeMappingFromIndex(tx *bolt.Tx, userGUID string, m IdentityMapping) error {
+	var mappings []IdentityMapping
+	data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(userGUID))
+	if data == nil {
+		return nil
+	}
+	json.Unmarshal(data, &mappings)
+	var filtered []IdentityMapping
+	for _, existing := range mappings {
+		if existing.Provider == m.Provider && existing.ExternalID == m.ExternalID {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	if len(filtered) == 0 {
+		return tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(userGUID))
+	}
+	newData, err := json.Marshal(filtered)
+	if err != nil {
+		return err
+	}
+	return tx.Bucket(bucketIdxMappingsByGUID).Put([]byte(userGUID), newData)
+}
+
+// --- Roles & Permissions ---
+
+func roleKey(guid, appID string) []byte {
+	return []byte(guid + ":" + appID)
+}
+
+func (s *Store) SetUserRoles(guid, appID string, roles []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(roles)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUserRoles).Put(roleKey(guid, appID), data)
+	})
+}
+
+func (s *Store) GetUserRoles(guid, appID string) ([]string, error) {
+	var roles []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketUserRoles).Get(roleKey(guid, appID))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &roles)
+	})
+	return roles, err
+}
+
+func (s *Store) SetUserPermissions(guid, appID string, perms []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(perms)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUserPermissions).Put(roleKey(guid, appID), data)
+	})
+}
+
+func (s *Store) GetUserPermissions(guid, appID string) ([]string, error) {
+	var perms []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketUserPermissions).Get(roleKey(guid, appID))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &perms)
+	})
+	return perms, err
+}
+
+// GetUsersWithRolesInApp lists all users that have roles in a given app.
+func (s *Store) GetUsersWithRolesInApp(appID string) ([]string, error) {
+	var guids []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketUserRoles).Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			key := string(k)
+			if idx := strings.LastIndex(key, ":"); idx > 0 {
+				if key[idx+1:] == appID {
+					guids = append(guids, key[:idx])
+				}
+			}
+		}
+		return nil
+	})
+	return guids, err
+}
+
+// GetDefaultRoles returns default roles for new users in an app.
+func (s *Store) GetDefaultRoles(appID string) ([]string, error) {
+	var roles []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketConfig).Get([]byte("app:" + appID + ":default_roles"))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &roles)
+	})
+	return roles, err
+}
+
+func (s *Store) SetDefaultRoles(appID string, roles []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(roles)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketConfig).Put([]byte("app:"+appID+":default_roles"), data)
+	})
+}
+
+// --- Refresh Tokens ---
+
+func (s *Store) SaveRefreshToken(rt *RefreshToken) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(rt)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketRefreshTokens).Put([]byte(rt.TokenID), data)
+	})
+}
+
+func (s *Store) GetRefreshToken(tokenID string) (*RefreshToken, error) {
+	var rt RefreshToken
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketRefreshTokens).Get([]byte(tokenID))
+		if data == nil {
+			return fmt.Errorf("refresh token not found")
+		}
+		return json.Unmarshal(data, &rt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rt, nil
+}
+
+func (s *Store) MarkRefreshTokenUsed(tokenID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketRefreshTokens).Get([]byte(tokenID))
+		if data == nil {
+			return fmt.Errorf("refresh token not found")
+		}
+		var rt RefreshToken
+		if err := json.Unmarshal(data, &rt); err != nil {
+			return err
+		}
+		rt.Used = true
+		newData, err := json.Marshal(&rt)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketRefreshTokens).Put([]byte(tokenID), newData)
+	})
+}
+
+// RevokeTokenFamily deletes all refresh tokens belonging to a family.
+func (s *Store) RevokeTokenFamily(familyID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRefreshTokens)
+		var toDelete [][]byte
+		b.ForEach(func(k, v []byte) error {
+			var rt RefreshToken
+			if err := json.Unmarshal(v, &rt); err == nil && rt.FamilyID == familyID {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// --- Audit Log ---
+
+func (s *Store) WriteAuditLog(entry *AuditEntry) error {
+	if entry.ID == "" {
+		entry.ID = uuid.New().String()
+	}
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now().UTC()
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		key := []byte(entry.Timestamp.Format(time.RFC3339Nano) + ":" + entry.ID)
+		return tx.Bucket(bucketAuditLog).Put(key, data)
+	})
+}
+
+type AuditQuery struct {
+	Event  string
+	UserID string
+	From   time.Time
+	To     time.Time
+	Limit  int
+	Offset int
+}
+
+func (s *Store) QueryAuditLog(q AuditQuery) ([]*AuditEntry, error) {
+	if q.Limit <= 0 {
+		q.Limit = 100
+	}
+	var entries []*AuditEntry
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketAuditLog).Cursor()
+		skipped := 0
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			var entry AuditEntry
+			if err := json.Unmarshal(v, &entry); err != nil {
+				continue
+			}
+			if !q.From.IsZero() && entry.Timestamp.Before(q.From) {
+				break
+			}
+			if !q.To.IsZero() && entry.Timestamp.After(q.To) {
+				continue
+			}
+			if q.Event != "" && entry.Event != q.Event {
+				continue
+			}
+			if q.UserID != "" && entry.Actor != q.UserID {
+				continue
+			}
+			if skipped < q.Offset {
+				skipped++
+				continue
+			}
+			entries = append(entries, &entry)
+			if len(entries) >= q.Limit {
+				break
+			}
+		}
+		return nil
+	})
+	return entries, err
+}
+
+func (s *Store) PruneAuditLog(retention time.Duration) error {
+	cutoff := time.Now().UTC().Add(-retention)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketAuditLog)
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var entry AuditEntry
+			if err := json.Unmarshal(v, &entry); err != nil {
+				continue
+			}
+			if entry.Timestamp.Before(cutoff) {
+				b.Delete(k)
+			} else {
+				break
+			}
+		}
+		return nil
+	})
+}
+
+// --- User Merge ---
+
+func (s *Store) MergeUsers(sourceGUIDs []string, displayName, email string) (*User, error) {
+	newUser := &User{
+		GUID:        uuid.New().String(),
+		DisplayName: displayName,
+		Email:       email,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		// Create the new user
+		userData, err := json.Marshal(newUser)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketUsers).Put([]byte(newUser.GUID), userData); err != nil {
+			return err
+		}
+
+		allRoles := map[string]map[string]bool{}   // appID -> set of roles
+		allPerms := map[string]map[string]bool{}    // appID -> set of perms
+
+		for _, srcGUID := range sourceGUIDs {
+			// Get source user
+			srcData := tx.Bucket(bucketUsers).Get([]byte(srcGUID))
+			if srcData == nil {
+				return fmt.Errorf("source user not found: %s", srcGUID)
+			}
+
+			// Move identity mappings
+			mappingsData := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(srcGUID))
+			if mappingsData != nil {
+				var mappings []IdentityMapping
+				json.Unmarshal(mappingsData, &mappings)
+				for _, m := range mappings {
+					key := mappingKey(m.Provider, m.ExternalID)
+					tx.Bucket(bucketIdentityMappings).Put(key, []byte(newUser.GUID))
+					s.addMappingToIndex(tx, newUser.GUID, m)
+				}
+				tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(srcGUID))
+			}
+
+			// Collect roles and permissions across all apps
+			rc := tx.Bucket(bucketUserRoles).Cursor()
+			prefix := srcGUID + ":"
+			for k, v := rc.Seek([]byte(prefix)); k != nil && strings.HasPrefix(string(k), prefix); k, v = rc.Next() {
+				appID := string(k)[len(prefix):]
+				if allRoles[appID] == nil {
+					allRoles[appID] = map[string]bool{}
+				}
+				var roles []string
+				json.Unmarshal(v, &roles)
+				for _, r := range roles {
+					allRoles[appID][r] = true
+				}
+				tx.Bucket(bucketUserRoles).Delete(k)
+			}
+
+			pc := tx.Bucket(bucketUserPermissions).Cursor()
+			for k, v := pc.Seek([]byte(prefix)); k != nil && strings.HasPrefix(string(k), prefix); k, v = pc.Next() {
+				appID := string(k)[len(prefix):]
+				if allPerms[appID] == nil {
+					allPerms[appID] = map[string]bool{}
+				}
+				var perms []string
+				json.Unmarshal(v, &perms)
+				for _, p := range perms {
+					allPerms[appID][p] = true
+				}
+				tx.Bucket(bucketUserPermissions).Delete(k)
+			}
+
+			// Mark source as merged
+			var srcUser User
+			json.Unmarshal(srcData, &srcUser)
+			srcUser.MergedInto = newUser.GUID
+			mergedData, _ := json.Marshal(&srcUser)
+			tx.Bucket(bucketUsers).Put([]byte(srcGUID), mergedData)
+		}
+
+		// Write merged roles/permissions
+		for appID, roleSet := range allRoles {
+			var roles []string
+			for r := range roleSet {
+				roles = append(roles, r)
+			}
+			data, _ := json.Marshal(roles)
+			tx.Bucket(bucketUserRoles).Put(roleKey(newUser.GUID, appID), data)
+		}
+		for appID, permSet := range allPerms {
+			var perms []string
+			for p := range permSet {
+				perms = append(perms, p)
+			}
+			data, _ := json.Marshal(perms)
+			tx.Bucket(bucketUserPermissions).Put(roleKey(newUser.GUID, appID), data)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return newUser, nil
+}
+
+func (s *Store) UnmergeUser(guid string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketUsers).Get([]byte(guid))
+		if data == nil {
+			return fmt.Errorf("user not found: %s", guid)
+		}
 		var u User
-		if err := rows.Scan(&u.Username, &u.DisplayName, &u.Email, &u.Disabled); err != nil {
-			return nil, err
+		if err := json.Unmarshal(data, &u); err != nil {
+			return err
 		}
-		u.Roles, _ = s.getUserStrings("user_roles", "role", u.Username)
-		u.Permissions, _ = s.getUserStrings("user_permissions", "permission", u.Username)
-		users = append(users, u)
-	}
-	return users, rows.Err()
+		if u.MergedInto == "" {
+			return fmt.Errorf("user %s is not merged", guid)
+		}
+		u.MergedInto = ""
+		newData, err := json.Marshal(&u)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUsers).Put([]byte(guid), newData)
+	})
 }
 
-func (s *Store) CreateUser(username, passwordHash, displayName, email string) error {
-	_, err := s.db.Exec(
-		"INSERT INTO users (username, password_hash, display_name, email) VALUES (?, ?, ?, ?)",
-		username, passwordHash, displayName, email,
-	)
-	return err
+// --- Backup ---
+
+func (s *Store) Backup(path string) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		return tx.CopyFile(path, 0600)
+	})
 }
 
-func (s *Store) UpdateUser(username, displayName, email string) error {
-	_, err := s.db.Exec(
-		"UPDATE users SET display_name = ?, email = ? WHERE username = ?",
-		displayName, email, username,
-	)
-	return err
-}
-
-func (s *Store) SetPassword(username, passwordHash string) error {
-	_, err := s.db.Exec("UPDATE users SET password_hash = ? WHERE username = ?", passwordHash, username)
-	return err
-}
-
-func (s *Store) SetDisabled(username string, disabled bool) error {
-	_, err := s.db.Exec("UPDATE users SET disabled = ? WHERE username = ?", disabled, username)
-	return err
-}
-
-func (s *Store) DeleteUser(username string) error {
-	_, err := s.db.Exec("DELETE FROM users WHERE username = ?", username)
-	return err
-}
-
-// EnsureUser creates a user if they don't exist (used after LDAP auth).
-func (s *Store) EnsureUser(username, displayName, email string) error {
-	_, err := s.db.Exec(
-		`INSERT INTO users (username, display_name, email) VALUES (?, ?, ?)
-		 ON CONFLICT(username) DO UPDATE SET
-		   display_name = CASE WHEN excluded.display_name != '' THEN excluded.display_name ELSE users.display_name END,
-		   email = CASE WHEN excluded.email != '' THEN excluded.email ELSE users.email END`,
-		username, displayName, email,
-	)
-	return err
-}
-
-// --- Roles ---
-
-func (s *Store) SetRoles(username string, roles []string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
+func (s *Store) BackupWriter(w *os.File) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		_, err := tx.WriteTo(w)
 		return err
-	}
-	defer tx.Rollback()
-
-	tx.Exec("DELETE FROM user_roles WHERE username = ?", username)
-	for _, role := range roles {
-		if role = strings.TrimSpace(role); role != "" {
-			tx.Exec("INSERT INTO user_roles (username, role) VALUES (?, ?)", username, role)
-		}
-	}
-	return tx.Commit()
-}
-
-func (s *Store) GetRoles(username string) ([]string, error) {
-	return s.getUserStrings("user_roles", "role", username)
-}
-
-// --- Permissions ---
-
-func (s *Store) SetPermissions(username string, perms []string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	tx.Exec("DELETE FROM user_permissions WHERE username = ?", username)
-	for _, perm := range perms {
-		if perm = strings.TrimSpace(perm); perm != "" {
-			tx.Exec("INSERT INTO user_permissions (username, permission) VALUES (?, ?)", username, perm)
-		}
-	}
-	return tx.Commit()
-}
-
-func (s *Store) GetPermissions(username string) ([]string, error) {
-	return s.getUserStrings("user_permissions", "permission", username)
-}
-
-// --- Helpers ---
-
-func (s *Store) getUserStrings(table, column, username string) ([]string, error) {
-	rows, err := s.db.Query(
-		fmt.Sprintf("SELECT %s FROM %s WHERE username = ? ORDER BY %s", column, table, column),
-		username,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []string
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		result = append(result, v)
-	}
-	return result, rows.Err()
-}
-
-// --- Default Roles (assigned to new LDAP users) ---
-
-func (s *Store) GetDefaultRoles() []string {
-	var val string
-	err := s.db.QueryRow("SELECT value FROM config WHERE key = 'default_roles'").Scan(&val)
-	if err != nil || val == "" {
-		return []string{"user"}
-	}
-	return strings.Split(val, ",")
-}
-
-func (s *Store) SetDefaultRoles(roles []string) error {
-	val := strings.Join(roles, ",")
-	_, err := s.db.Exec(
-		"INSERT INTO config (key, value) VALUES ('default_roles', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-		val, val,
-	)
-	return err
+	})
 }
