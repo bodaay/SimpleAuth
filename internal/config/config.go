@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +19,9 @@ type Config struct {
 	TLSCert         string
 	TLSKey          string
 	AuditRetention  time.Duration
+	RateLimitMax    int
+	RateLimitWindow time.Duration
+	CORSOrigins     string
 }
 
 func Load() *Config {
@@ -34,6 +38,9 @@ func Load() *Config {
 		TLSCert:         os.Getenv("AUTH_TLS_CERT"),
 		TLSKey:          os.Getenv("AUTH_TLS_KEY"),
 		AuditRetention:  parseDuration("AUTH_AUDIT_RETENTION", 90*24*time.Hour),
+		RateLimitMax:    parseInt("AUTH_RATE_LIMIT_MAX", 10),
+		RateLimitWindow: parseDuration("AUTH_RATE_LIMIT_WINDOW", 1*time.Minute),
+		CORSOrigins:     os.Getenv("AUTH_CORS_ORIGINS"),
 	}
 }
 
@@ -42,6 +49,18 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func parseDuration(key string, fallback time.Duration) time.Duration {

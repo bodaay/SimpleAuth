@@ -691,6 +691,46 @@ func (s *Store) RevokeTokenFamily(familyID string) error {
 	})
 }
 
+// ListUserSessions returns active (non-expired, non-used) refresh tokens for a user.
+func (s *Store) ListUserSessions(userGUID string) ([]*RefreshToken, error) {
+	var sessions []*RefreshToken
+	now := time.Now()
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRefreshTokens).ForEach(func(k, v []byte) error {
+			var rt RefreshToken
+			if err := json.Unmarshal(v, &rt); err != nil {
+				return nil
+			}
+			if rt.UserGUID == userGUID && !rt.Used && rt.ExpiresAt.After(now) {
+				sessions = append(sessions, &rt)
+			}
+			return nil
+		})
+	})
+	return sessions, err
+}
+
+// RevokeUserTokens deletes all refresh tokens for a user.
+func (s *Store) RevokeUserTokens(userGUID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRefreshTokens)
+		var toDelete [][]byte
+		b.ForEach(func(k, v []byte) error {
+			var rt RefreshToken
+			if err := json.Unmarshal(v, &rt); err == nil && rt.UserGUID == userGUID {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // --- Audit Log ---
 
 func (s *Store) WriteAuditLog(entry *AuditEntry) error {

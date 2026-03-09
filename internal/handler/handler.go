@@ -28,7 +28,7 @@ func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS
 		cfg:          cfg,
 		store:        s,
 		jwt:          jwtMgr,
-		loginLimiter: newRateLimiter(10, 1*time.Minute),
+		loginLimiter: newRateLimiter(cfg.RateLimitMax, cfg.RateLimitWindow),
 		mux:          http.NewServeMux(),
 	}
 	h.registerRoutes(uiFS)
@@ -36,7 +36,32 @@ func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.CORSOrigins != "" {
+		origin := r.Header.Get("Origin")
+		if origin != "" && h.isAllowedOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		}
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	h.mux.ServeHTTP(w, r)
+}
+
+func (h *Handler) isAllowedOrigin(origin string) bool {
+	if h.cfg.CORSOrigins == "*" {
+		return true
+	}
+	for _, allowed := range strings.Split(h.cfg.CORSOrigins, ",") {
+		if strings.TrimSpace(allowed) == origin {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) registerRoutes(uiFS fs.FS) {
@@ -88,6 +113,9 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/password", h.requireMasterAdmin(h.handleSetPassword))
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/disabled", h.requireMasterAdmin(h.handleSetDisabled))
 	h.mux.HandleFunc("POST /api/admin/users/{guid}/unmerge", h.requireMasterAdmin(h.handleUnmergeUser))
+	h.mux.HandleFunc("GET /api/admin/users/{guid}/sessions", h.requireMasterAdmin(h.handleListSessions))
+	h.mux.HandleFunc("DELETE /api/admin/users/{guid}/sessions", h.requireMasterAdmin(h.handleRevokeSessions))
+	h.mux.HandleFunc("POST /api/auth/reset-password", h.handleResetPassword)
 
 	// Admin: Identity Mappings
 	h.mux.HandleFunc("GET /api/admin/mappings", h.adminAuth(h.handleListAllMappings))
