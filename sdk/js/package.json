@@ -1,0 +1,33 @@
+{
+  "name": "@simpleauth/js",
+  "version": "1.0.0",
+  "description": "JavaScript/TypeScript SDK for SimpleAuth — zero-dependency, works in Node.js and browsers",
+  "main": "index.ts",
+  "types": "index.ts",
+  "exports": {
+    ".": {
+      "import": "./index.ts",
+      "require": "./index.ts",
+      "types": "./index.ts"
+    }
+  },
+  "files": [
+    "index.ts"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "simpleauth",
+    "auth",
+    "oidc",
+    "oauth2",
+    "jwt",
+    "authentication"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
