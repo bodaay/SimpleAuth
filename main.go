@@ -17,7 +17,17 @@ import (
 //go:embed ui/dist/*
 var uiFiles embed.FS
 
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+)
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Printf("simpleauth %s (built %s)\n", Version, BuildTime)
+		return
+	}
+
 	cfg := config.Load()
 
 	if cfg.AdminKey == "" {

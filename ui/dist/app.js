@@ -579,6 +579,138 @@ function ImpersonatePage() {
   `;
 }
 
+// === Identity Mappings Page ===
+function MappingsPage() {
+  const [mappings, setMappings] = useState([]);
+  const [users, setUsers] = useState({});
+  const [search, setSearch] = useState('');
+  const [providerFilter, setProviderFilter] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const [newMapping, setNewMapping] = useState({ provider: '', external_id: '', user_guid: '' });
+  const [toast, setToast] = useState({ message: '', type: '' });
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => setToast({ message: '', type: '' }), 3000);
+  };
+
+  const load = () => {
+    Promise.all([
+      api('GET', '/api/admin/mappings'),
+      api('GET', '/api/admin/users'),
+    ]).then(([m, u]) => {
+      setMappings(m);
+      const userMap = {};
+      u.forEach(user => { userMap[user.guid] = user; });
+      setUsers(userMap);
+    }).catch(() => {});
+  };
+  useEffect(() => load(), []);
+
+  const providers = [...new Set(mappings.map(m => m.provider))].sort();
+
+  const filtered = mappings.filter(m => {
+    if (providerFilter && m.provider !== providerFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const user = users[m.user_guid];
+      const userName = user ? (user.display_name || user.email || '').toLowerCase() : '';
+      return m.provider.toLowerCase().includes(q) ||
+             m.external_id.toLowerCase().includes(q) ||
+             m.user_guid.toLowerCase().includes(q) ||
+             userName.includes(q);
+    }
+    return true;
+  });
+
+  const addMapping = async () => {
+    if (!newMapping.provider || !newMapping.external_id || !newMapping.user_guid) return;
+    try {
+      await api('PUT', `/api/admin/users/${newMapping.user_guid}/mappings`, {
+        provider: newMapping.provider, external_id: newMapping.external_id,
+      });
+      showToast('Mapping created');
+      setShowAdd(false);
+      setNewMapping({ provider: '', external_id: '', user_guid: '' });
+      load();
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const deleteMapping = async (m) => {
+    if (!confirm(`Delete mapping ${m.provider}:${m.external_id}?`)) return;
+    try {
+      await api('DELETE', `/api/admin/users/${m.user_guid}/mappings/${encodeURIComponent(m.provider)}/${encodeURIComponent(m.external_id)}`);
+      showToast('Mapping deleted');
+      load();
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const allUsers = Object.values(users);
+
+  return html`
+    <${Toast} message=${toast.message} type=${toast.type} />
+    <div class="page-header">
+      <h2>Identity Mappings</h2>
+      <button class="btn btn-primary btn-sm" onClick=${() => setShowAdd(true)}>${icons.plus} Add Mapping</button>
+    </div>
+    <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4);flex-wrap:wrap;align-items:center">
+      <input class="form-input" style="max-width:300px" placeholder="Search mappings..." value=${search} onInput=${e => setSearch(e.target.value)} />
+      <button class="btn btn-sm ${!providerFilter ? 'btn-primary' : 'btn-secondary'}" onClick=${() => setProviderFilter('')}>All</button>
+      ${providers.map(p => html`
+        <button class="btn btn-sm ${providerFilter === p ? 'btn-primary' : 'btn-secondary'}" onClick=${() => setProviderFilter(p)}>${p}</button>
+      `)}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Provider</th><th>External ID</th><th>User</th><th>GUID</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.length === 0
+            ? html`<tr><td colspan="5"><div class="empty-state"><p>No identity mappings found</p></div></td></tr>`
+            : filtered.map(m => {
+                const user = users[m.user_guid];
+                return html`
+                  <tr>
+                    <td><span class="badge">${m.provider}</span></td>
+                    <td style="font-family:var(--font-mono);font-size:0.8rem">${m.external_id}</td>
+                    <td>${user ? (user.display_name || user.email || '—') : '—'}</td>
+                    <td><span class="guid">${m.user_guid.substring(0, 12)}...</span></td>
+                    <td><button class="btn btn-sm btn-danger" onClick=${() => deleteMapping(m)}>Delete</button></td>
+                  </tr>
+                `;
+              })
+          }
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:var(--sp-2);color:var(--text-muted);font-size:0.8rem">${filtered.length} mapping${filtered.length !== 1 ? 's' : ''}</div>
+
+    ${showAdd && html`
+      <${Modal} title="Add Identity Mapping" onClose=${() => setShowAdd(false)}>
+        <div class="form-group">
+          <label class="form-label">Provider</label>
+          <input class="form-input" value=${newMapping.provider} onInput=${e => setNewMapping({ ...newMapping, provider: e.target.value })} placeholder="e.g. ldap, kerberos, saml" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">External ID</label>
+          <input class="form-input" value=${newMapping.external_id} onInput=${e => setNewMapping({ ...newMapping, external_id: e.target.value })} placeholder="e.g. user@domain.com" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">User</label>
+          <select class="form-input" value=${newMapping.user_guid} onChange=${e => setNewMapping({ ...newMapping, user_guid: e.target.value })}>
+            <option value="">Select user...</option>
+            ${allUsers.map(u => html`<option value=${u.guid}>${u.display_name || u.email || u.guid}</option>`)}
+          </select>
+        </div>
+        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
+          <button class="btn btn-secondary" onClick=${() => setShowAdd(false)}>Cancel</button>
+          <button class="btn btn-primary" onClick=${addMapping}>Create</button>
+        </div>
+      <//>
+    `}
+  `;
+}
+
 // === Audit Log Page ===
 function AuditPage() {
   const [entries, setEntries] = useState([]);
@@ -693,6 +825,7 @@ function App() {
     { id: 'users', label: 'Users', icon: icons.users },
     { id: 'apps', label: 'Apps', icon: icons.apps },
     { id: 'ldap', label: 'LDAP Providers', icon: icons.ldap },
+    { id: 'mappings', label: 'Mappings', icon: icons.mappings },
     { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
     { id: 'audit', label: 'Audit Log', icon: icons.audit },
   ];
@@ -702,6 +835,7 @@ function App() {
     users: UsersPage,
     apps: AppsPage,
     ldap: LDAPPage,
+    mappings: MappingsPage,
     impersonate: ImpersonatePage,
     audit: AuditPage,
   };

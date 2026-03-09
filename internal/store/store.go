@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -504,6 +505,34 @@ func (s *Store) removeMappingFromIndex(tx *bolt.Tx, userGUID string, m IdentityM
 	return tx.Bucket(bucketIdxMappingsByGUID).Put([]byte(userGUID), newData)
 }
 
+// ListAllMappings returns all identity mappings with their associated user GUIDs.
+type IdentityMappingEntry struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
+	UserGUID   string `json:"user_guid"`
+}
+
+func (s *Store) ListAllMappings() ([]IdentityMappingEntry, error) {
+	var result []IdentityMappingEntry
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketIdentityMappings)
+		return b.ForEach(func(k, v []byte) error {
+			key := string(k)
+			idx := strings.Index(key, ":")
+			if idx < 0 {
+				return nil
+			}
+			result = append(result, IdentityMappingEntry{
+				Provider:   key[:idx],
+				ExternalID: key[idx+1:],
+				UserGUID:   string(v),
+			})
+			return nil
+		})
+	})
+	return result, err
+}
+
 // --- Roles & Permissions ---
 
 func roleKey(guid, appID string) []byte {
@@ -887,9 +916,64 @@ func (s *Store) Backup(path string) error {
 	})
 }
 
-func (s *Store) BackupWriter(w *os.File) error {
+func (s *Store) BackupWriter(w io.Writer) error {
 	return s.db.View(func(tx *bolt.Tx) error {
 		_, err := tx.WriteTo(w)
 		return err
 	})
+}
+
+// Restore replaces the current database with data from an io.Reader.
+// It closes the current DB, writes the new file, and reopens.
+func (s *Store) Restore(r io.Reader) error {
+	dbPath := s.db.Path()
+
+	// Close current DB
+	if err := s.db.Close(); err != nil {
+		return fmt.Errorf("close current db: %w", err)
+	}
+
+	// Write backup to a temp file first, then rename (atomic)
+	tmpPath := dbPath + ".restore.tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		// Try to reopen old DB
+		s.reopen(dbPath)
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		s.reopen(dbPath)
+		return fmt.Errorf("write restore data: %w", err)
+	}
+	f.Close()
+
+	// Validate: try opening the uploaded file as a BoltDB
+	testDB, err := bolt.Open(tmpPath, 0600, &bolt.Options{ReadOnly: true, Timeout: 3 * time.Second})
+	if err != nil {
+		os.Remove(tmpPath)
+		s.reopen(dbPath)
+		return fmt.Errorf("invalid backup file: %w", err)
+	}
+	testDB.Close()
+
+	// Replace
+	if err := os.Rename(tmpPath, dbPath); err != nil {
+		os.Remove(tmpPath)
+		s.reopen(dbPath)
+		return fmt.Errorf("replace db file: %w", err)
+	}
+
+	// Reopen
+	return s.reopen(dbPath)
+}
+
+func (s *Store) reopen(dbPath string) error {
+	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("reopen db: %w", err)
+	}
+	s.db = db
+	return nil
 }
