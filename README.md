@@ -23,6 +23,7 @@ Every user is a GUID. Every app maps its own identifiers to that GUID. LDAP/AD i
 - **Audit logging** -- every login, impersonation, role change, and key rotation is logged with configurable retention
 - **Embedded admin UI** -- Preact SPA with dark mode, no build step required
 - **Single binary** -- zero external dependencies, runs anywhere
+- **One-time tokens** -- scoped, single-use `XXX-XXXX` tokens (e.g. app self-registration without the admin key)
 - **Backup/Restore** -- live BoltDB snapshots via API
 
 ## Quick Start
@@ -109,6 +110,7 @@ All configuration is via environment variables:
 | `GET` | `/login` | Hosted login page (redirect-based flow) |
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |
 | `GET` | `/health` | Health check |
+| `POST` | `/api/register` | Self-register app with one-time token |
 
 ### Login
 
@@ -157,6 +159,27 @@ https://myapp.com/callback#access_token=eyJ...&refresh_token=eyJ...&expires_in=2
   "exp": 1741528800
 }
 ```
+
+### App Self-Registration
+
+Admins create scoped one-time tokens (in `XXX-XXXX` format) via the admin UI or API. Apps use `app-registration` tokens to register themselves without the master admin key:
+
+```bash
+# Admin creates a token (via API or UI)
+curl -X POST http://localhost:9090/api/admin/tokens \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"scope": "app-registration", "label": "For chat-app team", "ttl": "24h"}'
+# Returns: {"token": "AB3-K9MX", "scope": "app-registration", ...}
+
+# App team uses the token to self-register
+curl -X POST http://localhost:9090/api/register \
+  -H "Content-Type: application/json" \
+  -d '{"token": "AB3-K9MX", "name": "Chat App"}'
+# Returns: {"app_id": "app-xxxx", "name": "Chat App", "api_key": "sk-..."}
+```
+
+Tokens are consumed on use and cannot be reused. The `scope` field ensures tokens can only be used for their intended purpose.
 
 ### Admin API
 
@@ -222,6 +245,14 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 | `POST` | `/api/admin/ldap/auto-discover` | Auto-configure from domain |
 | `GET` | `/api/admin/ldap/export` | Export configs |
 | `POST` | `/api/admin/ldap/import` | Import configs |
+
+#### One-Time Tokens
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/admin/tokens` | List tokens (optional `?scope=` filter) |
+| `POST` | `/api/admin/tokens` | Create token (scope, label, ttl) |
+| `DELETE` | `/api/admin/tokens/:token` | Delete token |
 
 #### Operations
 

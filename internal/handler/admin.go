@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"simpleauth/internal/auth"
@@ -718,4 +719,118 @@ func (h *Handler) handleQueryAudit(w http.ResponseWriter, r *http.Request) {
 		entries = []*store.AuditEntry{}
 	}
 	jsonResp(w, entries, http.StatusOK)
+}
+
+// --- One-Time Tokens ---
+
+func (h *Handler) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	scope := r.URL.Query().Get("scope")
+	tokens, err := h.store.ListOneTimeTokens(scope)
+	if err != nil {
+		jsonError(w, "failed to list tokens", http.StatusInternalServerError)
+		return
+	}
+	if tokens == nil {
+		tokens = []*store.OneTimeToken{}
+	}
+	jsonResp(w, tokens, http.StatusOK)
+}
+
+func (h *Handler) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Scope string `json:"scope"`
+		Label string `json:"label"`
+		TTL   string `json:"ttl"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Scope == "" {
+		jsonError(w, "scope required", http.StatusBadRequest)
+		return
+	}
+
+	ttl := 24 * time.Hour // default 24h
+	if req.TTL != "" {
+		parsed, err := time.ParseDuration(req.TTL)
+		if err != nil {
+			jsonError(w, "invalid ttl duration", http.StatusBadRequest)
+			return
+		}
+		ttl = parsed
+	}
+
+	tok, err := h.store.CreateOneTimeToken(req.Scope, req.Label, ttl)
+	if err != nil {
+		jsonError(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("token_created", "admin", getClientIP(r), map[string]interface{}{
+		"token": tok.Token, "scope": req.Scope, "label": req.Label,
+	})
+
+	jsonResp(w, tok, http.StatusCreated)
+}
+
+func (h *Handler) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
+	token := pathParam(r, "token")
+	if err := h.store.DeleteOneTimeToken(token); err != nil {
+		jsonError(w, "failed to delete token", http.StatusInternalServerError)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
+}
+
+// handleSelfRegister allows an app to register itself using a one-time token scoped to "app-registration".
+// This is a public endpoint — no admin key required.
+func (h *Handler) handleSelfRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token            string                          `json:"token"`
+		Name             string                          `json:"name"`
+		Description      string                          `json:"description"`
+		RedirectURIs     []string                        `json:"redirect_uris"`
+		ProviderMappings map[string]store.ProviderMapping `json:"provider_mappings"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	token := strings.TrimSpace(req.Token)
+	if token == "" || req.Name == "" {
+		jsonError(w, "token and name required", http.StatusBadRequest)
+		return
+	}
+
+	// Create the app
+	app := &store.App{
+		Name:             req.Name,
+		Description:      req.Description,
+		RedirectURIs:     req.RedirectURIs,
+		ProviderMappings: req.ProviderMappings,
+	}
+	if err := h.store.CreateApp(app); err != nil {
+		jsonError(w, "failed to create app", http.StatusInternalServerError)
+		return
+	}
+
+	// Consume the token (validates scope, expiry, and single-use)
+	if err := h.store.UseOneTimeToken(token, "app-registration", app.AppID); err != nil {
+		// Rollback the app creation
+		h.store.DeleteApp(app.AppID)
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	h.audit("app_self_registered", app.AppID, getClientIP(r), map[string]interface{}{
+		"token": token, "app_name": req.Name,
+	})
+
+	jsonResp(w, map[string]interface{}{
+		"app_id":  app.AppID,
+		"name":    app.Name,
+		"api_key": app.APIKey,
+	}, http.StatusCreated)
 }
