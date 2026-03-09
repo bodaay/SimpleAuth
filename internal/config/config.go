@@ -24,6 +24,7 @@ type Config struct {
 	Port            string        `yaml:"port"`
 	DataDir         string        `yaml:"data_dir"`
 	AdminKey        string        `yaml:"admin_key"`
+	ProjectName     string        `yaml:"project_name"`
 	JWTIssuer       string        `yaml:"jwt_issuer"`
 	AccessTTL       time.Duration `yaml:"access_ttl"`
 	RefreshTTL      time.Duration `yaml:"refresh_ttl"`
@@ -45,6 +46,7 @@ type configFile struct {
 	Port            string `yaml:"port"`
 	DataDir         string `yaml:"data_dir"`
 	AdminKey        string `yaml:"admin_key"`
+	ProjectName     string `yaml:"project_name"`
 	JWTIssuer       string `yaml:"jwt_issuer"`
 	AccessTTL       string `yaml:"access_ttl"`
 	RefreshTTL      string `yaml:"refresh_ttl"`
@@ -67,6 +69,7 @@ func Load() *Config {
 	cfg := &Config{
 		Port:            "9090",
 		DataDir:         "./data",
+		ProjectName:     "default",
 		JWTIssuer:       "simpleauth",
 		AccessTTL:       8 * time.Hour,
 		RefreshTTL:      720 * time.Hour,
@@ -137,8 +140,12 @@ http_port: "80"
 # Data directory for database, keytabs, and certificates
 data_dir: "./data"
 
-# Master admin API key (required)
+# Master admin API key (auto-generated if empty)
 admin_key: ""
+
+# Project name (used in AD service account naming: svc-simpleauth-{project_name})
+# Useful when running multiple SimpleAuth instances against the same AD
+project_name: "default"
 
 # JWT settings
 jwt_issuer: "simpleauth"
@@ -215,6 +222,9 @@ func loadConfigFile(cfg *Config) {
 	if fc.AdminKey != "" {
 		cfg.AdminKey = fc.AdminKey
 	}
+	if fc.ProjectName != "" {
+		cfg.ProjectName = fc.ProjectName
+	}
 	if fc.JWTIssuer != "" {
 		cfg.JWTIssuer = fc.JWTIssuer
 	}
@@ -278,6 +288,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_ADMIN_KEY"); v != "" {
 		cfg.AdminKey = v
+	}
+	if v := os.Getenv("AUTH_PROJECT_NAME"); v != "" {
+		cfg.ProjectName = v
 	}
 	if v := os.Getenv("AUTH_JWT_ISSUER"); v != "" {
 		cfg.JWTIssuer = v

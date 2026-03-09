@@ -558,10 +558,12 @@ function LDAPPage() {
   const [testResult, setTestResult] = useState(null);
   const [toast, setToast] = useState(null);
   const [krbStatus, setKrbStatus] = useState(null);
+  const [serverInfo, setServerInfo] = useState({});
 
   const load = () => {
     api('GET', '/api/admin/ldap').then(setProviders).catch(() => {});
     api('GET', '/api/admin/kerberos/status').then(setKrbStatus).catch(() => {});
+    api('GET', '/api/admin/server-info').then(setServerInfo).catch(() => {});
   };
   useEffect(load, []);
 
@@ -1055,7 +1057,7 @@ function LDAPPage() {
     <div class="page-header">
       <h2>LDAP Providers</h2>
       <div class="page-header-actions">
-        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-simpleauth' }); setModal('generate-script'); }}>Generate AD Script</button>
+        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-simpleauth-' + (serverInfo.project_name || 'default') }); setModal('generate-script'); }}>Generate AD Script</button>
         <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('import-config'); }}>Import Config</button>
         <button class="btn btn-primary" onClick=${() => { setForm({ user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', groups_attr: 'memberOf' }); setModal('create'); }}>${icons.plus} Manual Setup</button>
       </div>

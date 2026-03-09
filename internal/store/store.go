@@ -27,6 +27,7 @@ var (
 	bucketIdxMappingsByGUID = []byte("idx_mappings_by_guid")
 	bucketIdxAppsByAPIKey   = []byte("idx_apps_by_api_key")
 	bucketRegTokens         = []byte("reg_tokens")
+	bucketOIDCAuthCodes     = []byte("oidc_auth_codes")
 )
 
 type Store struct {
@@ -137,6 +138,7 @@ func (s *Store) init() error {
 			bucketRefreshTokens, bucketAuditLog,
 			bucketIdxMappingsByGUID, bucketIdxAppsByAPIKey,
 			bucketRegTokens,
+			bucketOIDCAuthCodes,
 		} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
@@ -1165,4 +1167,52 @@ func (s *Store) DeleteOneTimeToken(token string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketRegTokens).Delete([]byte(token))
 	})
+}
+
+// --- OIDC Authorization Codes ---
+
+type OIDCAuthCode struct {
+	Code        string    `json:"code"`
+	UserGUID    string    `json:"user_guid"`
+	AppID       string    `json:"app_id"`
+	RedirectURI string    `json:"redirect_uri"`
+	Scope       string    `json:"scope"`
+	Nonce       string    `json:"nonce"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (s *Store) SaveOIDCAuthCode(code *OIDCAuthCode) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(code)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketOIDCAuthCodes).Put([]byte(code.Code), data)
+	})
+}
+
+// ConsumeOIDCAuthCode retrieves and deletes an auth code atomically.
+func (s *Store) ConsumeOIDCAuthCode(code string) (*OIDCAuthCode, error) {
+	var ac OIDCAuthCode
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketOIDCAuthCodes)
+		data := b.Get([]byte(code))
+		if data == nil {
+			return fmt.Errorf("auth code not found")
+		}
+		if err := json.Unmarshal(data, &ac); err != nil {
+			return err
+		}
+		if time.Now().After(ac.ExpiresAt) {
+			b.Delete([]byte(code))
+			return fmt.Errorf("auth code expired")
+		}
+		// Delete after consumption (single-use)
+		return b.Delete([]byte(code))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ac, nil
 }
