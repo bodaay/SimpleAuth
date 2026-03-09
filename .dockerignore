@@ -1,0 +1,51 @@
+# =============================================================================
+# SimpleAuth — Docker build exclusions
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+
+# Build artifacts (we build fresh inside Docker)
+dist/
+*.exe
+
+# Runtime data (never bake into image)
+data/
+*.db
+*.bolt
+
+# Development files
+*.md
+LICENSE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Frontend dev dependencies (ui/dist is needed, node_modules is not)
+ui/node_modules/
+ui/.cache/
+ui/package-lock.json
+
+# Docker files (avoid recursive builds)
+Dockerfile
+docker-compose.yml
+docker-compose*.yml
+.dockerignore
+
+# Deployment configs
+deploy/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+testdata/
+
+# CI/CD
+.github/
+.gitlab-ci.yml

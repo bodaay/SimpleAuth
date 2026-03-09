@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Reference the SimpleAuth SDK project -->
+  <ItemGroup>
+    <ProjectReference Include="../../../sdk/dotnet/SimpleAuth.csproj" />
+  </ItemGroup>
+
+</Project>

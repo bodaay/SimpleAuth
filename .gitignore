@@ -3,7 +3,7 @@ simpleauth
 
 # Build output
 /dist/
-
+data/
 # Data directory
 data/
 

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SimpleAuth</RootNamespace>
+    <AssemblyName>SimpleAuth</AssemblyName>
+    <Version>1.0.0</Version>
+    <Description>.NET SDK for SimpleAuth authentication server</Description>
+    <PackageId>SimpleAuth</PackageId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>
