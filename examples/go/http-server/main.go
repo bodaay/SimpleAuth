@@ -32,7 +32,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/simpleauth/sdk/go/simpleauth"
+	simpleauth "github.com/bodaay/simpleauth-go"
 )
 
 func envOr(key, fallback string) string {
