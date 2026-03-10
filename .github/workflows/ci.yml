@@ -1,0 +1,46 @@
+# =============================================================================
+# SimpleAuth — CI: Build & Test
+# =============================================================================
+# Runs on every push and pull request. Validates that the Go code compiles,
+# tests pass, and the Docker image builds successfully.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t simpleauth:ci .
