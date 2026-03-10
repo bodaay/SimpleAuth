@@ -28,13 +28,9 @@ from simpleauth.middleware import flask_middleware
 # ---------------------------------------------------------------------------
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-APP_ID = "my-flask-app"
-APP_SECRET = "app-secret-key-here"
 
 auth = SimpleAuth(
     url=SIMPLEAUTH_URL,
-    app_id=APP_ID,
-    app_secret=APP_SECRET,
     verify_ssl=True,
 )
 

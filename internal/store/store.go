@@ -15,19 +15,17 @@ import (
 )
 
 var (
-	bucketConfig          = []byte("config")
-	bucketLDAPProviders   = []byte("ldap_providers")
-	bucketApps            = []byte("apps")
-	bucketUsers           = []byte("users")
+	bucketConfig           = []byte("config")
+	bucketLDAPProviders    = []byte("ldap_providers")
+	bucketUsers            = []byte("users")
 	bucketIdentityMappings = []byte("identity_mappings")
-	bucketUserRoles       = []byte("user_roles")
-	bucketUserPermissions = []byte("user_permissions")
-	bucketRefreshTokens   = []byte("refresh_tokens")
-	bucketAuditLog        = []byte("audit_log")
+	bucketUserRoles        = []byte("user_roles")
+	bucketUserPermissions  = []byte("user_permissions")
+	bucketRefreshTokens    = []byte("refresh_tokens")
+	bucketAuditLog         = []byte("audit_log")
 	bucketIdxMappingsByGUID = []byte("idx_mappings_by_guid")
-	bucketIdxAppsByAPIKey   = []byte("idx_apps_by_api_key")
-	bucketRegTokens         = []byte("reg_tokens")
-	bucketOIDCAuthCodes     = []byte("oidc_auth_codes")
+	bucketRegTokens        = []byte("reg_tokens")
+	bucketOIDCAuthCodes    = []byte("oidc_auth_codes")
 )
 
 type Store struct {
@@ -49,37 +47,23 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-type App struct {
-	AppID            string                       `json:"app_id"`
-	Name             string                       `json:"name"`
-	Description      string                       `json:"description"`
-	APIKey           string                       `json:"api_key"`
-	RedirectURIs     []string                     `json:"redirect_uris"`
-	ProviderMappings map[string]ProviderMapping   `json:"provider_mappings,omitempty"`
-	CreatedAt        time.Time                    `json:"created_at"`
-}
-
-type ProviderMapping struct {
-	Field string `json:"field"`
-}
-
 type LDAPProvider struct {
-	ProviderID      string `json:"provider_id"`
-	Name            string `json:"name"`
-	URL             string `json:"url"`
-	BaseDN          string `json:"base_dn"`
-	BindDN          string `json:"bind_dn"`
-	BindPassword    string `json:"bind_password"`
-	UserFilter      string `json:"user_filter"`
-	UseTLS          bool   `json:"use_tls"`
-	SkipTLSVerify   bool   `json:"skip_tls_verify"`
-	DisplayNameAttr string `json:"display_name_attr"`
-	EmailAttr       string `json:"email_attr"`
-	DepartmentAttr  string `json:"department_attr"`
-	CompanyAttr     string `json:"company_attr"`
-	JobTitleAttr    string `json:"job_title_attr"`
-	GroupsAttr      string `json:"groups_attr"`
-	Priority        int    `json:"priority"`
+	ProviderID      string    `json:"provider_id"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	BaseDN          string    `json:"base_dn"`
+	BindDN          string    `json:"bind_dn"`
+	BindPassword    string    `json:"bind_password"`
+	UserFilter      string    `json:"user_filter"`
+	UseTLS          bool      `json:"use_tls"`
+	SkipTLSVerify   bool      `json:"skip_tls_verify"`
+	DisplayNameAttr string    `json:"display_name_attr"`
+	EmailAttr       string    `json:"email_attr"`
+	DepartmentAttr  string    `json:"department_attr"`
+	CompanyAttr     string    `json:"company_attr"`
+	JobTitleAttr    string    `json:"job_title_attr"`
+	GroupsAttr      string    `json:"groups_attr"`
+	Priority        int       `json:"priority"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -92,7 +76,6 @@ type RefreshToken struct {
 	TokenID   string    `json:"token_id"`
 	FamilyID  string    `json:"family_id"`
 	UserGUID  string    `json:"user_guid"`
-	AppID     string    `json:"app_id"`
 	Used      bool      `json:"used"`
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
@@ -133,10 +116,10 @@ func (s *Store) Close() error {
 func (s *Store) init() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		for _, b := range [][]byte{
-			bucketConfig, bucketLDAPProviders, bucketApps, bucketUsers,
+			bucketConfig, bucketLDAPProviders, bucketUsers,
 			bucketIdentityMappings, bucketUserRoles, bucketUserPermissions,
 			bucketRefreshTokens, bucketAuditLog,
-			bucketIdxMappingsByGUID, bucketIdxAppsByAPIKey,
+			bucketIdxMappingsByGUID,
 			bucketRegTokens,
 			bucketOIDCAuthCodes,
 		} {
@@ -234,124 +217,6 @@ func (s *Store) ListUsers() ([]*User, error) {
 		})
 	})
 	return users, err
-}
-
-// --- Apps ---
-
-func (s *Store) CreateApp(a *App) error {
-	if a.AppID == "" {
-		a.AppID = "app-" + uuid.New().String()[:8]
-	}
-	if a.APIKey == "" {
-		a.APIKey = "sk-" + uuid.New().String()
-	}
-	if a.CreatedAt.IsZero() {
-		a.CreatedAt = time.Now().UTC()
-	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		data, err := json.Marshal(a)
-		if err != nil {
-			return err
-		}
-		if err := tx.Bucket(bucketApps).Put([]byte(a.AppID), data); err != nil {
-			return err
-		}
-		return tx.Bucket(bucketIdxAppsByAPIKey).Put([]byte(a.APIKey), []byte(a.AppID))
-	})
-}
-
-func (s *Store) GetApp(appID string) (*App, error) {
-	var a App
-	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketApps).Get([]byte(appID))
-		if data == nil {
-			return fmt.Errorf("app not found: %s", appID)
-		}
-		return json.Unmarshal(data, &a)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
-}
-
-func (s *Store) GetAppByAPIKey(apiKey string) (*App, error) {
-	var appID string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(bucketIdxAppsByAPIKey).Get([]byte(apiKey))
-		if v == nil {
-			return fmt.Errorf("invalid api key")
-		}
-		appID = string(v)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetApp(appID)
-}
-
-func (s *Store) UpdateApp(a *App) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		existing := tx.Bucket(bucketApps).Get([]byte(a.AppID))
-		if existing == nil {
-			return fmt.Errorf("app not found: %s", a.AppID)
-		}
-		// Remove old API key index
-		var old App
-		if err := json.Unmarshal(existing, &old); err == nil && old.APIKey != a.APIKey {
-			tx.Bucket(bucketIdxAppsByAPIKey).Delete([]byte(old.APIKey))
-		}
-		data, err := json.Marshal(a)
-		if err != nil {
-			return err
-		}
-		if err := tx.Bucket(bucketApps).Put([]byte(a.AppID), data); err != nil {
-			return err
-		}
-		return tx.Bucket(bucketIdxAppsByAPIKey).Put([]byte(a.APIKey), []byte(a.AppID))
-	})
-}
-
-func (s *Store) DeleteApp(appID string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketApps).Get([]byte(appID))
-		if data != nil {
-			var a App
-			if err := json.Unmarshal(data, &a); err == nil {
-				tx.Bucket(bucketIdxAppsByAPIKey).Delete([]byte(a.APIKey))
-			}
-		}
-		return tx.Bucket(bucketApps).Delete([]byte(appID))
-	})
-}
-
-func (s *Store) ListApps() ([]*App, error) {
-	var apps []*App
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketApps).ForEach(func(k, v []byte) error {
-			var a App
-			if err := json.Unmarshal(v, &a); err != nil {
-				return err
-			}
-			apps = append(apps, &a)
-			return nil
-		})
-	})
-	return apps, err
-}
-
-func (s *Store) RotateAppKey(appID string) (string, error) {
-	newKey := "sk-" + uuid.New().String()
-	app, err := s.GetApp(appID)
-	if err != nil {
-		return "", err
-	}
-	app.APIKey = newKey
-	if err := s.UpdateApp(app); err != nil {
-		return "", err
-	}
-	return newKey, nil
 }
 
 // --- LDAP Providers ---
@@ -544,26 +409,22 @@ func (s *Store) ListAllMappings() ([]IdentityMappingEntry, error) {
 	return result, err
 }
 
-// --- Roles & Permissions ---
+// --- Roles & Permissions (no app scoping) ---
 
-func roleKey(guid, appID string) []byte {
-	return []byte(guid + ":" + appID)
-}
-
-func (s *Store) SetUserRoles(guid, appID string, roles []string) error {
+func (s *Store) SetUserRoles(guid string, roles []string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		data, err := json.Marshal(roles)
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bucketUserRoles).Put(roleKey(guid, appID), data)
+		return tx.Bucket(bucketUserRoles).Put([]byte(guid), data)
 	})
 }
 
-func (s *Store) GetUserRoles(guid, appID string) ([]string, error) {
+func (s *Store) GetUserRoles(guid string) ([]string, error) {
 	var roles []string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketUserRoles).Get(roleKey(guid, appID))
+		data := tx.Bucket(bucketUserRoles).Get([]byte(guid))
 		if data == nil {
 			return nil
 		}
@@ -572,44 +433,26 @@ func (s *Store) GetUserRoles(guid, appID string) ([]string, error) {
 	return roles, err
 }
 
-func (s *Store) SetUserPermissions(guid, appID string, perms []string) error {
+func (s *Store) SetUserPermissions(guid string, perms []string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		data, err := json.Marshal(perms)
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bucketUserPermissions).Put(roleKey(guid, appID), data)
+		return tx.Bucket(bucketUserPermissions).Put([]byte(guid), data)
 	})
 }
 
-func (s *Store) GetUserPermissions(guid, appID string) ([]string, error) {
+func (s *Store) GetUserPermissions(guid string) ([]string, error) {
 	var perms []string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketUserPermissions).Get(roleKey(guid, appID))
+		data := tx.Bucket(bucketUserPermissions).Get([]byte(guid))
 		if data == nil {
 			return nil
 		}
 		return json.Unmarshal(data, &perms)
 	})
 	return perms, err
-}
-
-// GetUsersWithRolesInApp lists all users that have roles in a given app.
-func (s *Store) GetUsersWithRolesInApp(appID string) ([]string, error) {
-	var guids []string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		c := tx.Bucket(bucketUserRoles).Cursor()
-		for k, _ := c.First(); k != nil; k, _ = c.Next() {
-			key := string(k)
-			if idx := strings.LastIndex(key, ":"); idx > 0 {
-				if key[idx+1:] == appID {
-					guids = append(guids, key[:idx])
-				}
-			}
-		}
-		return nil
-	})
-	return guids, err
 }
 
 // --- Config (generic key-value in config bucket) ---
@@ -639,11 +482,12 @@ func (s *Store) DeleteConfigValue(key string) error {
 	})
 }
 
-// GetDefaultRoles returns default roles for new users in an app.
-func (s *Store) GetDefaultRoles(appID string) ([]string, error) {
+// --- Default Roles ---
+
+func (s *Store) GetDefaultRoles() ([]string, error) {
 	var roles []string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketConfig).Get([]byte("app:" + appID + ":default_roles"))
+		data := tx.Bucket(bucketConfig).Get([]byte("default_roles"))
 		if data == nil {
 			return nil
 		}
@@ -652,47 +496,23 @@ func (s *Store) GetDefaultRoles(appID string) ([]string, error) {
 	return roles, err
 }
 
-func (s *Store) SetDefaultRoles(appID string, roles []string) error {
+func (s *Store) SetDefaultRoles(roles []string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		data, err := json.Marshal(roles)
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bucketConfig).Put([]byte("app:"+appID+":default_roles"), data)
-	})
-}
-
-// --- Global Default Roles ---
-
-func (s *Store) GetGlobalDefaultRoles() ([]string, error) {
-	var roles []string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketConfig).Get([]byte("global:default_roles"))
-		if data == nil {
-			return nil
-		}
-		return json.Unmarshal(data, &roles)
-	})
-	return roles, err
-}
-
-func (s *Store) SetGlobalDefaultRoles(roles []string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		data, err := json.Marshal(roles)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketConfig).Put([]byte("global:default_roles"), data)
+		return tx.Bucket(bucketConfig).Put([]byte("default_roles"), data)
 	})
 }
 
 // --- Role → Permissions Mapping ---
 
-// GetRolePermissions returns the role→permissions mapping for an app.
-func (s *Store) GetRolePermissions(appID string) (map[string][]string, error) {
+// GetRolePermissions returns the role→permissions mapping.
+func (s *Store) GetRolePermissions() (map[string][]string, error) {
 	var mapping map[string][]string
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketConfig).Get([]byte("app:" + appID + ":role_permissions"))
+		data := tx.Bucket(bucketConfig).Get([]byte("role_permissions"))
 		if data == nil {
 			return nil
 		}
@@ -701,21 +521,21 @@ func (s *Store) GetRolePermissions(appID string) (map[string][]string, error) {
 	return mapping, err
 }
 
-// SetRolePermissions sets the role→permissions mapping for an app.
-func (s *Store) SetRolePermissions(appID string, mapping map[string][]string) error {
+// SetRolePermissions sets the role→permissions mapping.
+func (s *Store) SetRolePermissions(mapping map[string][]string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		data, err := json.Marshal(mapping)
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bucketConfig).Put([]byte("app:"+appID+":role_permissions"), data)
+		return tx.Bucket(bucketConfig).Put([]byte("role_permissions"), data)
 	})
 }
 
 // ResolvePermissions expands roles into permissions using the role→permissions mapping,
 // then merges with direct permissions (deduplicated).
-func (s *Store) ResolvePermissions(appID string, roles, directPerms []string) ([]string, error) {
-	mapping, err := s.GetRolePermissions(appID)
+func (s *Store) ResolvePermissions(roles, directPerms []string) ([]string, error) {
+	mapping, err := s.GetRolePermissions()
 	if err != nil {
 		return directPerms, err
 	}
@@ -960,8 +780,8 @@ func (s *Store) MergeUsers(sourceGUIDs []string, displayName, email string) (*Us
 			return err
 		}
 
-		allRoles := map[string]map[string]bool{}   // appID -> set of roles
-		allPerms := map[string]map[string]bool{}    // appID -> set of perms
+		allRoles := map[string]bool{}
+		allPerms := map[string]bool{}
 
 		for _, srcGUID := range sourceGUIDs {
 			// Get source user
@@ -983,34 +803,26 @@ func (s *Store) MergeUsers(sourceGUIDs []string, displayName, email string) (*Us
 				tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(srcGUID))
 			}
 
-			// Collect roles and permissions across all apps
-			rc := tx.Bucket(bucketUserRoles).Cursor()
-			prefix := srcGUID + ":"
-			for k, v := rc.Seek([]byte(prefix)); k != nil && strings.HasPrefix(string(k), prefix); k, v = rc.Next() {
-				appID := string(k)[len(prefix):]
-				if allRoles[appID] == nil {
-					allRoles[appID] = map[string]bool{}
-				}
+			// Collect roles
+			rolesData := tx.Bucket(bucketUserRoles).Get([]byte(srcGUID))
+			if rolesData != nil {
 				var roles []string
-				json.Unmarshal(v, &roles)
+				json.Unmarshal(rolesData, &roles)
 				for _, r := range roles {
-					allRoles[appID][r] = true
+					allRoles[r] = true
 				}
-				tx.Bucket(bucketUserRoles).Delete(k)
+				tx.Bucket(bucketUserRoles).Delete([]byte(srcGUID))
 			}
 
-			pc := tx.Bucket(bucketUserPermissions).Cursor()
-			for k, v := pc.Seek([]byte(prefix)); k != nil && strings.HasPrefix(string(k), prefix); k, v = pc.Next() {
-				appID := string(k)[len(prefix):]
-				if allPerms[appID] == nil {
-					allPerms[appID] = map[string]bool{}
-				}
+			// Collect permissions
+			permsData := tx.Bucket(bucketUserPermissions).Get([]byte(srcGUID))
+			if permsData != nil {
 				var perms []string
-				json.Unmarshal(v, &perms)
+				json.Unmarshal(permsData, &perms)
 				for _, p := range perms {
-					allPerms[appID][p] = true
+					allPerms[p] = true
 				}
-				tx.Bucket(bucketUserPermissions).Delete(k)
+				tx.Bucket(bucketUserPermissions).Delete([]byte(srcGUID))
 			}
 
 			// Mark source as merged
@@ -1021,22 +833,23 @@ func (s *Store) MergeUsers(sourceGUIDs []string, displayName, email string) (*Us
 			tx.Bucket(bucketUsers).Put([]byte(srcGUID), mergedData)
 		}
 
-		// Write merged roles/permissions
-		for appID, roleSet := range allRoles {
+		// Write merged roles
+		if len(allRoles) > 0 {
 			var roles []string
-			for r := range roleSet {
+			for r := range allRoles {
 				roles = append(roles, r)
 			}
 			data, _ := json.Marshal(roles)
-			tx.Bucket(bucketUserRoles).Put(roleKey(newUser.GUID, appID), data)
+			tx.Bucket(bucketUserRoles).Put([]byte(newUser.GUID), data)
 		}
-		for appID, permSet := range allPerms {
+		// Write merged permissions
+		if len(allPerms) > 0 {
 			var perms []string
-			for p := range permSet {
+			for p := range allPerms {
 				perms = append(perms, p)
 			}
 			data, _ := json.Marshal(perms)
-			tx.Bucket(bucketUserPermissions).Put(roleKey(newUser.GUID, appID), data)
+			tx.Bucket(bucketUserPermissions).Put([]byte(newUser.GUID), data)
 		}
 
 		return nil
@@ -1258,7 +1071,6 @@ func (s *Store) DeleteOneTimeToken(token string) error {
 type OIDCAuthCode struct {
 	Code        string    `json:"code"`
 	UserGUID    string    `json:"user_guid"`
-	AppID       string    `json:"app_id"`
 	RedirectURI string    `json:"redirect_uri"`
 	Scope       string    `json:"scope"`
 	Nonce       string    `json:"nonce"`

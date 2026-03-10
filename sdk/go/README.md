@@ -27,9 +27,7 @@ import (
 
 func main() {
     client := sa.New(sa.Options{
-        URL:       "https://auth.example.com",
-        AppID:     "my-app",
-        AppSecret: "my-secret",
+        URL: "https://auth.example.com",
     })
 
     // Password login
@@ -149,8 +147,6 @@ For development environments with self-signed TLS certificates:
 ```go
 client := sa.New(sa.Options{
     URL:                "https://localhost:8443",
-    AppID:              "dev-app",
-    AppSecret:          "dev-secret",
     InsecureSkipVerify: true,
 })
 ```
@@ -160,7 +156,7 @@ client := sa.New(sa.Options{
 | Field | Description | Default |
 |---|---|---|
 | `URL` | SimpleAuth server base URL | *(required)* |
-| `AppID` | OAuth2 client ID | *(required)* |
-| `AppSecret` | OAuth2 client secret | *(required)* |
+| `ClientID` | OIDC client ID (for auth code / client credentials flows) | `""` |
+| `ClientSecret` | OIDC client secret | `""` |
 | `Realm` | OIDC realm name | `"simpleauth"` |
 | `InsecureSkipVerify` | Skip TLS certificate verification | `false` |

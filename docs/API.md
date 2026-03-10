@@ -5,10 +5,11 @@ Complete reference for every endpoint. All endpoints return JSON. All request bo
 **Base URL:** `https://your-simpleauth-server:port`
 
 **Authentication types:**
-- **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config)
-- **App API Key** -- `Authorization: Bearer YOUR_APP_API_KEY` (the `api_key` returned when creating an app)
+- **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config, or a token from a user with the `SimpleAuthAdmin` role)
 - **Bearer Token** -- `Authorization: Bearer ACCESS_TOKEN` (a JWT access token from login)
 - **None** -- No authentication required
+
+**Admin access:** Use the `ADMIN_KEY` for initial bootstrap. After that, any user with the `SimpleAuthAdmin` role gets full admin access.
 
 ---
 
@@ -30,7 +31,7 @@ curl -k https://localhost:8080/health
 
 ### `GET /api/admin/server-info`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Returns server configuration details.
 
@@ -63,12 +64,9 @@ Authenticate a user with username/password. Tries LDAP providers first, falls ba
 ```json
 {
   "username": "jsmith",
-  "password": "secret",
-  "app_id": "app-a1b2c3d4"
+  "password": "secret"
 }
 ```
-
-- `app_id` is optional. When provided, SimpleAuth resolves the user via app-specific identity mappings and provider mappings. When omitted, it searches all LDAP providers and local users.
 
 **Response (200):**
 
@@ -92,7 +90,6 @@ Authenticate a user with username/password. Tries LDAP providers first, falls ba
 
 **Error responses:**
 - `400` -- `{"error": "username and password required"}`
-- `400` -- `{"error": "invalid app_id"}`
 - `401` -- `{"error": "invalid credentials"}`
 - `429` -- `{"error": "too many login attempts"}` (with `Retry-After` header)
 
@@ -157,7 +154,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 
 ### `POST /api/auth/impersonate`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Generate an access token for any user. Useful for testing and support scenarios.
 
@@ -165,8 +162,7 @@ Generate an access token for any user. Useful for testing and support scenarios.
 
 ```json
 {
-  "guid": "550e8400-...",
-  "app_id": "app-a1b2c3d4"
+  "guid": "550e8400-..."
 }
 ```
 
@@ -241,6 +237,8 @@ All OIDC endpoints follow the Keycloak URL pattern: `/realms/{realm}/protocol/op
 
 The realm defaults to your `jwt_issuer` config value (default: `simpleauth`).
 
+OIDC client settings (client ID, client secret, redirect URIs) are configured at the instance level using environment variables: `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URIS`.
+
 ### `GET /.well-known/openid-configuration`
 
 **Auth:** None
@@ -270,7 +268,7 @@ curl -k https://localhost:8080/.well-known/openid-configuration
   "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
   "claims_supported": [
     "sub", "iss", "aud", "exp", "iat", "name", "email",
-    "preferred_username", "realm_access", "resource_access",
+    "preferred_username", "realm_access",
     "department", "company", "job_title", "groups"
   ]
 }
@@ -314,15 +312,15 @@ curl -k https://localhost:8080/.well-known/jwks.json
 OAuth2 Authorization endpoint. Renders the hosted login page for the authorization code flow.
 
 **Query parameters:**
-- `client_id` (required) -- App ID
-- `redirect_uri` -- Where to redirect after login
+- `client_id` (required) -- Must match the configured `AUTH_CLIENT_ID`
+- `redirect_uri` -- Where to redirect after login (must be in `AUTH_REDIRECT_URIS`)
 - `response_type` -- Must be `code`
 - `state` -- CSRF protection value (passed through)
 - `nonce` -- Replay protection for ID tokens
 - `scope` -- Space-separated scopes (e.g., `openid profile email`)
 
 ```
-https://auth.example.com/realms/simpleauth/protocol/openid-connect/auth?client_id=app-abc&redirect_uri=https://myapp.com/callback&response_type=code&state=xyz
+https://auth.example.com/realms/simpleauth/protocol/openid-connect/auth?client_id=my-app&redirect_uri=https://myapp.com/callback&response_type=code&state=xyz
 ```
 
 On successful login, redirects to `redirect_uri?code=AUTH_CODE&state=xyz`.
@@ -339,12 +337,14 @@ OAuth2 Token endpoint. Supports four grant types.
 - HTTP Basic: `Authorization: Basic base64(client_id:client_secret)`
 - Form body: `client_id=...&client_secret=...`
 
+The `client_id` and `client_secret` must match the instance-level `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET`.
+
 #### Authorization Code Grant
 
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "app-abc:sk-xxxx" \
+  -u "my-app:my-secret" \
   -d "grant_type=authorization_code&code=AUTH_CODE&redirect_uri=https://myapp.com/callback"
 ```
 
@@ -353,7 +353,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "app-abc:sk-xxxx" \
+  -u "my-app:my-secret" \
   -d "grant_type=password&username=jsmith&password=secret&scope=openid profile email"
 ```
 
@@ -362,7 +362,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "app-abc:sk-xxxx" \
+  -u "my-app:my-secret" \
   -d "grant_type=client_credentials"
 ```
 
@@ -371,7 +371,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "app-abc:sk-xxxx" \
+  -u "my-app:my-secret" \
   -d "grant_type=refresh_token&refresh_token=eyJ..."
 ```
 
@@ -425,8 +425,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
   "job_title": "Senior Engineer",
   "roles": ["admin"],
   "groups": ["CN=Engineering,..."],
-  "realm_access": {"roles": ["admin"]},
-  "resource_access": {"app-abc": {"roles": ["admin"]}}
+  "realm_access": {"roles": ["admin"]}
 }
 ```
 
@@ -441,7 +440,7 @@ RFC 7662 Token Introspection. Validates a token and returns its claims.
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token/introspect \
-  -u "app-abc:sk-xxxx" \
+  -u "my-app:my-secret" \
   -d "token=eyJ..."
 ```
 
@@ -455,7 +454,7 @@ curl -k -X POST \
   "exp": 1700000000,
   "iat": 1699971200,
   "token_type": "Bearer",
-  "client_id": "app-abc",
+  "client_id": "my-app",
   "scope": "openid profile email",
   "preferred_username": "jsmith@corp.local",
   "name": "John Smith",
@@ -489,143 +488,11 @@ curl -k -X POST \
 
 ---
 
-## Admin: Apps
-
-### `GET /api/admin/apps`
-
-**Auth:** Admin Key or App API Key
-
-List all registered applications.
-
-```bash
-curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/apps
-```
-
-**Response (200):**
-
-```json
-[
-  {
-    "app_id": "app-a1b2c3d4",
-    "name": "My Web App",
-    "description": "Our main application",
-    "api_key": "sk-xxxx",
-    "redirect_uris": ["https://myapp.example.com/callback"],
-    "provider_mappings": {},
-    "created_at": "2024-01-15T10:30:00Z"
-  }
-]
-```
-
----
-
-### `POST /api/admin/apps`
-
-**Auth:** Admin Key
-
-Create a new application.
-
-**Request:**
-
-```json
-{
-  "name": "My App",
-  "description": "Optional description",
-  "redirect_uris": ["https://myapp.example.com/callback"],
-  "provider_mappings": {
-    "corp-ad": {"field": "sAMAccountName"}
-  }
-}
-```
-
-- `provider_mappings` (optional): Maps an LDAP provider ID to the LDAP attribute used as the username for that app. Default is to use the username as-is.
-
-**Response (201):**
-
-```json
-{
-  "app_id": "app-a1b2c3d4",
-  "name": "My App",
-  "api_key": "sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-}
-```
-
----
-
-### `GET /api/admin/apps/{app_id}`
-
-**Auth:** Admin Key or App API Key
-
-Get a single application by ID.
-
----
-
-### `PUT /api/admin/apps/{app_id}`
-
-**Auth:** Admin Key
-
-Update an application. Only the fields you provide are updated.
-
-**Request:**
-
-```json
-{
-  "name": "Updated Name",
-  "description": "Updated description",
-  "redirect_uris": ["https://new-url.example.com/callback"],
-  "provider_mappings": {"corp-ad": {"field": "mail"}}
-}
-```
-
----
-
-### `DELETE /api/admin/apps/{app_id}`
-
-**Auth:** Admin Key
-
-Delete an application.
-
-```bash
-curl -k -X DELETE -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/apps/app-a1b2c3d4
-```
-
-**Response (200):**
-
-```json
-{"status": "deleted"}
-```
-
----
-
-### `POST /api/admin/apps/{app_id}/rotate-key`
-
-**Auth:** Admin Key
-
-Rotate an app's API key. The old key is immediately invalidated.
-
-```bash
-curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/apps/app-a1b2c3d4/rotate-key
-```
-
-**Response (200):**
-
-```json
-{
-  "app_id": "app-a1b2c3d4",
-  "new_api_key": "sk-new-key-here"
-}
-```
-
----
-
 ## Admin: Users
 
 ### `GET /api/admin/users`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 List all users. Password hashes are stripped from the response.
 
@@ -638,7 +505,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `POST /api/admin/users`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Create a local user.
 
@@ -670,7 +537,7 @@ Create a local user.
 
 ### `GET /api/admin/users/{guid}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Get a single user by GUID.
 
@@ -678,7 +545,7 @@ Get a single user by GUID.
 
 ### `PUT /api/admin/users/{guid}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Update user fields. Only provided fields are updated.
 
@@ -698,7 +565,7 @@ Update user fields. Only provided fields are updated.
 
 ### `DELETE /api/admin/users/{guid}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Delete a user.
 
@@ -706,7 +573,7 @@ Delete a user.
 
 ### `PUT /api/admin/users/{guid}/password`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Set a user's password (admin override, no current password required).
 
@@ -720,7 +587,7 @@ Set a user's password (admin override, no current password required).
 
 ### `PUT /api/admin/users/{guid}/disabled`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Enable or disable a user account. Disabled users cannot log in.
 
@@ -740,7 +607,7 @@ Enable or disable a user account. Disabled users cannot log in.
 
 ### `POST /api/admin/users/merge`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Merge multiple user records into one. This is useful when the same person has separate accounts from different LDAP providers. Identity mappings, roles, and permissions are all merged.
 
@@ -767,7 +634,7 @@ Merge multiple user records into one. This is useful when the same person has se
 
 ### `POST /api/admin/users/{guid}/unmerge`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Reverse a merge operation. The user record has its `merged_into` pointer cleared.
 
@@ -775,7 +642,7 @@ Reverse a merge operation. The user record has its `merged_into` pointer cleared
 
 ### `GET /api/admin/users/{guid}/sessions`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 List active sessions (non-expired, non-used refresh tokens) for a user.
 
@@ -785,7 +652,6 @@ List active sessions (non-expired, non-used refresh tokens) for a user.
 [
   {
     "family_id": "fam-xxxx",
-    "app_id": "app-a1b2c3d4",
     "created_at": "2024-01-15T10:30:00Z",
     "expires_at": "2024-02-14T10:30:00Z"
   }
@@ -796,9 +662,117 @@ List active sessions (non-expired, non-used refresh tokens) for a user.
 
 ### `DELETE /api/admin/users/{guid}/sessions`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Revoke all sessions for a user. Forces them to log in again everywhere.
+
+---
+
+## Admin: Roles & Permissions
+
+Roles and permissions are global per SimpleAuth instance.
+
+### `GET /api/admin/users/{guid}/roles`
+
+**Auth:** Admin
+
+Get a user's roles.
+
+**Response (200):**
+
+```json
+["admin", "user"]
+```
+
+---
+
+### `PUT /api/admin/users/{guid}/roles`
+
+**Auth:** Admin
+
+Set a user's roles. Replaces the entire role list.
+
+**Request body:** Array of strings.
+
+```json
+["admin", "user", "manager"]
+```
+
+---
+
+### `GET /api/admin/users/{guid}/permissions`
+
+**Auth:** Admin
+
+Get a user's permissions.
+
+**Response (200):**
+
+```json
+["read:reports", "write:config"]
+```
+
+---
+
+### `PUT /api/admin/users/{guid}/permissions`
+
+**Auth:** Admin
+
+Set a user's permissions.
+
+**Request body:** Array of strings.
+
+```json
+["read:reports", "write:config", "delete:users"]
+```
+
+---
+
+### `GET /api/admin/defaults/roles`
+
+**Auth:** Admin
+
+Get default roles that are automatically assigned to new users when they first log in.
+
+---
+
+### `PUT /api/admin/defaults/roles`
+
+**Auth:** Admin
+
+Set default roles for new users.
+
+**Request body:** Array of strings.
+
+```json
+["user", "viewer"]
+```
+
+---
+
+### `GET /api/admin/role-permissions`
+
+**Auth:** Admin
+
+Get the role-to-permissions mapping. This defines which permissions are automatically granted by each role.
+
+---
+
+### `PUT /api/admin/role-permissions`
+
+**Auth:** Admin
+
+Set the role-to-permissions mapping.
+
+**Request body:** Object mapping role names to permission arrays.
+
+```json
+{
+  "admin": ["read:all", "write:all", "delete:all"],
+  "editor": ["read:all", "write:all"],
+  "viewer": ["read:all"]
+}
+```
 
 ---
 
@@ -806,7 +780,7 @@ Revoke all sessions for a user. Forces them to log in again everywhere.
 
 ### `GET /api/admin/ldap`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 List all configured LDAP providers.
 
@@ -814,7 +788,7 @@ List all configured LDAP providers.
 
 ### `POST /api/admin/ldap`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Create a new LDAP provider.
 
@@ -845,7 +819,7 @@ Create a new LDAP provider.
 
 ### `GET /api/admin/ldap/{provider_id}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Get a single LDAP provider by ID.
 
@@ -853,7 +827,7 @@ Get a single LDAP provider by ID.
 
 ### `PUT /api/admin/ldap/{provider_id}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Update an LDAP provider.
 
@@ -861,7 +835,7 @@ Update an LDAP provider.
 
 ### `DELETE /api/admin/ldap/{provider_id}`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Delete an LDAP provider.
 
@@ -869,7 +843,7 @@ Delete an LDAP provider.
 
 ### `POST /api/admin/ldap/{provider_id}/test`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Test connectivity to an LDAP provider. Returns success or an error message.
 
@@ -877,7 +851,7 @@ Test connectivity to an LDAP provider. Returns success or an error message.
 
 ### `POST /api/admin/ldap/auto-discover`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Auto-discover LDAP providers using DNS SRV records.
 
@@ -885,7 +859,7 @@ Auto-discover LDAP providers using DNS SRV records.
 
 ### `GET /api/admin/ldap/export`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Export all LDAP provider configurations as JSON.
 
@@ -893,7 +867,7 @@ Export all LDAP provider configurations as JSON.
 
 ### `POST /api/admin/ldap/import`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Import LDAP provider configurations from JSON.
 
@@ -901,7 +875,7 @@ Import LDAP provider configurations from JSON.
 
 ### `POST /api/admin/ldap/{provider_id}/setup-kerberos`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Set up Kerberos/SPNEGO authentication for an LDAP provider. Creates the SPN and generates a keytab using the provider's AD credentials.
 
@@ -918,7 +892,7 @@ Set up Kerberos/SPNEGO authentication for an LDAP provider. Creates the SPN and 
 
 ### `POST /api/admin/ldap/{provider_id}/cleanup-kerberos`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Remove Kerberos configuration (delete SPN, clean up keytab).
 
@@ -926,121 +900,19 @@ Remove Kerberos configuration (delete SPN, clean up keytab).
 
 ### `GET /api/admin/kerberos/status`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Check the status of Kerberos configuration (keytab exists, SPN configured, etc.).
 
 ---
 
-## Admin: Roles & Permissions
-
-### `GET /api/admin/apps/{app_id}/users`
-
-**Auth:** Admin Key or App API Key (scoped to own app)
-
-List all users who have roles in a specific app, along with their roles and permissions.
-
-**Response (200):**
-
-```json
-[
-  {
-    "guid": "550e8400-...",
-    "display_name": "John Smith",
-    "email": "jsmith@corp.local",
-    "roles": ["admin", "user"],
-    "permissions": ["read:reports"]
-  }
-]
-```
-
----
-
-### `GET /api/admin/apps/{app_id}/users/{guid}/roles`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Get a user's roles for a specific app.
-
-**Response (200):**
-
-```json
-["admin", "user"]
-```
-
----
-
-### `PUT /api/admin/apps/{app_id}/users/{guid}/roles`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Set a user's roles for a specific app. Replaces the entire role list.
-
-**Request body:** Array of strings.
-
-```json
-["admin", "user", "manager"]
-```
-
----
-
-### `GET /api/admin/apps/{app_id}/users/{guid}/permissions`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Get a user's permissions for a specific app.
-
-**Response (200):**
-
-```json
-["read:reports", "write:config"]
-```
-
----
-
-### `PUT /api/admin/apps/{app_id}/users/{guid}/permissions`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Set a user's permissions for a specific app.
-
-**Request body:** Array of strings.
-
-```json
-["read:reports", "write:config", "delete:users"]
-```
-
----
-
-### `GET /api/admin/apps/{app_id}/defaults/roles`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Get default roles that are automatically assigned to new users when they first log in to an app.
-
----
-
-### `PUT /api/admin/apps/{app_id}/defaults/roles`
-
-**Auth:** Admin Key or App API Key (scoped)
-
-Set default roles for new users.
-
-**Request body:** Array of strings.
-
-```json
-["user", "viewer"]
-```
-
----
-
 ## Admin: Identity Mappings
 
-Identity mappings link external identities (LDAP usernames, app-specific IDs) to SimpleAuth user GUIDs. This is how SimpleAuth tracks that "jsmith" in AD and "john.smith" in your app are the same person.
+Identity mappings link external identities (LDAP usernames) to SimpleAuth user GUIDs. This is how SimpleAuth tracks that "jsmith" in AD is the same person across logins.
 
 ### `GET /api/admin/mappings`
 
-**Auth:** Admin Key or App API Key
+**Auth:** Admin
 
 List all identity mappings.
 
@@ -1051,11 +923,6 @@ List all identity mappings.
   {
     "provider": "ldap:corp-ad",
     "external_id": "jsmith",
-    "user_guid": "550e8400-..."
-  },
-  {
-    "provider": "app:my-app",
-    "external_id": "john.smith",
     "user_guid": "550e8400-..."
   },
   {
@@ -1070,7 +937,7 @@ List all identity mappings.
 
 ### `GET /api/admin/users/{guid}/mappings`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Get all identity mappings for a specific user.
 
@@ -1078,7 +945,7 @@ Get all identity mappings for a specific user.
 
 ### `PUT /api/admin/users/{guid}/mappings`
 
-**Auth:** Admin Key or App API Key (apps can only set their own provider)
+**Auth:** Admin
 
 Create or update an identity mapping.
 
@@ -1086,8 +953,8 @@ Create or update an identity mapping.
 
 ```json
 {
-  "provider": "app:my-app",
-  "external_id": "john.smith"
+  "provider": "ldap:corp-ad",
+  "external_id": "jsmith"
 }
 ```
 
@@ -1095,7 +962,7 @@ Create or update an identity mapping.
 
 ### `DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}`
 
-**Auth:** Admin Key or App API Key
+**Auth:** Admin
 
 Delete an identity mapping.
 
@@ -1103,12 +970,12 @@ Delete an identity mapping.
 
 ### `GET /api/admin/mappings/resolve`
 
-**Auth:** Admin Key or App API Key
+**Auth:** Admin
 
 Resolve an external identity to a SimpleAuth user GUID.
 
 **Query parameters:**
-- `provider` -- The identity provider (e.g., `ldap:corp-ad`, `app:my-app`, `local`)
+- `provider` -- The identity provider (e.g., `ldap:corp-ad`, `local`)
 - `external_id` -- The external identifier
 
 ```bash
@@ -1124,100 +991,11 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ---
 
-## Admin: One-Time Tokens
-
-One-time tokens are used for self-registration. You create a token, give it to a developer, and they use it to register their app without needing the admin key.
-
-### `GET /api/admin/tokens`
-
-**Auth:** Admin Key
-
-List all one-time tokens. Optionally filter by scope.
-
-**Query parameters:**
-- `scope` (optional) -- Filter by scope (e.g., `app-registration`)
-
----
-
-### `POST /api/admin/tokens`
-
-**Auth:** Admin Key
-
-Create a new one-time token.
-
-**Request:**
-
-```json
-{
-  "scope": "app-registration",
-  "label": "For team-alpha's new service",
-  "ttl": "48h"
-}
-```
-
-- `ttl` defaults to `24h` if omitted.
-
-**Response (201):**
-
-```json
-{
-  "token": "ABC-1234",
-  "scope": "app-registration",
-  "label": "For team-alpha's new service",
-  "used": false,
-  "expires_at": "2024-01-17T10:30:00Z",
-  "created_at": "2024-01-15T10:30:00Z"
-}
-```
-
----
-
-### `DELETE /api/admin/tokens/{token}`
-
-**Auth:** Admin Key
-
-Delete a one-time token.
-
----
-
-### `POST /api/register`
-
-**Auth:** None (requires a valid one-time token)
-
-Self-register an app using a one-time token. This is a public endpoint.
-
-**Request:**
-
-```json
-{
-  "token": "ABC-1234",
-  "name": "Team Alpha Service",
-  "description": "Internal microservice",
-  "redirect_uris": ["https://alpha.internal/callback"],
-  "provider_mappings": {}
-}
-```
-
-**Response (201):**
-
-```json
-{
-  "app_id": "app-e5f6g7h8",
-  "name": "Team Alpha Service",
-  "api_key": "sk-xxxx"
-}
-```
-
-**Error responses:**
-- `401` -- Token not found, expired, already used, or scope mismatch
-
----
-
 ## Admin: Backup & Restore
 
 ### `GET /api/admin/backup`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Download a complete database backup as a binary file.
 
@@ -1230,7 +1008,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `POST /api/admin/restore`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Restore from a backup file. Multipart form upload. **This replaces the entire database.**
 
@@ -1252,12 +1030,12 @@ curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `GET /api/admin/audit`
 
-**Auth:** Admin Key
+**Auth:** Admin
 
 Query the audit log. All authentication events, admin actions, and security events are logged.
 
 **Query parameters:**
-- `event` -- Filter by event type (e.g., `login_success`, `login_failed`, `app_registered`, `role_changed`, `sessions_revoked`, `oidc_authorize`, `oidc_token`, `oidc_logout`)
+- `event` -- Filter by event type (e.g., `login_success`, `login_failed`, `role_changed`, `sessions_revoked`, `oidc_authorize`, `oidc_token`, `oidc_logout`)
 - `user` -- Filter by user GUID (actor)
 - `from` -- Start date (`YYYY-MM-DD`)
 - `to` -- End date (`YYYY-MM-DD`)
@@ -1281,7 +1059,6 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
     "ip": "192.168.1.100",
     "data": {
       "username": "jsmith",
-      "app_id": "app-abc",
       "reason": "invalid credentials"
     }
   }
@@ -1295,9 +1072,6 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 | `login_failed` | Failed authentication attempt |
 | `token_refreshed` | Refresh token used |
 | `token_reuse` | Refresh token replay detected (security event) |
-| `app_registered` | New app created |
-| `app_self_registered` | App self-registered with one-time token |
-| `app_key_rotated` | App API key rotated |
 | `user_created` | New user created |
 | `user_merged` | Users merged |
 | `user_unmerged` | User unmerged |
@@ -1309,4 +1083,3 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 | `oidc_authorize` | OIDC authorization code issued |
 | `oidc_token` | OIDC token issued |
 | `oidc_logout` | OIDC logout |
-| `token_created` | One-time registration token created |

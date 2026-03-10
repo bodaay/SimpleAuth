@@ -14,8 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +40,9 @@ type Config struct {
 	RateLimitWindow time.Duration `yaml:"rate_limit_window"`
 	CORSOrigins     string        `yaml:"cors_origins"`
 	HTTPPort        string        `yaml:"http_port"`
+	ClientID        string        `yaml:"client_id"`
+	ClientSecret    string        `yaml:"client_secret"`
+	RedirectURIs    []string      `yaml:"redirect_uris"`
 }
 
 // configFile is an intermediate struct for YAML parsing with string durations.
@@ -58,8 +63,11 @@ type configFile struct {
 	AuditRetention  string `yaml:"audit_retention"`
 	RateLimitMax    int    `yaml:"rate_limit_max"`
 	RateLimitWindow string `yaml:"rate_limit_window"`
-	CORSOrigins     string `yaml:"cors_origins"`
-	HTTPPort        string `yaml:"http_port"`
+	CORSOrigins     string   `yaml:"cors_origins"`
+	HTTPPort        string   `yaml:"http_port"`
+	ClientID        string   `yaml:"client_id"`
+	ClientSecret    string   `yaml:"client_secret"`
+	RedirectURIs    []string `yaml:"redirect_uris"`
 }
 
 // Load reads config with priority: config file > env vars > defaults.
@@ -119,6 +127,15 @@ func Load() *Config {
 		cfg.TLSKey = keyPath
 	}
 
+	// Auto-generate OIDC client credentials if not configured
+	if cfg.ClientID == "" {
+		cfg.ClientID = "simpleauth"
+	}
+	if cfg.ClientSecret == "" {
+		cfg.ClientSecret = uuid.New().String()
+		log.Printf("No client_secret configured — generated: %s", cfg.ClientSecret)
+	}
+
 	return cfg
 }
 
@@ -170,6 +187,17 @@ rate_limit_window: "1m"
 
 # CORS origins (comma-separated, or "*" for all)
 # cors_origins: "https://app.example.com"
+
+# OIDC client credentials for this instance (single-app mode)
+# client_id is auto-generated as "simpleauth" if empty
+# client_secret is auto-generated (UUID) if empty
+client_id: ""
+client_secret: ""
+
+# Allowed redirect URIs for this instance (list)
+# redirect_uris:
+#   - "https://app.example.com/callback"
+#   - "http://localhost:3000/callback"
 `
 	return os.WriteFile(path, []byte(defaultYAML), 0600)
 }
@@ -274,6 +302,15 @@ func loadConfigFile(cfg *Config) {
 	if fc.HTTPPort != "" {
 		cfg.HTTPPort = fc.HTTPPort
 	}
+	if fc.ClientID != "" {
+		cfg.ClientID = fc.ClientID
+	}
+	if fc.ClientSecret != "" {
+		cfg.ClientSecret = fc.ClientSecret
+	}
+	if len(fc.RedirectURIs) > 0 {
+		cfg.RedirectURIs = fc.RedirectURIs
+	}
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -342,6 +379,15 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_HTTP_PORT"); v != "" {
 		cfg.HTTPPort = v
+	}
+	if v := os.Getenv("AUTH_CLIENT_ID"); v != "" {
+		cfg.ClientID = v
+	}
+	if v := os.Getenv("AUTH_CLIENT_SECRET"); v != "" {
+		cfg.ClientSecret = v
+	}
+	if v := os.Getenv("AUTH_REDIRECT_URIS"); v != "" {
+		cfg.RedirectURIs = strings.Split(v, ",")
 	}
 }
 

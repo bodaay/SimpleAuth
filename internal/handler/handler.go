@@ -94,14 +94,6 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 		}, http.StatusOK)
 	}))
 
-	// Admin: Apps
-	h.mux.HandleFunc("GET /api/admin/apps", h.adminAuth(h.handleListApps))
-	h.mux.HandleFunc("POST /api/admin/apps", h.requireMasterAdmin(h.handleCreateApp))
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}", h.adminAuth(h.handleGetApp))
-	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}", h.requireMasterAdmin(h.handleUpdateApp))
-	h.mux.HandleFunc("DELETE /api/admin/apps/{app_id}", h.requireMasterAdmin(h.handleDeleteApp))
-	h.mux.HandleFunc("POST /api/admin/apps/{app_id}/rotate-key", h.requireMasterAdmin(h.handleRotateAppKey))
-
 	// Admin: LDAP Providers
 	h.mux.HandleFunc("GET /api/admin/ldap", h.requireMasterAdmin(h.handleListLDAP))
 	h.mux.HandleFunc("POST /api/admin/ldap", h.requireMasterAdmin(h.handleCreateLDAP))
@@ -131,34 +123,26 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/auth/reset-password", h.handleResetPassword)
 
 	// Admin: Identity Mappings
-	h.mux.HandleFunc("GET /api/admin/mappings", h.adminAuth(h.handleListAllMappings))
+	h.mux.HandleFunc("GET /api/admin/mappings", h.requireMasterAdmin(h.handleListAllMappings))
 	h.mux.HandleFunc("GET /api/admin/users/{guid}/mappings", h.requireMasterAdmin(h.handleGetMappings))
-	h.mux.HandleFunc("PUT /api/admin/users/{guid}/mappings", h.adminAuth(h.handleSetMapping))
-	h.mux.HandleFunc("DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}", h.adminAuth(h.handleDeleteMapping))
-	h.mux.HandleFunc("GET /api/admin/mappings/resolve", h.adminAuth(h.handleResolveMapping))
+	h.mux.HandleFunc("PUT /api/admin/users/{guid}/mappings", h.requireMasterAdmin(h.handleSetMapping))
+	h.mux.HandleFunc("DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}", h.requireMasterAdmin(h.handleDeleteMapping))
+	h.mux.HandleFunc("GET /api/admin/mappings/resolve", h.requireMasterAdmin(h.handleResolveMapping))
 
 	// Admin: Roles & Permissions
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/users", h.adminAuth(h.handleListAppUsers))
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/users/{guid}/roles", h.adminAuth(h.handleGetRoles))
-	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/users/{guid}/roles", h.adminAuth(h.handleSetRoles))
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/users/{guid}/permissions", h.adminAuth(h.handleGetPermissions))
-	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/users/{guid}/permissions", h.adminAuth(h.handleSetPermissions))
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleGetDefaultRoles))
-	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleSetDefaultRoles))
-	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/role-permissions", h.adminAuth(h.handleGetRolePermissions))
-	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/role-permissions", h.adminAuth(h.handleSetRolePermissions))
-
-	// Admin: Global Defaults
-	h.mux.HandleFunc("GET /api/admin/defaults/roles", h.requireMasterAdmin(h.handleGetGlobalDefaultRoles))
-	h.mux.HandleFunc("PUT /api/admin/defaults/roles", h.requireMasterAdmin(h.handleSetGlobalDefaultRoles))
+	h.mux.HandleFunc("GET /api/admin/users/{guid}/roles", h.requireMasterAdmin(h.handleGetRoles))
+	h.mux.HandleFunc("PUT /api/admin/users/{guid}/roles", h.requireMasterAdmin(h.handleSetRoles))
+	h.mux.HandleFunc("GET /api/admin/users/{guid}/permissions", h.requireMasterAdmin(h.handleGetPermissions))
+	h.mux.HandleFunc("PUT /api/admin/users/{guid}/permissions", h.requireMasterAdmin(h.handleSetPermissions))
+	h.mux.HandleFunc("GET /api/admin/defaults/roles", h.requireMasterAdmin(h.handleGetDefaultRoles))
+	h.mux.HandleFunc("PUT /api/admin/defaults/roles", h.requireMasterAdmin(h.handleSetDefaultRoles))
+	h.mux.HandleFunc("GET /api/admin/role-permissions", h.requireMasterAdmin(h.handleGetRolePermissions))
+	h.mux.HandleFunc("PUT /api/admin/role-permissions", h.requireMasterAdmin(h.handleSetRolePermissions))
 
 	// Admin: One-Time Tokens
 	h.mux.HandleFunc("GET /api/admin/tokens", h.requireMasterAdmin(h.handleListTokens))
 	h.mux.HandleFunc("POST /api/admin/tokens", h.requireMasterAdmin(h.handleCreateToken))
 	h.mux.HandleFunc("DELETE /api/admin/tokens/{token}", h.requireMasterAdmin(h.handleDeleteToken))
-
-	// Public: Self-Register with token
-	h.mux.HandleFunc("POST /api/register", h.handleSelfRegister)
 
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))
@@ -215,15 +199,6 @@ func setContext(ctx context.Context, key contextKey, val string) context.Context
 func getContext(ctx context.Context, key contextKey) string {
 	v, _ := ctx.Value(key).(string)
 	return v
-}
-
-// checkAppScope verifies that an app API key can only manage its own app.
-func (h *Handler) checkAppScope(r *http.Request, targetAppID string) bool {
-	if getContext(r.Context(), ctxIsAdmin) == "true" {
-		return true
-	}
-	callerAppID := getContext(r.Context(), ctxAppID)
-	return callerAppID == targetAppID
 }
 
 func (h *Handler) audit(event, actor, ip string, data map[string]interface{}) {

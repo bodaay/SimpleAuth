@@ -35,6 +35,8 @@ func testSetup(t *testing.T) (*Handler, *store.Store) {
 		RefreshTTL:     24 * time.Hour,
 		ImpersonateTTL: 30 * time.Minute,
 		AuditRetention: 90 * 24 * time.Hour,
+		ClientID:       "test-client",
+		ClientSecret:   "test-secret",
 	}
 
 	h := New(cfg, s, jwtMgr, nil)
@@ -78,76 +80,6 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestAdminAppCRUD(t *testing.T) {
-	h, _ := testSetup(t)
-	auth := adminHeaders()
-
-	// Create app
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{
-		"name": "Test App", "description": "A test application",
-	}, auth)
-	if w.Code != 201 {
-		t.Fatalf("create app: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-	apiKey := app["api_key"].(string)
-	if appID == "" || apiKey == "" {
-		t.Fatal("missing app_id or api_key")
-	}
-
-	// List apps
-	w = doJSON(h, "GET", "/api/admin/apps", nil, auth)
-	if w.Code != 200 {
-		t.Fatalf("list apps: expected 200, got %d", w.Code)
-	}
-	var apps []map[string]interface{}
-	parseJSON(t, w, &apps)
-	if len(apps) != 1 {
-		t.Fatalf("expected 1 app, got %d", len(apps))
-	}
-
-	// Get app
-	w = doJSON(h, "GET", "/api/admin/apps/"+appID, nil, auth)
-	if w.Code != 200 {
-		t.Fatalf("get app: expected 200, got %d", w.Code)
-	}
-
-	// Update app
-	w = doJSON(h, "PUT", "/api/admin/apps/"+appID, map[string]interface{}{
-		"name": "Updated App",
-	}, auth)
-	if w.Code != 200 {
-		t.Fatalf("update app: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	// Rotate key
-	w = doJSON(h, "POST", "/api/admin/apps/"+appID+"/rotate-key", nil, auth)
-	if w.Code != 200 {
-		t.Fatalf("rotate key: expected 200, got %d", w.Code)
-	}
-	var rotated map[string]interface{}
-	parseJSON(t, w, &rotated)
-	newKey := rotated["new_api_key"].(string)
-	if newKey == "" || newKey == apiKey {
-		t.Fatal("api key should have changed")
-	}
-
-	// Delete app
-	w = doJSON(h, "DELETE", "/api/admin/apps/"+appID, nil, auth)
-	if w.Code != 200 {
-		t.Fatalf("delete app: expected 200, got %d", w.Code)
-	}
-
-	// Verify deleted
-	w = doJSON(h, "GET", "/api/admin/apps", nil, auth)
-	parseJSON(t, w, &apps)
-	if len(apps) != 0 {
-		t.Fatalf("expected 0 apps after delete, got %d", len(apps))
-	}
-}
-
 func TestAdminUserCRUD(t *testing.T) {
 	h, _ := testSetup(t)
 	auth := adminHeaders()
@@ -186,7 +118,7 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 
 	// Disable user
-	w = doJSON(h, "PUT", "/api/admin/users/"+guid, map[string]interface{}{
+	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/disabled", map[string]interface{}{
 		"disabled": true,
 	}, auth)
 	if w.Code != 200 {
@@ -204,16 +136,8 @@ func TestLocalLogin(t *testing.T) {
 	h, s := testSetup(t)
 	adm := adminHeaders()
 
-	// Create app
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{
-		"name": "Login App",
-	}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
 	// Create user with password
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
 		"display_name": "Bob", "email": "bob@test.com", "password": "pass1234",
 	}, adm)
 	var user map[string]interface{}
@@ -225,7 +149,7 @@ func TestLocalLogin(t *testing.T) {
 
 	// Login with wrong password
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "bob", "password": "wrongpass", "app_id": appID,
+		"username": "bob", "password": "wrongpass",
 	}, nil)
 	if w.Code != 401 {
 		t.Fatalf("wrong password: expected 401, got %d: %s", w.Code, w.Body.String())
@@ -233,7 +157,7 @@ func TestLocalLogin(t *testing.T) {
 
 	// Login with correct password
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "bob", "password": "pass1234", "app_id": appID,
+		"username": "bob", "password": "pass1234",
 	}, nil)
 	if w.Code != 200 {
 		t.Fatalf("login: expected 200, got %d: %s", w.Code, w.Body.String())
@@ -259,13 +183,8 @@ func TestRefreshTokenRotation(t *testing.T) {
 	h, s := testSetup(t)
 	adm := adminHeaders()
 
-	// Setup: create app + user
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Refresh App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+	// Setup: create user
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
 		"display_name": "Charlie", "password": "mypass",
 	}, adm)
 	var user map[string]interface{}
@@ -275,7 +194,7 @@ func TestRefreshTokenRotation(t *testing.T) {
 
 	// Login
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "charlie", "password": "mypass", "app_id": appID,
+		"username": "charlie", "password": "mypass",
 	}, nil)
 	if w.Code != 200 {
 		t.Fatalf("login: expected 200, got %d: %s", w.Code, w.Body.String())
@@ -369,11 +288,6 @@ func TestIdentityMappingsAPI(t *testing.T) {
 	if len(mappings) != 1 {
 		t.Fatalf("expected 1 mapping, got %d", len(mappings))
 	}
-	// The store key is "ldap:corp:jdoe", split on first colon gives provider="ldap" external_id="corp:jdoe"
-	// This is expected behavior for compound providers
-	if len(mappings) != 1 {
-		t.Fatalf("expected 1 mapping, got %d", len(mappings))
-	}
 
 	// Resolve mapping
 	w = doJSON(h, "GET", "/api/admin/mappings/resolve?provider=ldap:corp&external_id=jdoe", nil, adm)
@@ -398,26 +312,21 @@ func TestRolesAndPermissions(t *testing.T) {
 	h, _ := testSetup(t)
 	adm := adminHeaders()
 
-	// Create app and user
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Roles App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "RoleUser"}, adm)
+	// Create user
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "RoleUser"}, adm)
 	var user map[string]interface{}
 	parseJSON(t, w, &user)
 	guid := user["guid"].(string)
 
-	// Set roles (path: /api/admin/apps/{app_id}/users/{guid}/roles) — expects plain array
-	w = doJSON(h, "PUT", "/api/admin/apps/"+appID+"/users/"+guid+"/roles",
+	// Set roles
+	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/roles",
 		[]string{"admin", "editor"}, adm)
 	if w.Code != 200 {
 		t.Fatalf("set roles: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Get roles
-	w = doJSON(h, "GET", "/api/admin/apps/"+appID+"/users/"+guid+"/roles", nil, adm)
+	w = doJSON(h, "GET", "/api/admin/users/"+guid+"/roles", nil, adm)
 	if w.Code != 200 {
 		t.Fatalf("get roles: expected 200, got %d", w.Code)
 	}
@@ -427,11 +336,17 @@ func TestRolesAndPermissions(t *testing.T) {
 		t.Fatalf("expected 2 roles, got %d", len(roles))
 	}
 
-	// Set permissions (plain array)
-	w = doJSON(h, "PUT", "/api/admin/apps/"+appID+"/users/"+guid+"/permissions",
+	// Set permissions
+	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/permissions",
 		[]string{"read", "write", "delete"}, adm)
 	if w.Code != 200 {
 		t.Fatalf("set permissions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Get permissions
+	w = doJSON(h, "GET", "/api/admin/users/"+guid+"/permissions", nil, adm)
+	if w.Code != 200 {
+		t.Fatalf("get permissions: expected 200, got %d", w.Code)
 	}
 }
 
@@ -439,20 +354,15 @@ func TestImpersonation(t *testing.T) {
 	h, _ := testSetup(t)
 	adm := adminHeaders()
 
-	// Create app and user
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Imp App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "Target"}, adm)
+	// Create user
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "Target"}, adm)
 	var user map[string]interface{}
 	parseJSON(t, w, &user)
 	guid := user["guid"].(string)
 
 	// Impersonate (requires master admin)
 	w = doJSON(h, "POST", "/api/auth/impersonate", map[string]interface{}{
-		"target_guid": guid, "app_id": appID,
+		"target_guid": guid,
 	}, adm)
 	if w.Code != 200 {
 		t.Fatalf("impersonate: expected 200, got %d: %s", w.Code, w.Body.String())
@@ -466,28 +376,13 @@ func TestImpersonation(t *testing.T) {
 
 func TestHostedLoginPage(t *testing.T) {
 	h, _ := testSetup(t)
-	adm := adminHeaders()
 
-	// Create app
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Hosted App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	// GET login page without app_id
+	// GET login page (no redirect_uri required)
 	req := httptest.NewRequest("GET", "/login", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("no app_id: expected 400, got %d", rec.Code)
-	}
-
-	// GET login page with valid app_id
-	req = httptest.NewRequest("GET", "/login?app_id="+appID, nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
-		t.Fatalf("with app_id: expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("login page: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Fatalf("expected HTML content type, got %s", ct)
@@ -521,7 +416,6 @@ func TestAuditLog(t *testing.T) {
 
 func TestBackup(t *testing.T) {
 	h, _ := testSetup(t)
-	adm := adminHeaders()
 
 	req := httptest.NewRequest("GET", "/api/admin/backup", nil)
 	req.Header.Set("Authorization", "Bearer test-admin-key")
@@ -543,7 +437,6 @@ func TestBackup(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatalf("backup without auth: expected 401, got %d", w.Code)
 	}
-	_ = adm
 }
 
 func TestUserMerge(t *testing.T) {
@@ -592,13 +485,8 @@ func TestSessionManagement(t *testing.T) {
 	h, s := testSetup(t)
 	adm := adminHeaders()
 
-	// Create app + user, login to generate sessions
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "Session App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+	// Create user, login to generate sessions
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
 		"display_name": "SessionUser", "password": "pass123",
 	}, adm)
 	var user map[string]interface{}
@@ -608,7 +496,7 @@ func TestSessionManagement(t *testing.T) {
 
 	// Login to create a session
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "sessionuser", "password": "pass123", "app_id": appID,
+		"username": "sessionuser", "password": "pass123",
 	}, nil)
 	if w.Code != 200 {
 		t.Fatalf("login: expected 200, got %d: %s", w.Code, w.Body.String())
@@ -643,13 +531,8 @@ func TestPasswordReset(t *testing.T) {
 	h, s := testSetup(t)
 	adm := adminHeaders()
 
-	// Create app + user
-	w := doJSON(h, "POST", "/api/admin/apps", map[string]interface{}{"name": "PW App"}, adm)
-	var app map[string]interface{}
-	parseJSON(t, w, &app)
-	appID := app["app_id"].(string)
-
-	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
+	// Create user
+	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{
 		"display_name": "PWUser", "password": "oldpass",
 	}, adm)
 	var user map[string]interface{}
@@ -659,7 +542,7 @@ func TestPasswordReset(t *testing.T) {
 
 	// Login to get a token
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "pwuser", "password": "oldpass", "app_id": appID,
+		"username": "pwuser", "password": "oldpass",
 	}, nil)
 	var tokens map[string]interface{}
 	parseJSON(t, w, &tokens)
@@ -683,7 +566,7 @@ func TestPasswordReset(t *testing.T) {
 
 	// Verify new password works
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "pwuser", "password": "newpass123", "app_id": appID,
+		"username": "pwuser", "password": "newpass123",
 	}, nil)
 	if w.Code != 200 {
 		t.Fatalf("login with new password: expected 200, got %d: %s", w.Code, w.Body.String())
@@ -691,7 +574,7 @@ func TestPasswordReset(t *testing.T) {
 
 	// Verify old password fails
 	w = doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
-		"username": "pwuser", "password": "oldpass", "app_id": appID,
+		"username": "pwuser", "password": "oldpass",
 	}, nil)
 	if w.Code != 401 {
 		t.Fatalf("login with old password: expected 401, got %d", w.Code)

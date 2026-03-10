@@ -26,8 +26,6 @@ standalone runnable script.
 #
 # # SimpleAuth configuration
 # SIMPLEAUTH_URL = "https://auth.example.com"
-# SIMPLEAUTH_APP_ID = "my-django-app"
-# SIMPLEAUTH_APP_SECRET = "app-secret-key-here"  # optional
 # SIMPLEAUTH_REALM = "simpleauth"                 # optional, default "simpleauth"
 # SIMPLEAUTH_VERIFY_SSL = True                    # optional, default True
 #

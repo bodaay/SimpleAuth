@@ -24,8 +24,6 @@ using SimpleAuth;
 var options = new SimpleAuthOptions
 {
     Url = "https://auth.example.com",
-    AppId = "my-console-app",
-    AppSecret = "app-secret-key-here",
     Realm = "simpleauth",
     ValidateSsl = true, // set false for self-signed certs in development
 };

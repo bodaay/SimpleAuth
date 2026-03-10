@@ -12,8 +12,6 @@
 //
 // Environment variables:
 //   SIMPLEAUTH_URL        — SimpleAuth server URL (default: https://auth.corp.local:9090)
-//   SIMPLEAUTH_APP_ID     — Application ID (default: my-go-app)
-//   SIMPLEAUTH_APP_SECRET — Application secret (default: my-app-secret)
 //   TEST_USERNAME         — Username for login (default: admin)
 //   TEST_PASSWORD         — Password for login (default: admin123)
 // ---------------------------------------------------------------------------
@@ -43,8 +41,6 @@ func main() {
 	// -----------------------------------------------------------------
 	client := simpleauth.New(simpleauth.Options{
 		URL:                envOr("SIMPLEAUTH_URL", "https://auth.corp.local:9090"),
-		AppID:              envOr("SIMPLEAUTH_APP_ID", "my-go-app"),
-		AppSecret:          envOr("SIMPLEAUTH_APP_SECRET", "my-app-secret"),
 		InsecureSkipVerify: true, // Only for development with self-signed certs
 	})
 

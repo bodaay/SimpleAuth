@@ -20,7 +20,7 @@
 //   curl http://localhost:8080/api/admin/users -H "Authorization: Bearer <token>"
 //
 // Environment variables:
-//   SIMPLEAUTH_URL, SIMPLEAUTH_APP_ID, SIMPLEAUTH_APP_SECRET, PORT
+//   SIMPLEAUTH_URL, PORT
 // ---------------------------------------------------------------------------
 package main
 
@@ -60,8 +60,6 @@ func main() {
 	// -----------------------------------------------------------------
 	auth := simpleauth.New(simpleauth.Options{
 		URL:                envOr("SIMPLEAUTH_URL", "https://auth.corp.local:9090"),
-		AppID:              envOr("SIMPLEAUTH_APP_ID", "my-api-service"),
-		AppSecret:          envOr("SIMPLEAUTH_APP_SECRET", "my-api-secret"),
 		InsecureSkipVerify: true,
 	})
 

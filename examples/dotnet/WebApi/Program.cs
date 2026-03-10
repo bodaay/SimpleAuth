@@ -30,12 +30,8 @@ builder.Services.AddSimpleAuth(options =>
 {
     // In production, load these from appsettings.json or environment variables:
     //   options.Url = builder.Configuration["SimpleAuth:Url"]!;
-    //   options.AppId = builder.Configuration["SimpleAuth:AppId"]!;
-    //   options.AppSecret = builder.Configuration["SimpleAuth:AppSecret"]!;
 
     options.Url = "https://auth.example.com";
-    options.AppId = "my-webapi-app";
-    options.AppSecret = "app-secret-key-here";
     options.Realm = "simpleauth";
     options.ValidateSsl = true;
 });
@@ -127,7 +123,6 @@ app.MapGet("/", () => new { status = "ok", service = "SimpleAuth WebApi Example"
 
 app.MapGet("/public/info", () => new
 {
-    app_id = "my-webapi-app",
     auth_server = "https://auth.example.com",
     docs = "/swagger",
 })

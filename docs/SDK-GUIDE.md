@@ -37,8 +37,6 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://auth.corp.local:8080',
-  appId: 'app-a1b2c3d4',
-  appSecret: 'sk-xxxx',      // required for server-side operations
   realm: 'simpleauth',        // optional, default 'simpleauth'
 });
 ```
@@ -131,16 +129,22 @@ app.get('/callback', async (req, res) => {
 ### Admin Operations
 
 ```typescript
+// Initialize with admin key for admin operations
+const adminAuth = createSimpleAuth({
+  url: 'https://auth.corp.local:8080',
+  adminKey: 'YOUR_ADMIN_KEY',
+});
+
 // Get user details
-const user = await auth.getUser('user-guid');
+const user = await adminAuth.getUser('user-guid');
 
-// Manage roles
-const roles = await auth.getUserRoles('user-guid');
-await auth.setUserRoles('user-guid', ['admin', 'user']);
+// Manage roles (global per instance)
+const roles = await adminAuth.getUserRoles('user-guid');
+await adminAuth.setUserRoles('user-guid', ['admin', 'user']);
 
-// Manage permissions
-const perms = await auth.getUserPermissions('user-guid');
-await auth.setUserPermissions('user-guid', ['read:all', 'write:config']);
+// Manage permissions (global per instance)
+const perms = await adminAuth.getUserPermissions('user-guid');
+await adminAuth.setUserPermissions('user-guid', ['read:all', 'write:config']);
 ```
 
 ### Logout
@@ -168,8 +172,6 @@ import simpleauth "simpleauth/sdk/go"
 
 client := simpleauth.New(simpleauth.Options{
     URL:                "https://auth.corp.local:8080",
-    AppID:              "app-a1b2c3d4",
-    AppSecret:          "sk-xxxx",
     Realm:              "simpleauth",    // optional
     InsecureSkipVerify: true,            // for self-signed certs
 })
@@ -263,13 +265,19 @@ tokens, err := client.ExchangeCode(ctx, code, "https://myapp.com/callback")
 ### Admin Operations
 
 ```go
-// Get/set roles
-roles, err := client.GetUserRoles(ctx, "user-guid")
-err = client.SetUserRoles(ctx, "user-guid", []string{"admin", "user"})
+// Initialize with admin key
+adminClient := simpleauth.New(simpleauth.Options{
+    URL:      "https://auth.corp.local:8080",
+    AdminKey: "YOUR_ADMIN_KEY",
+})
 
-// Get/set permissions
-perms, err := client.GetUserPermissions(ctx, "user-guid")
-err = client.SetUserPermissions(ctx, "user-guid", []string{"read:all"})
+// Get/set roles (global per instance)
+roles, err := adminClient.GetUserRoles(ctx, "user-guid")
+err = adminClient.SetUserRoles(ctx, "user-guid", []string{"admin", "user"})
+
+// Get/set permissions (global per instance)
+perms, err := adminClient.GetUserPermissions(ctx, "user-guid")
+err = adminClient.SetUserPermissions(ctx, "user-guid", []string{"read:all"})
 ```
 
 ---
@@ -291,8 +299,6 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.corp.local:8080",
-    app_id="app-a1b2c3d4",
-    app_secret="sk-xxxx",
     realm="simpleauth",     # optional
     verify_ssl=False,        # for self-signed certs
 )
@@ -342,7 +348,7 @@ from fastapi import Depends, FastAPI
 from simpleauth import SimpleAuth, User
 from simpleauth.middleware import SimpleAuthDep
 
-auth = SimpleAuth(url="https://auth.corp.local:8080", app_id="app-abc", app_secret="sk-xxxx")
+auth = SimpleAuth(url="https://auth.corp.local:8080")
 get_user = SimpleAuthDep(auth)
 
 app = FastAPI()
@@ -373,7 +379,7 @@ from flask import Flask, g, jsonify
 from simpleauth import SimpleAuth
 from simpleauth.middleware import flask_middleware
 
-auth = SimpleAuth(url="https://auth.corp.local:8080", app_id="app-abc", app_secret="sk-xxxx")
+auth = SimpleAuth(url="https://auth.corp.local:8080")
 app = Flask(__name__)
 
 @app.route("/profile")
@@ -398,8 +404,6 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.corp.local:8080"
-SIMPLEAUTH_APP_ID = "app-abc"
-SIMPLEAUTH_APP_SECRET = "sk-xxxx"
 SIMPLEAUTH_REALM = "simpleauth"
 SIMPLEAUTH_VERIFY_SSL = True
 
@@ -419,11 +423,17 @@ def admin_view(request):
 ### Admin Operations
 
 ```python
-roles = auth.get_user_roles("user-guid")
-auth.set_user_roles("user-guid", ["admin", "user"])
+admin_auth = SimpleAuth(
+    url="https://auth.corp.local:8080",
+    admin_key="YOUR_ADMIN_KEY",
+)
 
-perms = auth.get_user_permissions("user-guid")
-auth.set_user_permissions("user-guid", ["read:all"])
+# Global roles and permissions
+roles = admin_auth.get_user_roles("user-guid")
+admin_auth.set_user_roles("user-guid", ["admin", "user"])
+
+perms = admin_auth.get_user_permissions("user-guid")
+admin_auth.set_user_permissions("user-guid", ["read:all"])
 ```
 
 ### Authorization Code Flow
@@ -458,8 +468,6 @@ using SimpleAuth;
 var options = new SimpleAuthOptions
 {
     Url = "https://auth.corp.local:8080",
-    AppId = "app-a1b2c3d4",
-    AppSecret = "sk-xxxx",
     Realm = "simpleauth",
     ValidateSsl = false,     // for self-signed certs
 };
@@ -510,8 +518,6 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSimpleAuth(opts =>
 {
     opts.Url = "https://auth.corp.local:8080";
-    opts.AppId = "app-a1b2c3d4";
-    opts.AppSecret = "sk-xxxx";
     opts.ValidateSsl = false;
 });
 
@@ -560,11 +566,18 @@ public class AdminController : ControllerBase
 ### Admin Operations
 
 ```csharp
-var roles = await client.GetUserRolesAsync("user-guid");
-await client.SetUserRolesAsync("user-guid", new List<string> { "admin", "user" });
+var adminClient = new SimpleAuthClient(new SimpleAuthOptions
+{
+    Url = "https://auth.corp.local:8080",
+    AdminKey = "YOUR_ADMIN_KEY",
+});
 
-var perms = await client.GetUserPermissionsAsync("user-guid");
-await client.SetUserPermissionsAsync("user-guid", new List<string> { "read:all" });
+// Global roles and permissions
+var roles = await adminClient.GetUserRolesAsync("user-guid");
+await adminClient.SetUserRolesAsync("user-guid", new List<string> { "admin", "user" });
+
+var perms = await adminClient.GetUserPermissionsAsync("user-guid");
+await adminClient.SetUserPermissionsAsync("user-guid", new List<string> { "read:all" });
 ```
 
 ### Authorization Code Flow
@@ -597,10 +610,10 @@ Token verification is **local** -- no network call to SimpleAuth per request. Th
 
 ### Pattern 2: Role-Based Access Control
 
-Assign roles per-app. Check them in your handlers.
+Assign roles to users. Check them in your handlers.
 
 ```
-Admin: PUT /api/admin/apps/my-app/users/guid/roles ["admin", "editor"]
+Admin: PUT /api/admin/users/guid/roles ["admin", "editor"]
 Login: roles appear in the JWT
 App:   user.hasRole("editor") ? allow : deny
 ```
@@ -610,7 +623,7 @@ App:   user.hasRole("editor") ? allow : deny
 More granular than roles. Use for specific operations.
 
 ```
-Admin: PUT /api/admin/apps/my-app/users/guid/permissions ["read:posts", "write:posts", "delete:own-posts"]
+Admin: PUT /api/admin/users/guid/permissions ["read:posts", "write:posts", "delete:own-posts"]
 Login: permissions appear in the JWT
 App:   user.hasPermission("delete:own-posts") ? allow : deny
 ```
@@ -628,20 +641,19 @@ Every SDK supports disabling TLS verification for development with self-signed c
 
 Never disable TLS verification in production. Use a proper certificate (Let's Encrypt, internal CA, etc.).
 
-### Pattern 5: App-Scoped Admin Operations
+### Pattern 5: Admin Operations via SDK
 
-Apps can manage their own users' roles and permissions using their API key (no need for the master admin key):
+Use the admin key or a token from a `SimpleAuthAdmin` user to manage roles and permissions:
 
 ```typescript
-const auth = createSimpleAuth({
+const adminAuth = createSimpleAuth({
   url: 'https://auth.corp.local:8080',
-  appId: 'app-abc',
-  appSecret: 'sk-xxxx',  // This is the app's API key, not the admin key
+  adminKey: 'YOUR_ADMIN_KEY',
 });
 
-// These work with the app's API key (scoped to this app only)
-await auth.setUserRoles('user-guid', ['editor']);
-await auth.setUserPermissions('user-guid', ['write:posts']);
+// These work with the admin key (global operations)
+await adminAuth.setUserRoles('user-guid', ['editor']);
+await adminAuth.setUserPermissions('user-guid', ['write:posts']);
 ```
 
 ---

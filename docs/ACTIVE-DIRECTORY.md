@@ -25,7 +25,7 @@ Create a dedicated service account in AD for SimpleAuth. This account is used to
 
 1. Open Active Directory Users and Computers
 2. Create a new user in an OU for service accounts (e.g., `OU=Service Accounts`)
-3. Name: `svc-simpleauth` (or `svc-simpleauth-{project_name}` for multi-instance setups)
+3. Name: `svc-simpleauth` (or `svc-simpleauth-{project_name}` if running multiple instances against the same AD)
 4. Set a strong password
 5. Check "Password never expires"
 6. Uncheck "User must change password at next logon"
@@ -302,27 +302,6 @@ CN=Engineering,OU=Groups,DC=corp,DC=local
 ```
 
 These are included in JWT tokens as-is. Your app can parse the CN to get the group name, or compare full DNs for precision.
-
----
-
-## App-Specific Provider Mappings
-
-When you create an app, you can specify how usernames map to LDAP attributes:
-
-```json
-{
-  "name": "HR Portal",
-  "provider_mappings": {
-    "corp-ad": {"field": "mail"}
-  }
-}
-```
-
-This means when someone logs into "HR Portal" with username `jsmith@corp.local`, SimpleAuth searches AD using `(mail=jsmith@corp.local)` instead of `(sAMAccountName=jsmith@corp.local)`.
-
-This is useful when:
-- Different apps use different username formats (login name vs. email)
-- You need to match against a custom AD attribute
 
 ---
 

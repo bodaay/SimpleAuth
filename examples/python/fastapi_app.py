@@ -31,13 +31,9 @@ from simpleauth.middleware import SimpleAuthDep
 # ---------------------------------------------------------------------------
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-APP_ID = "my-fastapi-app"
-APP_SECRET = "app-secret-key-here"
 
 auth = SimpleAuth(
     url=SIMPLEAUTH_URL,
-    app_id=APP_ID,
-    app_secret=APP_SECRET,
     verify_ssl=True,
 )
 
@@ -117,7 +113,6 @@ async def root():
 async def public_info():
     """Returns general application info. No auth needed."""
     return {
-        "app_id": APP_ID,
         "auth_server": SIMPLEAUTH_URL,
         "docs": "/docs",
     }

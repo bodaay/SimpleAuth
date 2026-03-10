@@ -4,6 +4,8 @@
 
 SimpleAuth is a lightweight authentication server that connects to Active Directory (or works standalone with local users) and issues JWTs your apps can verify. It speaks OIDC, so any library that works with Keycloak or Auth0 works with SimpleAuth. One binary, one database file, zero external dependencies.
 
+One SimpleAuth instance serves one application. Need multiple apps? Run multiple instances -- they're tiny.
+
 ---
 
 ## 1. Start SimpleAuth
@@ -15,6 +17,9 @@ docker run -d \
   --name simpleauth \
   -p 8080:8080 \
   -v simpleauth-data:/data \
+  -e AUTH_CLIENT_ID="my-web-app" \
+  -e AUTH_CLIENT_SECRET="my-secret" \
+  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
   simpleauth
 ```
 
@@ -78,32 +83,15 @@ curl -k -X POST https://localhost:8080/api/admin/ldap/corp-ad/test \
 
 ---
 
-## 3. Create your first app
+## 3. Configure OIDC (optional)
 
-Every application that authenticates through SimpleAuth needs to be registered:
+OIDC settings are configured at the instance level using environment variables or the config file:
 
-```bash
-curl -k -X POST https://localhost:8080/api/admin/apps \
-  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "My Web App",
-    "description": "Our main application",
-    "redirect_uris": ["https://myapp.example.com/callback"]
-  }'
-```
+- `AUTH_CLIENT_ID` -- The client ID for OIDC flows (your app's identifier)
+- `AUTH_CLIENT_SECRET` -- The client secret for OIDC flows
+- `AUTH_REDIRECT_URIS` -- Comma-separated list of allowed redirect URIs
 
-Response:
-
-```json
-{
-  "app_id": "app-a1b2c3d4",
-  "name": "My Web App",
-  "api_key": "sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-}
-```
-
-Save `app_id` and `api_key`. These are your `client_id` and `client_secret`.
+These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) for details.
 
 ---
 
@@ -116,8 +104,7 @@ curl -k -X POST https://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "username": "jsmith",
-    "password": "their-ad-password",
-    "app_id": "app-a1b2c3d4"
+    "password": "their-ad-password"
   }'
 ```
 
@@ -126,7 +113,7 @@ curl -k -X POST https://localhost:8080/api/auth/login \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "app-a1b2c3d4:sk-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" \
+  -u "my-web-app:my-secret" \
   -d "grant_type=password&username=jsmith&password=their-ad-password&scope=openid"
 ```
 
@@ -163,8 +150,6 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://auth.corp.local:8080',
-  appId: 'app-a1b2c3d4',
-  appSecret: 'sk-xxxx',
 });
 
 // In your API handler:
@@ -176,9 +161,7 @@ console.log(user.name, user.roles, user.hasRole('admin'));
 
 ```go
 client := simpleauth.New(simpleauth.Options{
-    URL:       "https://auth.corp.local:8080",
-    AppID:     "app-a1b2c3d4",
-    AppSecret: "sk-xxxx",
+    URL: "https://auth.corp.local:8080",
 })
 
 // As middleware:
@@ -199,8 +182,6 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.corp.local:8080",
-    app_id="app-a1b2c3d4",
-    app_secret="sk-xxxx",
     verify_ssl=False,  # for self-signed certs in dev
 )
 
@@ -213,8 +194,6 @@ print(user.name, user.roles, user.has_role("admin"))
 ```csharp
 builder.Services.AddSimpleAuth(opts => {
     opts.Url = "https://auth.corp.local:8080";
-    opts.AppId = "app-a1b2c3d4";
-    opts.AppSecret = "sk-xxxx";
 });
 
 app.UseSimpleAuth();
@@ -230,7 +209,7 @@ var user = HttpContext.GetSimpleAuthUser();
 That's it. You have:
 
 - An authentication server connected to your Active Directory
-- An app registered with a client ID and secret
+- OIDC configured at the instance level
 - Users logging in and getting JWTs
 - Your app verifying those JWTs locally using JWKS
 

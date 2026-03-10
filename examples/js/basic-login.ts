@@ -18,8 +18,6 @@ import { createSimpleAuth, SimpleAuthError } from "@simpleauth/js";
 
 const auth = createSimpleAuth({
   url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local:9090",
-  appId: process.env.SIMPLEAUTH_APP_ID ?? "my-web-app",
-  appSecret: process.env.SIMPLEAUTH_APP_SECRET ?? "my-app-secret",
 });
 
 // --- Helpers --------------------------------------------------------------

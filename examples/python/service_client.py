@@ -27,8 +27,8 @@ from simpleauth.client import SimpleAuth, AuthenticationError, TokenResponse
 # ---------------------------------------------------------------------------
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-APP_ID = "inventory-service"
-APP_SECRET = "service-secret-key-here"
+CLIENT_ID = "inventory-service"
+CLIENT_SECRET = "service-secret-key-here"
 
 # The downstream API this service needs to call
 ORDERS_API_BASE = "https://api.internal.example.com/orders"
@@ -45,8 +45,8 @@ class ServiceAuthSession(requests.Session):
     Usage:
         session = ServiceAuthSession(
             auth_url="https://auth.example.com",
-            app_id="my-service",
-            app_secret="secret",
+            client_id="my-service",
+            client_secret="secret",
         )
 
         # Tokens are fetched and refreshed automatically
@@ -59,16 +59,16 @@ class ServiceAuthSession(requests.Session):
     def __init__(
         self,
         auth_url: str,
-        app_id: str,
-        app_secret: str,
+        client_id: str,
+        client_secret: str,
         verify_ssl: bool = True,
     ):
         super().__init__()
 
         self._auth_client = SimpleAuth(
             url=auth_url,
-            app_id=app_id,
-            app_secret=app_secret,
+            client_id=client_id,
+            client_secret=client_secret,
             verify_ssl=verify_ssl,
         )
 
@@ -109,8 +109,8 @@ def main() -> None:
     # ------------------------------------------------------------------
     auth = SimpleAuth(
         url=SIMPLEAUTH_URL,
-        app_id=APP_ID,
-        app_secret=APP_SECRET,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
     )
 
     print("Obtaining service token via client_credentials grant...")
@@ -127,7 +127,6 @@ def main() -> None:
     # Verify our own token to see its claims
     user = auth.verify(tokens.access_token)
     print(f"  Service sub:  {user.sub}")
-    print(f"  App ID:       {user.app_id}")
     print(f"  Roles:        {user.roles}")
 
     # ------------------------------------------------------------------
@@ -136,8 +135,8 @@ def main() -> None:
     print("\nCreating auto-refreshing service session...")
     session = ServiceAuthSession(
         auth_url=SIMPLEAUTH_URL,
-        app_id=APP_ID,
-        app_secret=APP_SECRET,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
     )
 
     # Every request through this session automatically includes a valid

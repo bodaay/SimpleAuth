@@ -29,14 +29,10 @@ from simpleauth.client import (
 # ---------------------------------------------------------------------------
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-APP_ID = "my-web-app"
-APP_SECRET = "app-secret-key-here"  # optional for password grant, required for refresh
 
 # Create the client once and reuse it (thread-safe, caches JWKS keys)
 auth = SimpleAuth(
     url=SIMPLEAUTH_URL,
-    app_id=APP_ID,
-    app_secret=APP_SECRET,
     verify_ssl=True,  # set False for self-signed certs in development
 )
 

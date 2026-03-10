@@ -1,6 +1,6 @@
 # SimpleAuth Python SDK
 
-Python SDK for [SimpleAuth](https://github.com/bodaay/simpleauth) — an OIDC-compatible authentication server.
+Python SDK for [SimpleAuth](https://github.com/bodaay/simpleauth) -- an OIDC-compatible authentication server.
 
 ## Installation
 
@@ -20,9 +20,9 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.example.com",
-    app_id="my-app",
-    app_secret="my-app-api-key",
-    realm="simpleauth",  # default
+    client_id="my-client",       # optional, for OIDC flows
+    client_secret="my-secret",   # optional
+    realm="simpleauth",          # default
 )
 ```
 
@@ -100,7 +100,7 @@ info = auth.userinfo(access_token=tokens.access_token)
 
 ## Admin Operations
 
-Manage user roles and permissions (requires `app_secret`):
+Manage user roles and permissions (requires `client_secret`):
 
 ```python
 # Roles
@@ -121,7 +121,7 @@ from fastapi import Depends, FastAPI
 from simpleauth import SimpleAuth, User
 from simpleauth.middleware import SimpleAuthDep
 
-auth = SimpleAuth(url="https://auth.example.com", app_id="my-app", app_secret="secret")
+auth = SimpleAuth(url="https://auth.example.com")
 
 # Create a dependency
 get_user = SimpleAuthDep(auth)
@@ -147,7 +147,7 @@ from flask import Flask, g, jsonify
 from simpleauth import SimpleAuth
 from simpleauth.middleware import flask_middleware
 
-auth = SimpleAuth(url="https://auth.example.com", app_id="my-app", app_secret="secret")
+auth = SimpleAuth(url="https://auth.example.com")
 app = Flask(__name__)
 
 @app.route("/me")
@@ -174,8 +174,8 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-SIMPLEAUTH_APP_ID = "my-app"
-SIMPLEAUTH_APP_SECRET = "secret"
+SIMPLEAUTH_CLIENT_ID = ""           # optional, for OIDC flows
+SIMPLEAUTH_CLIENT_SECRET = ""       # optional
 SIMPLEAUTH_REALM = "simpleauth"     # optional
 SIMPLEAUTH_VERIFY_SSL = True        # optional
 ```
@@ -202,8 +202,6 @@ For development with self-signed TLS certificates:
 ```python
 auth = SimpleAuth(
     url="https://localhost:8443",
-    app_id="my-app",
-    app_secret="secret",
     verify_ssl=False,
 )
 ```
@@ -213,7 +211,7 @@ auth = SimpleAuth(
 ```python
 from simpleauth import SimpleAuth, AuthenticationError, TokenVerificationError, SimpleAuthError
 
-auth = SimpleAuth(url="...", app_id="...")
+auth = SimpleAuth(url="https://auth.example.com")
 
 try:
     tokens = auth.login("alice", "wrong-password")
@@ -228,8 +226,8 @@ except TokenVerificationError as e:
 
 ## Dependencies
 
-- `requests` — HTTP client
-- `cryptography` — RSA/JWKS signature verification
+- `requests` -- HTTP client
+- `cryptography` -- RSA/JWKS signature verification
 
 No JWT library is used. Tokens are parsed manually (base64url-decode header + payload) and RS256 signatures are verified directly using `cryptography`.
 
