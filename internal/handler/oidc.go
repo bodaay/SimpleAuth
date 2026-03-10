@@ -189,13 +189,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Assign default roles
-	existingRoles, _ := h.store.GetUserRoles(user.GUID, clientID)
-	if len(existingRoles) == 0 {
-		defaultRoles, _ := h.store.GetDefaultRoles(clientID)
-		if len(defaultRoles) > 0 {
-			h.store.SetUserRoles(user.GUID, clientID, defaultRoles)
-		}
-	}
+	h.assignDefaultRoles(user.GUID, clientID)
 
 	// Generate authorization code
 	codeBytes := make([]byte, 32)
@@ -379,13 +373,7 @@ func (h *Handler) handleOIDCTokenPassword(w http.ResponseWriter, r *http.Request
 	}
 
 	// Assign default roles
-	existingRoles, _ := h.store.GetUserRoles(user.GUID, app.AppID)
-	if len(existingRoles) == 0 {
-		defaultRoles, _ := h.store.GetDefaultRoles(app.AppID)
-		if len(defaultRoles) > 0 {
-			h.store.SetUserRoles(user.GUID, app.AppID, defaultRoles)
-		}
-	}
+	h.assignDefaultRoles(user.GUID, app.AppID)
 
 	h.issueOIDCTokens(w, r, user, app, scope, "")
 }
@@ -513,7 +501,7 @@ func (h *Handler) handleOIDCTokenRefresh(w http.ResponseWriter, r *http.Request)
 func (h *Handler) issueOIDCTokens(w http.ResponseWriter, r *http.Request, user *store.User, app *store.App, scope, nonce string) {
 	appID := app.AppID
 	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms, _ := h.store.GetUserPermissions(user.GUID, appID)
+	perms := h.resolveUserPermissions(user.GUID, appID, roles)
 	issuer := h.oidcIssuer(r)
 	ip := getClientIP(r)
 

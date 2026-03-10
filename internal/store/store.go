@@ -662,6 +662,90 @@ func (s *Store) SetDefaultRoles(appID string, roles []string) error {
 	})
 }
 
+// --- Global Default Roles ---
+
+func (s *Store) GetGlobalDefaultRoles() ([]string, error) {
+	var roles []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketConfig).Get([]byte("global:default_roles"))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &roles)
+	})
+	return roles, err
+}
+
+func (s *Store) SetGlobalDefaultRoles(roles []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(roles)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketConfig).Put([]byte("global:default_roles"), data)
+	})
+}
+
+// --- Role → Permissions Mapping ---
+
+// GetRolePermissions returns the role→permissions mapping for an app.
+func (s *Store) GetRolePermissions(appID string) (map[string][]string, error) {
+	var mapping map[string][]string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketConfig).Get([]byte("app:" + appID + ":role_permissions"))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &mapping)
+	})
+	return mapping, err
+}
+
+// SetRolePermissions sets the role→permissions mapping for an app.
+func (s *Store) SetRolePermissions(appID string, mapping map[string][]string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(mapping)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketConfig).Put([]byte("app:"+appID+":role_permissions"), data)
+	})
+}
+
+// ResolvePermissions expands roles into permissions using the role→permissions mapping,
+// then merges with direct permissions (deduplicated).
+func (s *Store) ResolvePermissions(appID string, roles, directPerms []string) ([]string, error) {
+	mapping, err := s.GetRolePermissions(appID)
+	if err != nil {
+		return directPerms, err
+	}
+	if mapping == nil {
+		return directPerms, nil
+	}
+
+	seen := make(map[string]bool)
+	var merged []string
+	// Role-derived permissions first
+	for _, role := range roles {
+		if perms, ok := mapping[role]; ok {
+			for _, p := range perms {
+				if !seen[p] {
+					seen[p] = true
+					merged = append(merged, p)
+				}
+			}
+		}
+	}
+	// Then direct permissions
+	for _, p := range directPerms {
+		if !seen[p] {
+			seen[p] = true
+			merged = append(merged, p)
+		}
+	}
+	return merged, nil
+}
+
 // --- Refresh Tokens ---
 
 func (s *Store) SaveRefreshToken(rt *RefreshToken) error {

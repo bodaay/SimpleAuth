@@ -215,15 +215,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Assign default roles if first time in this app
-	if req.AppID != "" {
-		existingRoles, _ := h.store.GetUserRoles(userGUID, req.AppID)
-		if len(existingRoles) == 0 {
-			defaultRoles, _ := h.store.GetDefaultRoles(req.AppID)
-			if len(defaultRoles) > 0 {
-				h.store.SetUserRoles(userGUID, req.AppID, defaultRoles)
-			}
-		}
-	}
+	h.assignDefaultRoles(userGUID, req.AppID)
 
 	// Issue tokens
 	h.issueTokenResponse(w, finalUser, req.AppID, ldapGroups, ip)
@@ -271,7 +263,7 @@ func (h *Handler) searchProviderMappings(app *store.App, username string) (strin
 
 func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, appID string, groups []string, ip string) {
 	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms, _ := h.store.GetUserPermissions(user.GUID, appID)
+	perms := h.resolveUserPermissions(user.GUID, appID, roles)
 
 	claims := auth.Claims{
 		Name:        user.DisplayName,
@@ -682,6 +674,48 @@ func (h *Handler) issueTokenPair(user *store.User, appID string, roles, perms, g
 	h.store.SaveRefreshToken(rt)
 
 	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
+}
+
+// assignDefaultRoles merges global + per-app default roles and assigns them if the user has no roles yet.
+func (h *Handler) assignDefaultRoles(userGUID, appID string) {
+	if appID == "" {
+		return
+	}
+	existingRoles, _ := h.store.GetUserRoles(userGUID, appID)
+	if len(existingRoles) > 0 {
+		return
+	}
+
+	// Merge global defaults + app defaults
+	seen := make(map[string]bool)
+	var merged []string
+
+	globalDefaults, _ := h.store.GetGlobalDefaultRoles()
+	for _, r := range globalDefaults {
+		if !seen[r] {
+			seen[r] = true
+			merged = append(merged, r)
+		}
+	}
+
+	appDefaults, _ := h.store.GetDefaultRoles(appID)
+	for _, r := range appDefaults {
+		if !seen[r] {
+			seen[r] = true
+			merged = append(merged, r)
+		}
+	}
+
+	if len(merged) > 0 {
+		h.store.SetUserRoles(userGUID, appID, merged)
+	}
+}
+
+// resolveUserPermissions returns the merged set of role-derived + direct permissions.
+func (h *Handler) resolveUserPermissions(userGUID, appID string, roles []string) []string {
+	directPerms, _ := h.store.GetUserPermissions(userGUID, appID)
+	merged, _ := h.store.ResolvePermissions(appID, roles, directPerms)
+	return merged
 }
 
 // handleResetPassword allows an authenticated user to change their password.
