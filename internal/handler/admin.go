@@ -445,6 +445,32 @@ func (h *Handler) handleSetRolePermissions(w http.ResponseWriter, r *http.Reques
 	jsonResp(w, mapping, http.StatusOK)
 }
 
+// --- List All Roles / Permissions ---
+
+func (h *Handler) handleListAllRoles(w http.ResponseWriter, r *http.Request) {
+	roles, err := h.store.ListAllRoles()
+	if err != nil {
+		jsonError(w, "failed to list roles", http.StatusInternalServerError)
+		return
+	}
+	if roles == nil {
+		roles = []string{}
+	}
+	jsonResp(w, roles, http.StatusOK)
+}
+
+func (h *Handler) handleListAllPermissions(w http.ResponseWriter, r *http.Request) {
+	perms, err := h.store.ListAllPermissions()
+	if err != nil {
+		jsonError(w, "failed to list permissions", http.StatusInternalServerError)
+		return
+	}
+	if perms == nil {
+		perms = []string{}
+	}
+	jsonResp(w, perms, http.StatusOK)
+}
+
 // --- User Merge ---
 
 func (h *Handler) handleMergeUsers(w http.ResponseWriter, r *http.Request) {
@@ -621,4 +647,119 @@ func (h *Handler) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
+}
+
+// --- AD/LDAP Sync ---
+
+// handleSyncUser syncs a single user's profile from the LDAP provider.
+// POST /api/admin/ldap/{provider_id}/sync-user
+// Body: {"username": "alice"}
+func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
+	providerID := pathParam(r, "provider_id")
+	p, err := h.store.GetLDAPProvider(providerID)
+	if err != nil {
+		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" {
+		jsonError(w, "username required", http.StatusBadRequest)
+		return
+	}
+
+	cfg := ldapConfigFromProvider(p)
+	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", req.Username)
+	if err != nil {
+		jsonError(w, fmt.Sprintf("LDAP search failed: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	// Find user by LDAP mapping
+	userGUID, err := h.store.ResolveMapping("ldap:"+providerID, req.Username)
+	if err != nil {
+		jsonError(w, "no local user mapped to ldap:"+providerID+":"+req.Username, http.StatusNotFound)
+		return
+	}
+
+	user, err := h.store.ResolveUser(userGUID)
+	if err != nil {
+		jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	h.syncUserFromLDAP(user, result)
+
+	h.audit("ldap_sync_user", "admin", getClientIP(r), map[string]interface{}{
+		"provider_id": providerID, "username": req.Username, "user_guid": user.GUID,
+	})
+
+	user.PasswordHash = ""
+	jsonResp(w, map[string]interface{}{
+		"status": "synced",
+		"user":   user,
+	}, http.StatusOK)
+}
+
+// handleSyncAll syncs all users that have mappings to this LDAP provider.
+// POST /api/admin/ldap/{provider_id}/sync-all
+func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
+	providerID := pathParam(r, "provider_id")
+	p, err := h.store.GetLDAPProvider(providerID)
+	if err != nil {
+		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		return
+	}
+
+	cfg := ldapConfigFromProvider(p)
+	ldapProvider := "ldap:" + providerID
+
+	// Iterate all users to find those with mappings to this provider
+	users, err := h.store.ListUsers()
+	if err != nil {
+		jsonError(w, "failed to list users", http.StatusInternalServerError)
+		return
+	}
+
+	synced := 0
+	failed := 0
+	var errors []string
+
+	for _, u := range users {
+		if u.MergedInto != "" {
+			continue
+		}
+		mappings, _ := h.store.GetMappingsForUser(u.GUID)
+		for _, m := range mappings {
+			if m.Provider != ldapProvider {
+				continue
+			}
+			// Search LDAP for this user
+			result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", m.ExternalID)
+			if err != nil {
+				failed++
+				errors = append(errors, fmt.Sprintf("%s: %v", m.ExternalID, err))
+				continue
+			}
+			h.syncUserFromLDAP(u, result)
+			synced++
+			break // one sync per user per provider
+		}
+	}
+
+	h.audit("ldap_sync_all", "admin", getClientIP(r), map[string]interface{}{
+		"provider_id": providerID, "synced": synced, "failed": failed,
+	})
+
+	resp := map[string]interface{}{
+		"status": "completed",
+		"synced": synced,
+		"failed": failed,
+	}
+	if len(errors) > 0 {
+		resp["errors"] = errors
+	}
+	jsonResp(w, resp, http.StatusOK)
 }

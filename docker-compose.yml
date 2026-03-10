@@ -31,7 +31,7 @@ services:
 
       # --- Identity -----------------------------------------------------------
       AUTH_HOSTNAME: "${AUTH_HOSTNAME:-localhost}"            # FQDN for TLS certificate SANs
-      AUTH_PROJECT_NAME: "${AUTH_PROJECT_NAME:-default}"      # Project namespace (useful for multi-instance setups)
+      AUTH_DEPLOYMENT_NAME: "${AUTH_DEPLOYMENT_NAME:-sauth}"   # Deployment name (max 6 chars, letters only; used in service account naming)
 
       # --- Networking ---------------------------------------------------------
       AUTH_PORT: "8080"                                      # HTTPS listen port inside container

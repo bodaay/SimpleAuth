@@ -161,7 +161,7 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **No `ktpass` needed** -- SimpleAuth generates the keytab programmatically using the service account password and proper AD salt derivation. The keytab is generated server-side with AES-256, AES-128, and RC4-HMAC encryption types.
 - **No file transfer** -- The only thing moving between AD and SimpleAuth is a small JSON config file. No keytab files being emailed around or sitting on network shares.
 - **Idempotent** -- Run the script 10 times, get the same result. Existing accounts are updated, not duplicated.
-- **Multi-instance aware** -- Use `project_name` config to run multiple SimpleAuth instances with distinct service accounts (`svc-simpleauth-prod`, `svc-simpleauth-dev`).
+- **Multi-instance aware** -- Use `deployment_name` config to run multiple SimpleAuth instances with distinct service accounts (`svc-prod`, `svc-dev`).
 - **Self-healing KVNO** -- SimpleAuth patches keytab KVNO at runtime to match the ticket's KVNO. Password changes in AD don't break Kerberos -- just re-import the config.
 - **GSS-API aware** -- Handles both raw AP-REQ tokens and GSS-API wrapped SPNEGO tokens from browsers. NTLM fallback is detected and gracefully handled with a login form.
 
@@ -294,7 +294,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_CLIENT_ID` | | OIDC client ID for this instance |
 | `AUTH_CLIENT_SECRET` | | OIDC client secret for this instance |
 | `AUTH_REDIRECT_URIS` | | Allowed OIDC redirect URIs (comma-separated) |
-| `AUTH_PROJECT_NAME` | `default` | Project name (for multi-instance service accounts) |
+| `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only; for service account naming) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |
 | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime |
 | `AUTH_JWT_REFRESH_TTL` | `720h` | Refresh token lifetime (30 days) |

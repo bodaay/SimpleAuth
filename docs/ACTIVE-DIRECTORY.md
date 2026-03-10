@@ -25,7 +25,7 @@ Create a dedicated service account in AD for SimpleAuth. This account is used to
 
 1. Open Active Directory Users and Computers
 2. Create a new user in an OU for service accounts (e.g., `OU=Service Accounts`)
-3. Name: `svc-simpleauth` (or `svc-simpleauth-{project_name}` if running multiple instances against the same AD)
+3. Name: `svc-sauth-{deployment_name}` (e.g., `svc-sauth-sauth`; max 6 chars, letters only)
 4. Set a strong password
 5. Check "Password never expires"
 6. Uncheck "User must change password at next logon"

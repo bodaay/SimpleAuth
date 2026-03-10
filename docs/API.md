@@ -43,7 +43,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 ```json
 {
   "hostname": "auth.corp.local",
-  "project_name": "default",
+  "deployment_name": "sauth",
   "jwt_issuer": "simpleauth",
   "version": "dev"
 }

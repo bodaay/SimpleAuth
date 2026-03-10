@@ -259,7 +259,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	realm := h.cfg.JWTIssuer
 	action := "/realms/" + realm + "/protocol/openid-connect/auth"
 
-	appName := h.cfg.ProjectName
+	appName := h.cfg.DeploymentName
 	if appName == "" {
 		appName = "your application"
 	}

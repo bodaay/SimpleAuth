@@ -88,7 +88,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/admin/server-info", h.requireMasterAdmin(func(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]interface{}{
 			"hostname":     h.cfg.Hostname,
-			"project_name": h.cfg.ProjectName,
+			"deployment_name": h.cfg.DeploymentName,
 			"jwt_issuer":   h.cfg.JWTIssuer,
 			"version":      "dev",
 		}, http.StatusOK)
@@ -106,6 +106,9 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/test", h.requireMasterAdmin(h.handleTestLDAP))
 	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/setup-kerberos", h.requireMasterAdmin(h.handleSetupKerberos))
 	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/cleanup-kerberos", h.requireMasterAdmin(h.handleCleanupKerberos))
+	h.mux.HandleFunc("GET /api/admin/setup-script", h.requireMasterAdmin(h.handleSetupScript))
+	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/sync-user", h.requireMasterAdmin(h.handleSyncUser))
+	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/sync-all", h.requireMasterAdmin(h.handleSyncAll))
 	h.mux.HandleFunc("GET /api/admin/kerberos/status", h.requireMasterAdmin(h.handleKerberosStatus))
 
 	// Admin: Users
@@ -138,6 +141,8 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("PUT /api/admin/defaults/roles", h.requireMasterAdmin(h.handleSetDefaultRoles))
 	h.mux.HandleFunc("GET /api/admin/role-permissions", h.requireMasterAdmin(h.handleGetRolePermissions))
 	h.mux.HandleFunc("PUT /api/admin/role-permissions", h.requireMasterAdmin(h.handleSetRolePermissions))
+	h.mux.HandleFunc("GET /api/admin/roles", h.requireMasterAdmin(h.handleListAllRoles))
+	h.mux.HandleFunc("GET /api/admin/permissions", h.requireMasterAdmin(h.handleListAllPermissions))
 
 	// Admin: One-Time Tokens
 	h.mux.HandleFunc("GET /api/admin/tokens", h.requireMasterAdmin(h.handleListTokens))
