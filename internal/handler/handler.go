@@ -145,6 +145,12 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/users/{guid}/permissions", h.adminAuth(h.handleSetPermissions))
 	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleGetDefaultRoles))
 	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/defaults/roles", h.adminAuth(h.handleSetDefaultRoles))
+	h.mux.HandleFunc("GET /api/admin/apps/{app_id}/role-permissions", h.adminAuth(h.handleGetRolePermissions))
+	h.mux.HandleFunc("PUT /api/admin/apps/{app_id}/role-permissions", h.adminAuth(h.handleSetRolePermissions))
+
+	// Admin: Global Defaults
+	h.mux.HandleFunc("GET /api/admin/defaults/roles", h.requireMasterAdmin(h.handleGetGlobalDefaultRoles))
+	h.mux.HandleFunc("PUT /api/admin/defaults/roles", h.requireMasterAdmin(h.handleSetGlobalDefaultRoles))
 
 	// Admin: One-Time Tokens
 	h.mux.HandleFunc("GET /api/admin/tokens", h.requireMasterAdmin(h.handleListTokens))

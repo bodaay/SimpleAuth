@@ -97,17 +97,11 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	}
 
 	// Assign default roles if needed
-	existingRoles, _ := h.store.GetUserRoles(user.GUID, appID)
-	if len(existingRoles) == 0 {
-		defaultRoles, _ := h.store.GetDefaultRoles(appID)
-		if len(defaultRoles) > 0 {
-			h.store.SetUserRoles(user.GUID, appID, defaultRoles)
-		}
-	}
+	h.assignDefaultRoles(user.GUID, appID)
 
 	// Issue tokens
 	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms, _ := h.store.GetUserPermissions(user.GUID, appID)
+	perms := h.resolveUserPermissions(user.GUID, appID, roles)
 	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, appID, roles, perms, ldapGroups)
 	if err != nil {
 		redirectToLoginError(w, r, appID, redirectURI, "Token generation failed")

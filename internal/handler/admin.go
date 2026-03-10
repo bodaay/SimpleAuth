@@ -623,6 +623,73 @@ func (h *Handler) handleSetDefaultRoles(w http.ResponseWriter, r *http.Request) 
 	jsonResp(w, roles, http.StatusOK)
 }
 
+// --- Global Default Roles ---
+
+func (h *Handler) handleGetGlobalDefaultRoles(w http.ResponseWriter, r *http.Request) {
+	roles, _ := h.store.GetGlobalDefaultRoles()
+	if roles == nil {
+		roles = []string{}
+	}
+	jsonResp(w, roles, http.StatusOK)
+}
+
+func (h *Handler) handleSetGlobalDefaultRoles(w http.ResponseWriter, r *http.Request) {
+	var roles []string
+	if err := readJSON(r, &roles); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.SetGlobalDefaultRoles(roles); err != nil {
+		jsonError(w, "failed to set global default roles", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("global_default_roles_changed", "admin", getClientIP(r), map[string]interface{}{
+		"roles": roles,
+	})
+
+	jsonResp(w, roles, http.StatusOK)
+}
+
+// --- Role → Permissions Mapping ---
+
+func (h *Handler) handleGetRolePermissions(w http.ResponseWriter, r *http.Request) {
+	appID := pathParam(r, "app_id")
+	if !h.checkAppScope(r, appID) {
+		jsonError(w, "access denied", http.StatusForbidden)
+		return
+	}
+	mapping, _ := h.store.GetRolePermissions(appID)
+	if mapping == nil {
+		mapping = map[string][]string{}
+	}
+	jsonResp(w, mapping, http.StatusOK)
+}
+
+func (h *Handler) handleSetRolePermissions(w http.ResponseWriter, r *http.Request) {
+	appID := pathParam(r, "app_id")
+	if !h.checkAppScope(r, appID) {
+		jsonError(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	var mapping map[string][]string
+	if err := readJSON(r, &mapping); err != nil {
+		jsonError(w, "invalid request body — expected {\"role\": [\"perm1\", \"perm2\"]}", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.SetRolePermissions(appID, mapping); err != nil {
+		jsonError(w, "failed to set role permissions", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("role_permissions_changed", "admin", getClientIP(r), map[string]interface{}{
+		"app_id": appID, "mapping": mapping,
+	})
+
+	jsonResp(w, mapping, http.StatusOK)
+}
+
 // --- User Merge ---
 
 func (h *Handler) handleMergeUsers(w http.ResponseWriter, r *http.Request) {
