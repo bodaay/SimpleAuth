@@ -27,12 +27,12 @@ type JWTManager struct {
 
 type Claims struct {
 	jwt.RegisteredClaims
+	GUID           string   `json:"guid,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	Email          string   `json:"email,omitempty"`
 	Department     string   `json:"department,omitempty"`
 	Company        string   `json:"company,omitempty"`
 	JobTitle       string   `json:"job_title,omitempty"`
-	AppID          string   `json:"app_id,omitempty"`
 	Roles          []string `json:"roles,omitempty"`
 	Permissions    []string `json:"permissions,omitempty"`
 	Groups         []string `json:"groups,omitempty"`
@@ -136,7 +136,7 @@ func (m *JWTManager) IssueAccessToken(c Claims, ttl time.Duration) (string, erro
 	return token.SignedString(m.privateKey)
 }
 
-func (m *JWTManager) IssueRefreshToken(userGUID, appID, familyID string, ttl time.Duration) (string, string, error) {
+func (m *JWTManager) IssueRefreshToken(userGUID, familyID string, ttl time.Duration) (string, string, error) {
 	tokenID := uuid.New().String()
 	if familyID == "" {
 		familyID = uuid.New().String()
@@ -150,7 +150,6 @@ func (m *JWTManager) IssueRefreshToken(userGUID, appID, familyID string, ttl tim
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			ID:        tokenID,
 		},
-		AppID:    appID,
 		FamilyID: familyID,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

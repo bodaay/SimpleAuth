@@ -4,136 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"simpleauth/internal/auth"
 	"simpleauth/internal/store"
 )
-
-// --- App Management ---
-
-func (h *Handler) handleListApps(w http.ResponseWriter, r *http.Request) {
-	apps, err := h.store.ListApps()
-	if err != nil {
-		jsonError(w, "failed to list apps", http.StatusInternalServerError)
-		return
-	}
-	if apps == nil {
-		apps = []*store.App{}
-	}
-	jsonResp(w, apps, http.StatusOK)
-}
-
-func (h *Handler) handleCreateApp(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name             string                          `json:"name"`
-		Description      string                          `json:"description"`
-		RedirectURIs     []string                        `json:"redirect_uris"`
-		ProviderMappings map[string]store.ProviderMapping `json:"provider_mappings"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		jsonError(w, "name required", http.StatusBadRequest)
-		return
-	}
-
-	app := &store.App{
-		Name:             req.Name,
-		Description:      req.Description,
-		RedirectURIs:     req.RedirectURIs,
-		ProviderMappings: req.ProviderMappings,
-	}
-	if err := h.store.CreateApp(app); err != nil {
-		jsonError(w, "failed to create app", http.StatusInternalServerError)
-		return
-	}
-
-	h.audit("app_registered", "admin", getClientIP(r), map[string]interface{}{"app_id": app.AppID})
-
-	jsonResp(w, map[string]interface{}{
-		"app_id":  app.AppID,
-		"name":    app.Name,
-		"api_key": app.APIKey,
-	}, http.StatusCreated)
-}
-
-func (h *Handler) handleGetApp(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	app, err := h.store.GetApp(appID)
-	if err != nil {
-		jsonError(w, "app not found", http.StatusNotFound)
-		return
-	}
-	jsonResp(w, app, http.StatusOK)
-}
-
-func (h *Handler) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	app, err := h.store.GetApp(appID)
-	if err != nil {
-		jsonError(w, "app not found", http.StatusNotFound)
-		return
-	}
-
-	var req struct {
-		Name             *string                          `json:"name"`
-		Description      *string                          `json:"description"`
-		RedirectURIs     []string                         `json:"redirect_uris"`
-		ProviderMappings map[string]store.ProviderMapping `json:"provider_mappings"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Name != nil {
-		app.Name = *req.Name
-	}
-	if req.Description != nil {
-		app.Description = *req.Description
-	}
-	if req.RedirectURIs != nil {
-		app.RedirectURIs = req.RedirectURIs
-	}
-	if req.ProviderMappings != nil {
-		app.ProviderMappings = req.ProviderMappings
-	}
-
-	if err := h.store.UpdateApp(app); err != nil {
-		jsonError(w, "failed to update app", http.StatusInternalServerError)
-		return
-	}
-	jsonResp(w, app, http.StatusOK)
-}
-
-func (h *Handler) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if err := h.store.DeleteApp(appID); err != nil {
-		jsonError(w, "failed to delete app", http.StatusInternalServerError)
-		return
-	}
-	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
-}
-
-func (h *Handler) handleRotateAppKey(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	newKey, err := h.store.RotateAppKey(appID)
-	if err != nil {
-		jsonError(w, "failed to rotate key", http.StatusInternalServerError)
-		return
-	}
-
-	h.audit("app_key_rotated", "admin", getClientIP(r), map[string]interface{}{"app_id": appID})
-
-	jsonResp(w, map[string]string{
-		"app_id":      appID,
-		"new_api_key": newKey,
-	}, http.StatusOK)
-}
 
 // --- User Management ---
 
@@ -335,7 +210,6 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	// Return safe subset (no raw token IDs)
 	type sessionInfo struct {
 		FamilyID  string    `json:"family_id"`
-		AppID     string    `json:"app_id"`
 		CreatedAt time.Time `json:"created_at"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
@@ -343,7 +217,6 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	for i, s := range sessions {
 		result[i] = sessionInfo{
 			FamilyID:  s.FamilyID,
-			AppID:     s.AppID,
 			CreatedAt: s.CreatedAt,
 			ExpiresAt: s.ExpiresAt,
 		}
@@ -404,15 +277,6 @@ func (h *Handler) handleSetMapping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// App API keys can only set mappings for their own provider
-	if !h.checkAppScope(r, "") {
-		callerAppID := getContext(r.Context(), ctxAppID)
-		if req.Provider != "app:"+callerAppID {
-			jsonError(w, "can only manage mappings for your own app", http.StatusForbidden)
-			return
-		}
-	}
-
 	if err := h.store.SetIdentityMapping(req.Provider, req.ExternalID, guid); err != nil {
 		jsonError(w, "failed to set mapping", http.StatusInternalServerError)
 		return
@@ -455,58 +319,9 @@ func (h *Handler) handleResolveMapping(w http.ResponseWriter, r *http.Request) {
 
 // --- Roles & Permissions ---
 
-func (h *Handler) handleListAppUsers(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-
-	guids, err := h.store.GetUsersWithRolesInApp(appID)
-	if err != nil {
-		jsonError(w, "failed to list users", http.StatusInternalServerError)
-		return
-	}
-
-	type userWithRoles struct {
-		GUID        string   `json:"guid"`
-		DisplayName string   `json:"display_name"`
-		Email       string   `json:"email"`
-		Roles       []string `json:"roles"`
-		Permissions []string `json:"permissions"`
-	}
-
-	var result []userWithRoles
-	for _, guid := range guids {
-		user, err := h.store.GetUser(guid)
-		if err != nil {
-			continue
-		}
-		roles, _ := h.store.GetUserRoles(guid, appID)
-		perms, _ := h.store.GetUserPermissions(guid, appID)
-		result = append(result, userWithRoles{
-			GUID:        user.GUID,
-			DisplayName: user.DisplayName,
-			Email:       user.Email,
-			Roles:       roles,
-			Permissions: perms,
-		})
-	}
-
-	if result == nil {
-		result = []userWithRoles{}
-	}
-	jsonResp(w, result, http.StatusOK)
-}
-
 func (h *Handler) handleGetRoles(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
 	guid := pathParam(r, "guid")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-	roles, err := h.store.GetUserRoles(guid, appID)
+	roles, err := h.store.GetUserRoles(guid)
 	if err != nil {
 		jsonError(w, "failed to get roles", http.StatusInternalServerError)
 		return
@@ -518,12 +333,7 @@ func (h *Handler) handleGetRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSetRoles(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
 	guid := pathParam(r, "guid")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
 
 	var roles []string
 	if err := readJSON(r, &roles); err != nil {
@@ -531,14 +341,14 @@ func (h *Handler) handleSetRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldRoles, _ := h.store.GetUserRoles(guid, appID)
-	if err := h.store.SetUserRoles(guid, appID, roles); err != nil {
+	oldRoles, _ := h.store.GetUserRoles(guid)
+	if err := h.store.SetUserRoles(guid, roles); err != nil {
 		jsonError(w, "failed to set roles", http.StatusInternalServerError)
 		return
 	}
 
 	h.audit("role_changed", "admin", getClientIP(r), map[string]interface{}{
-		"user_guid": guid, "app_id": appID,
+		"user_guid": guid,
 		"old_roles": oldRoles, "new_roles": roles,
 	})
 
@@ -546,13 +356,8 @@ func (h *Handler) handleSetRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
 	guid := pathParam(r, "guid")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-	perms, err := h.store.GetUserPermissions(guid, appID)
+	perms, err := h.store.GetUserPermissions(guid)
 	if err != nil {
 		jsonError(w, "failed to get permissions", http.StatusInternalServerError)
 		return
@@ -564,12 +369,7 @@ func (h *Handler) handleGetPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
 	guid := pathParam(r, "guid")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
 
 	var perms []string
 	if err := readJSON(r, &perms); err != nil {
@@ -577,14 +377,14 @@ func (h *Handler) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldPerms, _ := h.store.GetUserPermissions(guid, appID)
-	if err := h.store.SetUserPermissions(guid, appID, perms); err != nil {
+	oldPerms, _ := h.store.GetUserPermissions(guid)
+	if err := h.store.SetUserPermissions(guid, perms); err != nil {
 		jsonError(w, "failed to set permissions", http.StatusInternalServerError)
 		return
 	}
 
 	h.audit("permission_changed", "admin", getClientIP(r), map[string]interface{}{
-		"user_guid": guid, "app_id": appID,
+		"user_guid":       guid,
 		"old_permissions": oldPerms, "new_permissions": perms,
 	})
 
@@ -592,12 +392,7 @@ func (h *Handler) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetDefaultRoles(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-	roles, _ := h.store.GetDefaultRoles(appID)
+	roles, _ := h.store.GetDefaultRoles()
 	if roles == nil {
 		roles = []string{}
 	}
@@ -605,61 +400,27 @@ func (h *Handler) handleGetDefaultRoles(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) handleSetDefaultRoles(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-
 	var roles []string
 	if err := readJSON(r, &roles); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.SetDefaultRoles(appID, roles); err != nil {
+	if err := h.store.SetDefaultRoles(roles); err != nil {
 		jsonError(w, "failed to set default roles", http.StatusInternalServerError)
 		return
 	}
-	jsonResp(w, roles, http.StatusOK)
-}
 
-// --- Global Default Roles ---
-
-func (h *Handler) handleGetGlobalDefaultRoles(w http.ResponseWriter, r *http.Request) {
-	roles, _ := h.store.GetGlobalDefaultRoles()
-	if roles == nil {
-		roles = []string{}
-	}
-	jsonResp(w, roles, http.StatusOK)
-}
-
-func (h *Handler) handleSetGlobalDefaultRoles(w http.ResponseWriter, r *http.Request) {
-	var roles []string
-	if err := readJSON(r, &roles); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := h.store.SetGlobalDefaultRoles(roles); err != nil {
-		jsonError(w, "failed to set global default roles", http.StatusInternalServerError)
-		return
-	}
-
-	h.audit("global_default_roles_changed", "admin", getClientIP(r), map[string]interface{}{
+	h.audit("default_roles_changed", "admin", getClientIP(r), map[string]interface{}{
 		"roles": roles,
 	})
 
 	jsonResp(w, roles, http.StatusOK)
 }
 
-// --- Role → Permissions Mapping ---
+// --- Role -> Permissions Mapping ---
 
 func (h *Handler) handleGetRolePermissions(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-	mapping, _ := h.store.GetRolePermissions(appID)
+	mapping, _ := h.store.GetRolePermissions()
 	if mapping == nil {
 		mapping = map[string][]string{}
 	}
@@ -667,24 +428,18 @@ func (h *Handler) handleGetRolePermissions(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) handleSetRolePermissions(w http.ResponseWriter, r *http.Request) {
-	appID := pathParam(r, "app_id")
-	if !h.checkAppScope(r, appID) {
-		jsonError(w, "access denied", http.StatusForbidden)
-		return
-	}
-
 	var mapping map[string][]string
 	if err := readJSON(r, &mapping); err != nil {
 		jsonError(w, "invalid request body — expected {\"role\": [\"perm1\", \"perm2\"]}", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.SetRolePermissions(appID, mapping); err != nil {
+	if err := h.store.SetRolePermissions(mapping); err != nil {
 		jsonError(w, "failed to set role permissions", http.StatusInternalServerError)
 		return
 	}
 
 	h.audit("role_permissions_changed", "admin", getClientIP(r), map[string]interface{}{
-		"app_id": appID, "mapping": mapping,
+		"mapping": mapping,
 	})
 
 	jsonResp(w, mapping, http.StatusOK)
@@ -866,56 +621,4 @@ func (h *Handler) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
-}
-
-// handleSelfRegister allows an app to register itself using a one-time token scoped to "app-registration".
-// This is a public endpoint — no admin key required.
-func (h *Handler) handleSelfRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Token            string                          `json:"token"`
-		Name             string                          `json:"name"`
-		Description      string                          `json:"description"`
-		RedirectURIs     []string                        `json:"redirect_uris"`
-		ProviderMappings map[string]store.ProviderMapping `json:"provider_mappings"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	token := strings.TrimSpace(req.Token)
-	if token == "" || req.Name == "" {
-		jsonError(w, "token and name required", http.StatusBadRequest)
-		return
-	}
-
-	// Create the app
-	app := &store.App{
-		Name:             req.Name,
-		Description:      req.Description,
-		RedirectURIs:     req.RedirectURIs,
-		ProviderMappings: req.ProviderMappings,
-	}
-	if err := h.store.CreateApp(app); err != nil {
-		jsonError(w, "failed to create app", http.StatusInternalServerError)
-		return
-	}
-
-	// Consume the token (validates scope, expiry, and single-use)
-	if err := h.store.UseOneTimeToken(token, "app-registration", app.AppID); err != nil {
-		// Rollback the app creation
-		h.store.DeleteApp(app.AppID)
-		jsonError(w, err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	h.audit("app_self_registered", app.AppID, getClientIP(r), map[string]interface{}{
-		"token": token, "app_name": req.Name,
-	})
-
-	jsonResp(w, map[string]interface{}{
-		"app_id":  app.AppID,
-		"name":    app.Name,
-		"api_key": app.APIKey,
-	}, http.StatusCreated)
 }

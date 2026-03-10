@@ -8,7 +8,7 @@ How SimpleAuth works under the hood. Read this if you want to extend SimpleAuth,
 
 ```
                           +------------------+
-                          |   Client Apps    |
+                          |   Client App     |
                           | (Browser / API)  |
                           +--------+---------+
                                    |
@@ -36,7 +36,7 @@ How SimpleAuth works under the hood. Read this if you want to extend SimpleAuth,
                     |             v                    |
                     |  +----------------------------+  |
                     |  |    BoltDB Store             |  |
-                    |  | (users, apps, tokens, etc.) |  |
+                    |  | (users, tokens, roles, etc.)|  |
                     |  +----------------------------+  |
                     |             |                    |
                     +------------|--------------------+
@@ -59,7 +59,7 @@ Every request follows this path:
 1. **TLS termination** -- SimpleAuth handles its own TLS. Always HTTPS.
 2. **CORS** -- If `cors_origins` is configured, CORS headers are added. `OPTIONS` requests are handled automatically.
 3. **Routing** -- Go 1.22+ `ServeMux` with method-based routing (`POST /api/auth/login`, etc.)
-4. **Authentication middleware** -- Admin endpoints check for a valid admin key or app API key in the `Authorization: Bearer` header.
+4. **Authentication middleware** -- Admin endpoints check for a valid admin key or a bearer token from a user with the `SimpleAuthAdmin` role.
 5. **Handler** -- Business logic executes.
 6. **JSON response** -- All responses are JSON with appropriate status codes.
 
@@ -99,8 +99,6 @@ Client                    SimpleAuth                 Active Directory
 ```
 
 **How provider ordering works:** LDAP providers have a `priority` field. Providers are tried in priority order (lowest first). The first successful authentication wins. If a user has an existing identity mapping, that specific provider is tried first.
-
-**App-specific provider mappings:** Apps can configure `provider_mappings` to specify which LDAP attribute to use as the username. For example, one app might authenticate by `sAMAccountName` while another uses `mail`.
 
 ### 2. Kerberos/SPNEGO Authentication
 
@@ -153,14 +151,7 @@ Client                    SimpleAuth
 
 ### Authentication Resolution Order
 
-When a login request comes in with `app_id`:
-
-1. Check for existing identity mapping `app:{app_id}:{username}` -- if found, look up the user directly
-2. Check the app's `provider_mappings` -- find the LDAP provider and attribute to search by
-3. Try all LDAP providers in priority order
-4. Try local password authentication
-
-Without `app_id`:
+When a login request comes in:
 
 1. Try all LDAP providers in priority order
 2. Try local password authentication (`local:{username}` mapping)
@@ -182,24 +173,22 @@ Access tokens include Keycloak-compatible claims:
 {
   "sub": "user-guid",
   "iss": "https://auth.example.com/realms/simpleauth",
-  "aud": ["app-id"],
+  "aud": ["my-app"],
   "exp": 1700000000,
   "iat": 1699971200,
   "typ": "Bearer",
-  "azp": "app-id",
+  "azp": "my-app",
   "scope": "openid profile email",
   "name": "John Smith",
   "email": "jsmith@corp.local",
   "preferred_username": "jsmith@corp.local",
-  "app_id": "app-id",
   "roles": ["admin"],
   "permissions": ["read:reports"],
   "groups": ["CN=Engineering,..."],
   "department": "Engineering",
   "company": "Acme Corp",
   "job_title": "Senior Engineer",
-  "realm_access": {"roles": ["admin"]},
-  "resource_access": {"app-id": {"roles": ["admin"]}}
+  "realm_access": {"roles": ["admin"]}
 }
 ```
 
@@ -314,18 +303,15 @@ SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, emb
 
 | Bucket | Key | Value | Purpose |
 |---|---|---|---|
-| `config` | arbitrary string | arbitrary bytes | Generic config store (default roles, etc.) |
+| `config` | arbitrary string | arbitrary bytes | Generic config store (default roles, role-permissions, etc.) |
 | `users` | GUID (UUID) | JSON `User` | User records |
-| `apps` | App ID (`app-xxxxxxxx`) | JSON `App` | Registered applications |
 | `ldap_providers` | Provider ID | JSON `LDAPProvider` | LDAP/AD configurations |
 | `identity_mappings` | `provider:external_id` | GUID string | Maps external IDs to users |
 | `idx_mappings_by_guid` | GUID | JSON `[]IdentityMapping` | Reverse index: user -> all mappings |
-| `idx_apps_by_api_key` | API key (`sk-...`) | App ID string | Index for API key lookups |
-| `user_roles` | `guid:app_id` | JSON `[]string` | Per-app roles for users |
-| `user_permissions` | `guid:app_id` | JSON `[]string` | Per-app permissions for users |
+| `user_roles` | `guid` | JSON `[]string` | Roles for users (global per instance) |
+| `user_permissions` | `guid` | JSON `[]string` | Permissions for users (global per instance) |
 | `refresh_tokens` | Token ID (UUID) | JSON `RefreshToken` | Active refresh tokens |
 | `audit_log` | `timestamp:uuid` | JSON `AuditEntry` | Audit log (time-ordered) |
-| `reg_tokens` | Token string (`XXX-XXXX`) | JSON `OneTimeToken` | Self-registration tokens |
 | `oidc_auth_codes` | Code (hex string) | JSON `OIDCAuthCode` | Short-lived auth codes (10 min) |
 
 ### Data Types
@@ -346,28 +332,12 @@ SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, emb
 }
 ```
 
-**App:**
-```json
-{
-  "app_id": "app-a1b2c3d4",
-  "name": "My App",
-  "description": "Description",
-  "api_key": "sk-uuid",
-  "redirect_uris": ["https://..."],
-  "provider_mappings": {
-    "corp-ad": {"field": "sAMAccountName"}
-  },
-  "created_at": "2024-01-15T10:30:00Z"
-}
-```
-
 **Identity Mapping Pattern:**
 
 The identity mapping system is the heart of SimpleAuth's multi-provider support. Mappings use a `provider:external_id` format:
 
 - `local:jsmith` -- Local user "jsmith"
 - `ldap:corp-ad:S-1-5-21-...` -- AD user by objectGUID
-- `app:my-app:john.smith` -- App-specific identity
 - `kerberos:jsmith@CORP.LOCAL` -- Kerberos principal
 
 When a user authenticates, SimpleAuth resolves their identity mapping to find (or create) their user record. This means the same person can authenticate via LDAP, Kerberos, or a local password and end up as the same user.
@@ -386,12 +356,10 @@ When a user authenticates, SimpleAuth resolves their identity mapping to find (o
 
 ### Authorization
 
-Two levels of API access:
+Two levels of admin access:
 
-1. **Admin Key** -- Full access to everything. Used for server administration.
-2. **App API Key** -- Scoped access. Apps can manage their own roles, permissions, and identity mappings. Cannot manage other apps, users, LDAP config, etc.
-
-The `adminAuth` middleware allows both admin keys and app API keys. The `requireMasterAdmin` middleware only allows the admin key.
+1. **Admin Key** -- Full access to everything. Used for initial bootstrap.
+2. **SimpleAuthAdmin role** -- Users with this role get full admin access. Assign this role after bootstrap to enable user-based admin access.
 
 ### Token Security
 
@@ -405,7 +373,7 @@ The `adminAuth` middleware allows both admin keys and app API keys. The `require
 
 - Every authentication event is logged with IP address
 - Failed login attempts are logged with the reason
-- Admin actions (create app, change roles, etc.) are logged
+- Admin actions (change roles, etc.) are logged
 - Security events (token reuse, sessions revoked) are logged
 - Configurable retention (default 90 days)
 - Daily automatic pruning

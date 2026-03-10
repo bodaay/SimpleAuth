@@ -15,8 +15,8 @@ import { SimpleAuth } from '@simpleauth/js';
 
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  appId: 'my-app',
-  appSecret: 'my-api-key', // optional — only needed for server-side operations
+  clientId: 'my-client',       // optional — for OIDC flows
+  clientSecret: 'my-secret',   // optional — only needed for server-side operations
 });
 ```
 
@@ -59,7 +59,6 @@ console.log(user.groups);        // ['engineering']
 console.log(user.department);
 console.log(user.company);
 console.log(user.job_title);
-console.log(user.app_id);
 
 // Helper methods
 user.hasRole('admin');            // true
@@ -109,7 +108,6 @@ import { SimpleAuth } from '@simpleauth/js';
 const app = express();
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  appId: 'my-app',
 });
 
 // Require authentication (returns 401 if no valid token)
@@ -151,7 +149,7 @@ app.get('/api/admin',
 
 ## Admin Operations
 
-Admin operations require `appSecret` (the app's API key). The API key is sent as a Bearer token to the SimpleAuth admin API.
+Admin operations require `clientSecret`. The secret is sent as a Bearer token to the SimpleAuth admin API.
 
 ### Get User
 
@@ -162,7 +160,7 @@ const user = await auth.getUser('user-guid-here');
 ### Roles
 
 ```ts
-// Get roles for a user in this app
+// Get roles for a user
 const roles = await auth.getUserRoles('user-guid');
 
 // Set roles
@@ -172,7 +170,7 @@ await auth.setUserRoles('user-guid', ['admin', 'editor']);
 ### Permissions
 
 ```ts
-// Get permissions for a user in this app
+// Get permissions for a user
 const perms = await auth.getUserPermissions('user-guid');
 
 // Set permissions
@@ -200,12 +198,12 @@ try {
 
 ## Configuration
 
-| Option      | Type     | Required | Default         | Description                          |
-|-------------|----------|----------|-----------------|--------------------------------------|
-| `url`       | `string` | Yes      | —               | SimpleAuth server URL                |
-| `appId`     | `string` | Yes      | —               | App ID (client_id)                   |
-| `appSecret` | `string` | No       | —               | App API key for server-side ops      |
-| `realm`     | `string` | No       | `'simpleauth'`  | OIDC realm name                      |
+| Option         | Type     | Required | Default         | Description                              |
+|----------------|----------|----------|-----------------|------------------------------------------|
+| `url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
+| `clientId`     | `string` | No       | `''`            | OIDC client ID (for auth code flows)     |
+| `clientSecret` | `string` | No       | --              | OIDC client secret for server-side ops   |
+| `realm`        | `string` | No       | `'simpleauth'`  | OIDC realm name                          |
 
 ## Browser Usage
 
@@ -217,7 +215,7 @@ import { SimpleAuth } from './index.js';
 
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  appId: 'my-spa',
+  clientId: 'my-spa',
 });
 
 // Use authorization code flow for browser apps
@@ -227,11 +225,11 @@ const authUrl = auth.getAuthorizationUrl({
 </script>
 ```
 
-> **Note:** Do not include `appSecret` in browser code. Use the authorization code flow instead of password login for browser-based applications.
+> **Note:** Do not include `clientSecret` in browser code. Use the authorization code flow instead of password login for browser-based applications.
 
 ## Platform Support
 
 - **Node.js** 18+ (uses native `fetch` and `crypto.subtle` or `crypto` module)
-- **Browsers** — all modern browsers with `fetch` and `SubtleCrypto` support
-- **Deno** — compatible via npm specifier
-- **Bun** — compatible
+- **Browsers** -- all modern browsers with `fetch` and `SubtleCrypto` support
+- **Deno** -- compatible via npm specifier
+- **Bun** -- compatible

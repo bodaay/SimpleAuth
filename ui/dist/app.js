@@ -26,7 +26,6 @@ async function api(method, path, body) {
 const icons = {
   dashboard: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>`,
   users: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
-  apps: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="9" rx="2"/><rect x="13" y="2" width="9" height="9" rx="2"/><rect x="2" y="13" width="9" height="9" rx="2"/><rect x="13" y="13" width="9" height="9" rx="2"/></svg>`,
   ldap: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1"/><circle cx="6" cy="18" r="1"/></svg>`,
   mappings: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
   impersonate: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><line x1="2" y1="2" x2="22" y2="22" opacity="0.3"/></svg>`,
@@ -37,6 +36,7 @@ const icons = {
   plus: html`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
   copy: html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
   token: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+  roles: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
 };
 
 // === Toast ===
@@ -63,43 +63,16 @@ function Modal({ title, onClose, children }) {
 
 // === Dashboard ===
 function Dashboard() {
-  const [stats, setStats] = useState({ users: 0, apps: 0, events: [] });
-  const [globalRoles, setGlobalRoles] = useState([]);
-  const [newGlobalRole, setNewGlobalRole] = useState('');
-  const [toast, setToast] = useState(null);
-
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => setToast(null), 3000);
-  };
+  const [stats, setStats] = useState({ users: 0, events: [] });
 
   useEffect(() => {
     Promise.all([
       api('GET', '/api/admin/users'),
-      api('GET', '/api/admin/apps'),
       api('GET', '/api/admin/audit?limit=10'),
-      api('GET', '/api/admin/defaults/roles'),
-    ]).then(([users, apps, events, gRoles]) => {
-      setStats({ users: users.length, apps: apps.length, events });
-      setGlobalRoles(gRoles || []);
+    ]).then(([users, events]) => {
+      setStats({ users: users.length, events });
     }).catch(() => {});
   }, []);
-
-  const saveGlobalRoles = async (roles) => {
-    try {
-      await api('PUT', '/api/admin/defaults/roles', roles);
-      setGlobalRoles(roles);
-      showToast('Global default roles saved');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const addGlobalRole = () => {
-    const r = newGlobalRole.trim();
-    if (!r || globalRoles.includes(r)) return;
-    setNewGlobalRole('');
-    saveGlobalRoles([...globalRoles, r]);
-  };
 
   return html`
     <div class="page-header"><h2>Dashboard</h2></div>
@@ -110,32 +83,8 @@ function Dashboard() {
         <div class="stat-value">${stats.users}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Registered Apps</div>
-        <div class="stat-value">${stats.apps}</div>
-      </div>
-      <div class="stat-card">
         <div class="stat-label">Recent Events</div>
         <div class="stat-value">${stats.events.length}</div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:var(--sp-6)">
-      <div class="card-header"><h3>Global Default Roles</h3></div>
-      <div style="padding:var(--sp-4)">
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-3)">These roles are automatically assigned to every new user in every app. Combined with per-app defaults.</p>
-        <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-3)">
-          ${globalRoles.map(r => html`
-            <span class="badge" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px">
-              ${r}
-              <button class="btn-icon" style="padding:0;min-width:auto" onClick=${() => saveGlobalRoles(globalRoles.filter(x => x !== r))} title="Remove">×</button>
-            </span>
-          `)}
-          ${globalRoles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.875rem">None configured — new users get no default roles</span>`}
-        </div>
-        <div style="display:flex;gap:var(--sp-2)">
-          <input class="form-input" style="flex:1;max-width:300px" value=${newGlobalRole} onInput=${e => setNewGlobalRole(e.target.value)} placeholder="e.g. user, authenticated" onKeyDown=${e => e.key === 'Enter' && addGlobalRole()} />
-          <button class="btn btn-sm btn-primary" onClick=${addGlobalRole}>Add</button>
-        </div>
       </div>
     </div>
 
@@ -162,6 +111,146 @@ function Dashboard() {
         `
       }
     </div>
+  `;
+}
+
+// === Roles & Permissions ===
+function RolesPage() {
+  const [defaultRoles, setDefaultRoles] = useState([]);
+  const [newDefaultRole, setNewDefaultRole] = useState('');
+  const [rolePerms, setRolePerms] = useState({});
+  const [newRoleName, setNewRoleName] = useState('');
+  const [newPermForRole, setNewPermForRole] = useState({});
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => setToast(null), 3000);
+  };
+
+  useEffect(() => {
+    Promise.all([
+      api('GET', '/api/admin/defaults/roles'),
+      api('GET', '/api/admin/role-permissions'),
+    ]).then(([dRoles, rp]) => {
+      setDefaultRoles(dRoles || []);
+      setRolePerms(rp || {});
+    }).catch(() => {});
+  }, []);
+
+  const saveDefaultRoles = async (roles) => {
+    try {
+      await api('PUT', '/api/admin/defaults/roles', roles);
+      setDefaultRoles(roles);
+      showToast('Default roles saved');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const addDefaultRole = () => {
+    const r = newDefaultRole.trim();
+    if (!r || defaultRoles.includes(r)) return;
+    setNewDefaultRole('');
+    saveDefaultRoles([...defaultRoles, r]);
+  };
+
+  const saveRolePerms = async (mapping) => {
+    try {
+      await api('PUT', '/api/admin/role-permissions', mapping);
+      setRolePerms(mapping);
+      showToast('Role permissions saved');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const addRole = () => {
+    const r = newRoleName.trim();
+    if (!r || rolePerms[r]) return;
+    const updated = { ...rolePerms, [r]: [] };
+    setNewRoleName('');
+    saveRolePerms(updated);
+  };
+
+  const deleteRole = (role) => {
+    const updated = { ...rolePerms };
+    delete updated[role];
+    saveRolePerms(updated);
+  };
+
+  const addPermToRole = (role) => {
+    const p = (newPermForRole[role] || '').trim();
+    if (!p || (rolePerms[role] || []).includes(p)) return;
+    const updated = { ...rolePerms, [role]: [...(rolePerms[role] || []), p] };
+    setNewPermForRole({ ...newPermForRole, [role]: '' });
+    saveRolePerms(updated);
+  };
+
+  const removePermFromRole = (role, perm) => {
+    const updated = { ...rolePerms, [role]: (rolePerms[role] || []).filter(p => p !== perm) };
+    saveRolePerms(updated);
+  };
+
+  return html`
+    <div class="page-header"><h2>Roles & Permissions</h2></div>
+    <div class="gold-bar" style="margin-bottom: var(--sp-8)"></div>
+
+    <div class="card" style="margin-bottom:var(--sp-6)">
+      <div class="card-header"><h3>Default Roles</h3></div>
+      <div style="padding:var(--sp-4)">
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-3)">Automatically assigned to every new user on first login.</p>
+        <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-3)">
+          ${defaultRoles.map(r => html`
+            <span class="badge" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px">
+              ${r}
+              <button class="btn-icon" style="padding:0;min-width:auto" onClick=${() => saveDefaultRoles(defaultRoles.filter(x => x !== r))} title="Remove">×</button>
+            </span>
+          `)}
+          ${defaultRoles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.875rem">None configured</span>`}
+        </div>
+        <div style="display:flex;gap:var(--sp-2)">
+          <input class="form-input" style="flex:1;max-width:300px" value=${newDefaultRole} onInput=${e => setNewDefaultRole(e.target.value)} placeholder="e.g. user, member" onKeyDown=${e => e.key === 'Enter' && addDefaultRole()} />
+          <button class="btn btn-sm btn-primary" onClick=${addDefaultRole}>Add</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3>Role → Permissions</h3>
+      </div>
+      <div style="padding:var(--sp-4)">
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-3)">Define what permissions each role grants. These are expanded into the JWT automatically.</p>
+
+        ${Object.keys(rolePerms).length === 0
+          ? html`<div style="color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--sp-3)">No roles defined yet.</div>`
+          : Object.entries(rolePerms).map(([role, perms]) => html`
+            <div class="card" style="padding:var(--sp-3);margin-bottom:var(--sp-3)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-2)">
+                <strong style="font-size:0.875rem">${role}</strong>
+                <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(role)}>Remove</button>
+              </div>
+              <div style="display:flex;gap:var(--sp-1);flex-wrap:wrap;margin-bottom:var(--sp-2)">
+                ${(perms || []).map(p => html`
+                  <span class="badge badge-success" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:0.75rem">
+                    ${p}
+                    <button class="btn-icon" style="padding:0;min-width:auto;font-size:0.75rem" onClick=${() => removePermFromRole(role, p)} title="Remove">×</button>
+                  </span>
+                `)}
+                ${(perms || []).length === 0 && html`<span style="color:var(--text-muted);font-size:0.75rem">No permissions</span>`}
+              </div>
+              <div style="display:flex;gap:var(--sp-1)">
+                <input class="form-input" style="flex:1;padding:6px 10px;font-size:0.8rem" value=${newPermForRole[role] || ''} onInput=${e => setNewPermForRole({ ...newPermForRole, [role]: e.target.value })} placeholder="e.g. posts:write" onKeyDown=${e => e.key === 'Enter' && addPermToRole(role)} />
+                <button class="btn btn-sm btn-secondary" onClick=${() => addPermToRole(role)}>Add</button>
+              </div>
+            </div>
+          `)
+        }
+
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
+          <input class="form-input" style="flex:1" value=${newRoleName} onInput=${e => setNewRoleName(e.target.value)} placeholder="New role name, e.g. editor" onKeyDown=${e => e.key === 'Enter' && addRole()} />
+          <button class="btn btn-sm btn-primary" onClick=${addRole}>${icons.plus} Add Role</button>
+        </div>
+      </div>
+    </div>
     ${toast && html`<${Toast} ...${toast} />`}
   `;
 }
@@ -169,7 +258,6 @@ function Dashboard() {
 // === Users Page ===
 function UsersPage() {
   const [users, setUsers] = useState([]);
-  const [apps, setApps] = useState([]);
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
   const [toast, setToast] = useState(null);
@@ -177,14 +265,13 @@ function UsersPage() {
   const [roles, setRoles] = useState([]);
   const [perms, setPerms] = useState([]);
   const [sessions, setSessions] = useState([]);
-  const [selectedApp, setSelectedApp] = useState('');
   const [roleInput, setRoleInput] = useState('');
   const [permInput, setPermInput] = useState('');
   const [search, setSearch] = useState('');
+  const [roleDefs, setRoleDefs] = useState({});
 
   const load = () => {
     api('GET', '/api/admin/users').then(setUsers).catch(() => {});
-    api('GET', '/api/admin/apps').then(setApps).catch(() => {});
   };
   useEffect(load, []);
 
@@ -236,39 +323,31 @@ function UsersPage() {
     setSessions([]);
     setRoles([]);
     setPerms([]);
-    setSelectedApp(apps.length > 0 ? apps[0].app_id : '');
+    setRoleDefs({});
     api('GET', `/api/admin/users/${user.guid}/sessions`).then(setSessions).catch(() => {});
-    if (apps.length > 0) loadRolesPerms(user.guid, apps[0].app_id);
+    loadRolesPerms(user.guid);
   };
 
-  const [appRoleDefs, setAppRoleDefs] = useState({});
-
-  const loadRolesPerms = async (guid, appId) => {
-    if (!appId) return;
+  const loadRolesPerms = async (guid) => {
     try {
-      const r = await api('GET', `/api/admin/apps/${appId}/users/${guid}/roles`);
+      const r = await api('GET', `/api/admin/users/${guid}/roles`);
       setRoles(r || []);
     } catch { setRoles([]); }
     try {
-      const p = await api('GET', `/api/admin/apps/${appId}/users/${guid}/permissions`);
+      const p = await api('GET', `/api/admin/users/${guid}/permissions`);
       setPerms(p || []);
     } catch { setPerms([]); }
     try {
-      const rp = await api('GET', `/api/admin/apps/${appId}/role-permissions`);
-      setAppRoleDefs(rp || {});
-    } catch { setAppRoleDefs({}); }
-  };
-
-  const onAppChange = (appId) => {
-    setSelectedApp(appId);
-    if (detail) loadRolesPerms(detail.guid, appId);
+      const rp = await api('GET', '/api/admin/role-permissions');
+      setRoleDefs(rp || {});
+    } catch { setRoleDefs({}); }
   };
 
   const addRole = async () => {
-    if (!roleInput.trim() || !selectedApp) return;
+    if (!roleInput.trim()) return;
     const updated = [...roles, roleInput.trim()];
     try {
-      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/roles`, updated);
+      await api('PUT', `/api/admin/users/${detail.guid}/roles`, updated);
       setRoles(updated);
       setRoleInput('');
       showToast('Role added');
@@ -278,17 +357,17 @@ function UsersPage() {
   const removeRole = async (role) => {
     const updated = roles.filter(r => r !== role);
     try {
-      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/roles`, updated);
+      await api('PUT', `/api/admin/users/${detail.guid}/roles`, updated);
       setRoles(updated);
       showToast('Role removed');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
   const addPerm = async () => {
-    if (!permInput.trim() || !selectedApp) return;
+    if (!permInput.trim()) return;
     const updated = [...perms, permInput.trim()];
     try {
-      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/permissions`, updated);
+      await api('PUT', `/api/admin/users/${detail.guid}/permissions`, updated);
       setPerms(updated);
       setPermInput('');
       showToast('Permission added');
@@ -298,7 +377,7 @@ function UsersPage() {
   const removePerm = async (perm) => {
     const updated = perms.filter(p => p !== perm);
     try {
-      await api('PUT', `/api/admin/apps/${selectedApp}/users/${detail.guid}/permissions`, updated);
+      await api('PUT', `/api/admin/users/${detail.guid}/permissions`, updated);
       setPerms(updated);
       showToast('Permission removed');
     } catch (e) { showToast(e.message, 'error'); }
@@ -441,7 +520,7 @@ function UsersPage() {
             : html`<div style="max-height:120px;overflow-y:auto">
                 ${sessions.map(s => html`
                   <div style="display:flex;justify-content:space-between;padding:var(--sp-1) 0;font-size:0.8rem;border-bottom:1px solid var(--border)">
-                    <span>${s.app_id || 'no app'}</span>
+                    <span>session</span>
                     <span style="color:var(--text-muted)">expires ${new Date(s.expires_at).toLocaleDateString()}</span>
                   </div>
                 `)}
@@ -449,323 +528,66 @@ function UsersPage() {
           }
         </div>
 
-        ${apps.length > 0 && html`
-          <div>
-            <div style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
-              <strong style="font-size:0.875rem">Roles & Permissions</strong>
-              <select class="form-input" style="max-width:200px;padding:4px 8px;font-size:0.8rem" value=${selectedApp} onChange=${e => onAppChange(e.target.value)}>
-                ${apps.map(a => html`<option value=${a.app_id}>${a.name}</option>`)}
-              </select>
-            </div>
-
-            <div style="margin-bottom:var(--sp-3)">
-              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Roles</label>
-              <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
-                ${roles.map(r => html`
-                  <span class="badge" style="cursor:pointer" onClick=${() => removeRole(r)}>${r} ×</span>
-                `)}
-                ${roles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
-              </div>
-              ${Object.keys(appRoleDefs).length > 0 && html`
-                <div style="margin-bottom:var(--sp-1)">
-                  <span style="font-size:0.7rem;color:var(--text-muted)">Available: </span>
-                  ${Object.keys(appRoleDefs).filter(r => !roles.includes(r)).map(r => html`
-                    <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
-                      const updated = [...roles, r];
-                      api('PUT', '/api/admin/apps/' + selectedApp + '/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast('Role added'); }).catch(e => showToast(e.message, 'error'));
-                    }}>+ ${r}</button>
-                  `)}
-                  ${Object.keys(appRoleDefs).filter(r => !roles.includes(r)).length === 0 && html`<span style="font-size:0.7rem;color:var(--text-muted)">all assigned</span>`}
-                </div>
-              `}
-              <div style="display:flex;gap:var(--sp-1)">
-                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
-                <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
-              </div>
-            </div>
-
-            <div>
-              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Direct Permissions</label>
-              <div class="form-help" style="font-size:0.7rem;margin-bottom:var(--sp-1)">Extra permissions for this user, on top of what their roles grant.</div>
-              <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
-                ${perms.map(p => html`
-                  <span class="badge" style="cursor:pointer" onClick=${() => removePerm(p)}>${p} ×</span>
-                `)}
-                ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
-              </div>
-              ${(() => {
-                const allDefinedPerms = [...new Set(Object.values(appRoleDefs).flat())];
-                const available = allDefinedPerms.filter(p => !perms.includes(p));
-                return available.length > 0 && html`
-                  <div style="margin-bottom:var(--sp-1)">
-                    <span style="font-size:0.7rem;color:var(--text-muted)">Known: </span>
-                    ${available.map(p => html`
-                      <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
-                        const updated = [...perms, p];
-                        api('PUT', '/api/admin/apps/' + selectedApp + '/users/' + detail.guid + '/permissions', updated).then(() => { setPerms(updated); showToast('Permission added'); }).catch(e => showToast(e.message, 'error'));
-                      }}>+ ${p}</button>
-                    `)}
-                  </div>
-                `;
-              })()}
-              <div style="display:flex;gap:var(--sp-1)">
-                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
-                <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
-              </div>
-            </div>
-          </div>
-        `}
-      <//>
-    `}
-    ${toast && html`<${Toast} ...${toast} />`}
-  `;
-}
-
-// === Apps Page ===
-function AppsPage() {
-  const [apps, setApps] = useState([]);
-  const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({});
-  const [toast, setToast] = useState(null);
-
-  const load = () => api('GET', '/api/admin/apps').then(setApps).catch(() => {});
-  useEffect(load, []);
-
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => setToast(null), 3000);
-  };
-
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
-    showToast('Copied to clipboard');
-  };
-
-  const createApp = async () => {
-    try {
-      const result = await api('POST', '/api/admin/apps', {
-        name: form.name,
-        description: form.description,
-        redirect_uris: form.redirect_uris ? form.redirect_uris.split('\n').filter(Boolean) : [],
-      });
-      setModal(null);
-      setForm({});
-      load();
-      showToast(`App created! API Key: ${result.api_key}`);
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const rotateKey = async (appId) => {
-    if (!confirm('Rotate API key? The old key will stop working immediately.')) return;
-    try {
-      const result = await api('POST', `/api/admin/apps/${appId}/rotate-key`);
-      load();
-      showToast(`New key: ${result.new_api_key}`);
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const deleteApp = async (appId) => {
-    if (!confirm('Delete this app?')) return;
-    try {
-      await api('DELETE', `/api/admin/apps/${appId}`);
-      load();
-      showToast('App deleted');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  // --- Role-Permissions Configuration ---
-  const [configApp, setConfigApp] = useState(null);
-  const [defaultRoles, setDefaultRoles] = useState([]);
-  const [rolePerms, setRolePerms] = useState({});
-  const [newDefaultRole, setNewDefaultRole] = useState('');
-  const [newRoleName, setNewRoleName] = useState('');
-  const [newPermForRole, setNewPermForRole] = useState({});
-
-  const openConfig = async (app) => {
-    setConfigApp(app);
-    setModal('config');
-    try {
-      const [dr, rp] = await Promise.all([
-        api('GET', `/api/admin/apps/${app.app_id}/defaults/roles`),
-        api('GET', `/api/admin/apps/${app.app_id}/role-permissions`),
-      ]);
-      setDefaultRoles(dr || []);
-      setRolePerms(rp || {});
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const saveDefaultRoles = async (roles) => {
-    try {
-      await api('PUT', `/api/admin/apps/${configApp.app_id}/defaults/roles`, roles);
-      setDefaultRoles(roles);
-      showToast('Default roles saved');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const saveRolePerms = async (mapping) => {
-    try {
-      await api('PUT', `/api/admin/apps/${configApp.app_id}/role-permissions`, mapping);
-      setRolePerms(mapping);
-      showToast('Role permissions saved');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const addDefaultRole = () => {
-    const r = newDefaultRole.trim();
-    if (!r || defaultRoles.includes(r)) return;
-    const updated = [...defaultRoles, r];
-    setNewDefaultRole('');
-    saveDefaultRoles(updated);
-  };
-
-  const removeDefaultRole = (role) => {
-    saveDefaultRoles(defaultRoles.filter(r => r !== role));
-  };
-
-  const addRole = () => {
-    const r = newRoleName.trim();
-    if (!r || rolePerms[r]) return;
-    const updated = { ...rolePerms, [r]: [] };
-    setNewRoleName('');
-    saveRolePerms(updated);
-  };
-
-  const deleteRole = (role) => {
-    const updated = { ...rolePerms };
-    delete updated[role];
-    saveRolePerms(updated);
-  };
-
-  const addPermToRole = (role) => {
-    const p = (newPermForRole[role] || '').trim();
-    if (!p || (rolePerms[role] || []).includes(p)) return;
-    const updated = { ...rolePerms, [role]: [...(rolePerms[role] || []), p] };
-    setNewPermForRole({ ...newPermForRole, [role]: '' });
-    saveRolePerms(updated);
-  };
-
-  const removePermFromRole = (role, perm) => {
-    const updated = { ...rolePerms, [role]: (rolePerms[role] || []).filter(p => p !== perm) };
-    saveRolePerms(updated);
-  };
-
-  return html`
-    <div class="page-header">
-      <h2>Apps</h2>
-      <div class="page-header-actions">
-        <button class="btn btn-primary" onClick=${() => { setForm({}); setModal('create'); }}>${icons.plus} Register App</button>
-      </div>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>App ID</th><th>Name</th><th>Description</th><th>API Key</th><th>Created</th><th>Actions</th></tr></thead>
-        <tbody>
-          ${apps.length === 0
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>No apps registered</p></div></td></tr>`
-            : apps.map(a => html`
-              <tr>
-                <td><span class="guid">${a.app_id}</span></td>
-                <td style="font-weight:600">${a.name}</td>
-                <td style="color:var(--text-secondary);font-size:0.875rem">${a.description || '—'}</td>
-                <td>
-                  <span class="guid">${a.api_key.substring(0, 12)}...</span>
-                  <button class="btn-icon" onClick=${() => copyToClipboard(a.api_key)} title="Copy">${icons.copy}</button>
-                </td>
-                <td style="font-size:0.75rem;color:var(--text-muted)">${new Date(a.created_at).toLocaleDateString()}</td>
-                <td>
-                  <button class="btn btn-sm btn-primary" onClick=${() => openConfig(a)}>Configure</button>
-                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => rotateKey(a.app_id)}>Rotate Key</button>
-                  <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteApp(a.app_id)}>Delete</button>
-                </td>
-              </tr>
-            `)
-          }
-        </tbody>
-      </table>
-    </div>
-
-    ${modal === 'create' && html`
-      <${Modal} title="Register App" onClose=${() => setModal(null)}>
-        <div class="form-group">
-          <label class="form-label">App Name</label>
-          <input class="form-input" value=${form.name || ''} onInput=${e => setForm({ ...form, name: e.target.value })} placeholder="chat-app" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Description</label>
-          <input class="form-input" value=${form.description || ''} onInput=${e => setForm({ ...form, description: e.target.value })} placeholder="Internal chat application" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Redirect URIs</label>
-          <textarea class="form-textarea" value=${form.redirect_uris || ''} onInput=${e => setForm({ ...form, redirect_uris: e.target.value })} placeholder="https://chat.corp.local/callback\nhttp://localhost:3000/callback"></textarea>
-          <div class="form-help">One per line</div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${createApp}>Register App</button>
-        </div>
-      <//>
-    `}
-
-    ${modal === 'config' && configApp && html`
-      <${Modal} title="Configure ${configApp.name}" onClose=${() => setModal(null)}>
-        <!-- Default Roles -->
-        <div style="margin-bottom:var(--sp-6)">
-          <h4 style="margin-bottom:var(--sp-2)">Default Roles</h4>
-          <div class="form-help" style="margin-bottom:var(--sp-3)">Automatically assigned to new users on first login to this app.</div>
-          <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-2)">
-            ${defaultRoles.map(r => html`
-              <span class="badge" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px">
-                ${r}
-                <button class="btn-icon" style="padding:0;min-width:auto" onClick=${() => removeDefaultRole(r)} title="Remove">×</button>
-              </span>
-            `)}
-            ${defaultRoles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.875rem">None configured</span>`}
-          </div>
-          <div style="display:flex;gap:var(--sp-2)">
-            <input class="form-input" style="flex:1" value=${newDefaultRole} onInput=${e => setNewDefaultRole(e.target.value)} placeholder="e.g. viewer" onKeyDown=${e => e.key === 'Enter' && addDefaultRole()} />
-            <button class="btn btn-sm btn-secondary" onClick=${addDefaultRole}>Add</button>
-          </div>
-        </div>
-
-        <!-- Role → Permissions Mapping -->
         <div>
-          <h4 style="margin-bottom:var(--sp-2)">Role → Permissions</h4>
-          <div class="form-help" style="margin-bottom:var(--sp-3)">Define what permissions each role grants. Permissions are expanded into the JWT automatically.</div>
-
-          ${Object.keys(rolePerms).length === 0
-            ? html`<div style="color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--sp-3)">No roles defined. Add a role below.</div>`
-            : Object.entries(rolePerms).map(([role, perms]) => html`
-              <div class="card" style="padding:var(--sp-3);margin-bottom:var(--sp-3)">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-2)">
-                  <strong style="font-size:0.875rem">${role}</strong>
-                  <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(role)}>Remove Role</button>
-                </div>
-                <div style="display:flex;gap:var(--sp-1);flex-wrap:wrap;margin-bottom:var(--sp-2)">
-                  ${(perms || []).map(p => html`
-                    <span class="badge badge-success" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:0.75rem">
-                      ${p}
-                      <button class="btn-icon" style="padding:0;min-width:auto;font-size:0.75rem" onClick=${() => removePermFromRole(role, p)} title="Remove">×</button>
-                    </span>
-                  `)}
-                  ${(perms || []).length === 0 && html`<span style="color:var(--text-muted);font-size:0.75rem">No permissions</span>`}
-                </div>
-                <div style="display:flex;gap:var(--sp-1)">
-                  <input class="form-input" style="flex:1;padding:6px 10px;font-size:0.8rem" value=${newPermForRole[role] || ''} onInput=${e => setNewPermForRole({ ...newPermForRole, [role]: e.target.value })} placeholder="e.g. posts:write" onKeyDown=${e => e.key === 'Enter' && addPermToRole(role)} />
-                  <button class="btn btn-sm btn-secondary" onClick=${() => addPermToRole(role)}>Add</button>
-                </div>
-              </div>
-            `)
-          }
-
-          <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
-            <input class="form-input" style="flex:1" value=${newRoleName} onInput=${e => setNewRoleName(e.target.value)} placeholder="New role name, e.g. editor" onKeyDown=${e => e.key === 'Enter' && addRole()} />
-            <button class="btn btn-sm btn-primary" onClick=${addRole}>${icons.plus} Add Role</button>
+          <div style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+            <strong style="font-size:0.875rem">Roles & Permissions</strong>
           </div>
-        </div>
 
-        <div class="modal-footer" style="margin-top:var(--sp-4)">
-          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Close</button>
+          <div style="margin-bottom:var(--sp-3)">
+            <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Roles</label>
+            <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
+              ${roles.map(r => html`
+                <span class="badge" style="cursor:pointer" onClick=${() => removeRole(r)}>${r} ×</span>
+              `)}
+              ${roles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
+            </div>
+            ${Object.keys(roleDefs).length > 0 && html`
+              <div style="margin-bottom:var(--sp-1)">
+                <span style="font-size:0.7rem;color:var(--text-muted)">Available: </span>
+                ${Object.keys(roleDefs).filter(r => !roles.includes(r)).map(r => html`
+                  <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
+                    const updated = [...roles, r];
+                    api('PUT', '/api/admin/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast('Role added'); }).catch(e => showToast(e.message, 'error'));
+                  }}>+ ${r}</button>
+                `)}
+                ${Object.keys(roleDefs).filter(r => !roles.includes(r)).length === 0 && html`<span style="font-size:0.7rem;color:var(--text-muted)">all assigned</span>`}
+              </div>
+            `}
+            <div style="display:flex;gap:var(--sp-1)">
+              <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
+              <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
+            </div>
+          </div>
+
+          <div>
+            <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Direct Permissions</label>
+            <div class="form-help" style="font-size:0.7rem;margin-bottom:var(--sp-1)">Extra permissions for this user, on top of what their roles grant.</div>
+            <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
+              ${perms.map(p => html`
+                <span class="badge" style="cursor:pointer" onClick=${() => removePerm(p)}>${p} ×</span>
+              `)}
+              ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
+            </div>
+            ${(() => {
+              const allDefinedPerms = [...new Set(Object.values(roleDefs).flat())];
+              const available = allDefinedPerms.filter(p => !perms.includes(p));
+              return available.length > 0 && html`
+                <div style="margin-bottom:var(--sp-1)">
+                  <span style="font-size:0.7rem;color:var(--text-muted)">Known: </span>
+                  ${available.map(p => html`
+                    <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
+                      const updated = [...perms, p];
+                      api('PUT', '/api/admin/users/' + detail.guid + '/permissions', updated).then(() => { setPerms(updated); showToast('Permission added'); }).catch(e => showToast(e.message, 'error'));
+                    }}>+ ${p}</button>
+                  `)}
+                </div>
+              `;
+            })()}
+            <div style="display:flex;gap:var(--sp-1)">
+              <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+              <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
+            </div>
+          </div>
         </div>
       <//>
     `}
@@ -1505,15 +1327,12 @@ function LDAPPage() {
 // === Impersonate Page ===
 function ImpersonatePage() {
   const [users, setUsers] = useState([]);
-  const [apps, setApps] = useState([]);
   const [selectedUser, setSelectedUser] = useState('');
-  const [selectedApp, setSelectedApp] = useState('');
   const [result, setResult] = useState(null);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     api('GET', '/api/admin/users').then(setUsers).catch(() => {});
-    api('GET', '/api/admin/apps').then(setApps).catch(() => {});
   }, []);
 
   const showToast = (message, type = 'success') => {
@@ -1527,7 +1346,6 @@ function ImpersonatePage() {
     try {
       const res = await api('POST', '/api/auth/impersonate', {
         target_guid: selectedUser,
-        app_id: selectedApp,
       });
       setResult(res);
     } catch (e) { showToast(e.message, 'error'); }
@@ -1541,13 +1359,6 @@ function ImpersonatePage() {
         <select class="form-select" value=${selectedUser} onChange=${e => setSelectedUser(e.target.value)}>
           <option value="">Select a user...</option>
           ${users.map(u => html`<option value=${u.guid}>${u.display_name || u.guid} (${u.email || 'no email'})</option>`)}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">App (optional)</label>
-        <select class="form-select" value=${selectedApp} onChange=${e => setSelectedApp(e.target.value)}>
-          <option value="">No app scope</option>
-          ${apps.map(a => html`<option value=${a.app_id}>${a.name} (${a.app_id})</option>`)}
         </select>
       </div>
       <button class="btn btn-primary" onClick=${impersonate}>Generate Impersonated Token</button>
@@ -1713,7 +1524,7 @@ function AuditPage() {
   };
   useEffect(() => load(), []);
 
-  const eventTypes = ['login_success', 'login_failed', 'impersonation', 'user_created', 'user_merged', 'role_changed', 'app_registered', 'app_key_rotated'];
+  const eventTypes = ['login_success', 'login_failed', 'impersonation', 'user_created', 'user_merged', 'role_changed'];
 
   return html`
     <div class="page-header"><h2>Audit Log</h2></div>
@@ -1785,7 +1596,7 @@ function TokensPage() {
   const [tokens, setTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [scope, setScope] = useState('app-registration');
+  const [scope, setScope] = useState('general');
   const [label, setLabel] = useState('');
   const [ttl, setTtl] = useState('24h');
   const [scopeFilter, setScopeFilter] = useState('');
@@ -1843,7 +1654,7 @@ function TokensPage() {
       <h2>One-Time Tokens</h2>
       <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>${icons.plus} Create Token</button>
     </div>
-    <p style="color:var(--text-secondary);margin-bottom:var(--sp-4)">Scoped, single-use tokens. e.g. <code>app-registration</code> tokens let apps self-register via <code>POST /api/register</code></p>
+    <p style="color:var(--text-secondary);margin-bottom:var(--sp-4)">Scoped, single-use tokens for various administrative purposes.</p>
 
     ${scopes.length > 0 && html`
       <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4);flex-wrap:wrap">
@@ -1858,12 +1669,12 @@ function TokensPage() {
       <${Modal} title="Create One-Time Token" onClose=${() => setShowCreate(false)}>
         <div class="form-group">
           <label class="form-label">Scope</label>
-          <input class="form-input" value=${scope} onInput=${e => setScope(e.target.value)} placeholder="e.g. app-registration" />
+          <input class="form-input" value=${scope} onInput=${e => setScope(e.target.value)} placeholder="e.g. general" />
           <div class="form-help">Defines what this token can be used for</div>
         </div>
         <div class="form-group">
           <label class="form-label">Label (optional)</label>
-          <input class="form-input" value=${label} onInput=${e => setLabel(e.target.value)} placeholder="e.g. For chat-app team" />
+          <input class="form-input" value=${label} onInput=${e => setLabel(e.target.value)} placeholder="e.g. For deployment team" />
         </div>
         <div class="form-group">
           <label class="form-label">Expires After</label>
@@ -1964,7 +1775,7 @@ function App() {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: icons.dashboard },
     { id: 'users', label: 'Users', icon: icons.users },
-    { id: 'apps', label: 'Apps', icon: icons.apps },
+    { id: 'roles', label: 'Roles', icon: icons.roles },
     { id: 'ldap', label: 'LDAP Providers', icon: icons.ldap },
     { id: 'mappings', label: 'Mappings', icon: icons.mappings },
     { id: 'tokens', label: 'Tokens', icon: icons.token },
@@ -1975,7 +1786,7 @@ function App() {
   const pages = {
     dashboard: Dashboard,
     users: UsersPage,
-    apps: AppsPage,
+    roles: RolesPage,
     ldap: LDAPPage,
     mappings: MappingsPage,
     tokens: TokensPage,

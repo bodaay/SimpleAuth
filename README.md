@@ -9,9 +9,11 @@
 
 ---
 
-**SimpleAuth** is a central identity hub that replaces Keycloak, ADFS, and custom LDAP code with a single Go binary. It connects to your Active Directory, handles Kerberos/SPNEGO for transparent Windows SSO, provides a clean REST API, and issues RS256 JWTs -- all with zero external dependencies and an embedded admin UI.
+**SimpleAuth** is a single-instance identity server that replaces Keycloak, ADFS, and custom LDAP code with a single Go binary. It connects to your Active Directory, handles Kerberos/SPNEGO for transparent Windows SSO, provides a clean REST API, and issues RS256 JWTs -- all with zero external dependencies and an embedded admin UI.
 
-Every user gets a stable GUID. Apps map their own identifiers to that GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
+Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. OIDC client configuration (client ID, client secret, redirect URIs) is set at the instance level via environment variables.
+
+Every user gets a stable GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
 
 ## Why SimpleAuth?
 
@@ -32,6 +34,9 @@ Every user gets a stable GUID. Apps map their own identifiers to that GUID. AD i
 ```bash
 docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_HOSTNAME=auth.corp.local \
+  -e AUTH_CLIENT_ID=my-app \
+  -e AUTH_CLIENT_SECRET=changeme \
+  -e AUTH_REDIRECT_URIS=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
 ```
@@ -40,7 +45,7 @@ docker run -d -p 9090:9090 -p 80:80 \
 
 ```bash
 ./simpleauth init-config          # generates simpleauth.yaml
-vim simpleauth.yaml               # set hostname (admin_key auto-generates if empty)
+vim simpleauth.yaml               # set hostname, client config (admin_key auto-generates if empty)
 ./simpleauth                      # that's it
 ```
 
@@ -51,6 +56,13 @@ On first run, SimpleAuth will:
 4. Start HTTPS on port 9090 and HTTP redirect on port 80
 
 Open `https://<hostname>:9090` and sign in with your admin key.
+
+### Admin Access
+
+SimpleAuth uses a two-tier admin model:
+
+1. **ADMIN_KEY** -- a bootstrap secret set via config or environment variable. Use it to perform initial setup (create the first admin user, configure LDAP, etc.).
+2. **`SimpleAuthAdmin` role** -- any user assigned this role gets full admin access to the instance. Once you have at least one admin user, you can stop using the ADMIN_KEY for day-to-day operations.
 
 ## The AD Setup That Changes Everything
 
@@ -68,7 +80,7 @@ Open `https://<hostname>:9090` and sign in with your admin key.
 
 ### Step 1: Generate the PowerShell Script
 
-In the admin UI, go to **LDAP Providers** → **AD Setup Script**. Enter a service account name and password. Download the script.
+In the admin UI, go to **LDAP Providers** -> **AD Setup Script**. Enter a service account name and password. Download the script.
 
 ### Step 2: Run it on Any Domain-Joined Machine
 
@@ -166,13 +178,14 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 ### Identity
 - **GUID-based users** -- stable identity across all systems, usernames are just attributes
 - **Zero-import onboarding** -- users auto-created on first login from any provider
-- **Identity mappings** -- `(provider, external_id) → GUID` across LDAP, apps, Kerberos
+- **Identity mappings** -- `(provider, external_id) -> GUID` across LDAP, Kerberos
 - **User merge/unmerge** -- consolidate duplicate accounts, all mappings follow
 - **Rich profiles** -- name, email, department, company, job title, groups synced from AD on every login
 
 ### Authorization
-- **App-scoped roles & permissions** -- each app defines its own role/permission model
-- **Default roles** -- auto-assigned to new users on first login to an app
+- **Global roles and permissions** -- define roles and permissions at the instance level, assigned to users
+- **Default roles** -- auto-assigned to new users on first login
+- **Role-permission mapping** -- associate permissions with roles for structured access control
 - **RS256 JWTs** -- auto-generated RSA-2048 keys, JWKS endpoint, all claims in the token
 - **Refresh token rotation** -- family-based replay detection with automatic revocation
 
@@ -185,7 +198,6 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Backup/restore** -- live BoltDB snapshots via API
 - **Audit logging** -- every action logged with configurable retention
 - **Rate limiting** -- per-IP, configurable window and threshold
-- **One-time tokens** -- scoped `XXX-XXXX` tokens for app self-registration
 
 ### Keycloak Compatibility
 
@@ -201,7 +213,7 @@ SimpleAuth exposes Keycloak-compatible OIDC endpoints so existing apps can switc
 | `/realms/{realm}/protocol/openid-connect/token/introspect` | Same |
 | `/realms/{realm}/protocol/openid-connect/logout` | Same |
 
-JWT claims include Keycloak-compatible fields: `preferred_username`, `realm_access.roles`, `resource_access.{client}.roles`, `azp`, `scope`, `session_state`.
+JWT claims include Keycloak-compatible fields: `preferred_username`, `realm_access.roles`, `azp`, `scope`, `session_state`.
 
 ## Client SDKs
 
@@ -245,6 +257,9 @@ docker build -t simpleauth .
 docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_ADMIN_KEY=changeme \
   -e AUTH_HOSTNAME=auth.corp.local \
+  -e AUTH_CLIENT_ID=my-app \
+  -e AUTH_CLIENT_SECRET=supersecret \
+  -e AUTH_REDIRECT_URIS=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
 ```
@@ -275,7 +290,10 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_PORT` | `9090` | HTTPS listen port |
 | `AUTH_HTTP_PORT` | `80` | HTTP redirect port (empty = disabled) |
 | `AUTH_DATA_DIR` | `./data` | Data directory for DB, certs, keytabs |
-| `AUTH_ADMIN_KEY` | auto-generated | Master admin API key |
+| `AUTH_ADMIN_KEY` | auto-generated | Bootstrap admin API key |
+| `AUTH_CLIENT_ID` | | OIDC client ID for this instance |
+| `AUTH_CLIENT_SECRET` | | OIDC client secret for this instance |
+| `AUTH_REDIRECT_URIS` | | Allowed OIDC redirect URIs (comma-separated) |
 | `AUTH_PROJECT_NAME` | `default` | Project name (for multi-instance service accounts) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |
 | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime |
@@ -317,7 +335,6 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 | `GET` | `/auth/test-negotiate` | Kerberos SSO test page |
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |
 | `GET` | `/health` | Health check |
-| `POST` | `/api/register` | App self-registration with one-time token |
 
 ### OIDC / Keycloak-Compatible
 
@@ -333,17 +350,17 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 
 ### Admin
 
-All admin endpoints require `Authorization: Bearer <admin-key>`.
+All admin endpoints require either `Authorization: Bearer <admin-key>` or a valid JWT from a user with the `SimpleAuthAdmin` role.
 
 | Category | Endpoints |
 |----------|-----------|
-| **Apps** | CRUD `/api/admin/apps`, rotate keys |
 | **Users** | CRUD `/api/admin/users`, merge/unmerge, password, disable, sessions |
+| **Roles** | `GET/PUT /api/admin/users/{guid}/roles`, `GET/PUT /api/admin/users/{guid}/permissions` |
+| **Default Roles** | `GET/PUT /api/admin/defaults/roles` |
+| **Role-Permissions** | `GET/PUT /api/admin/role-permissions` |
 | **LDAP** | CRUD `/api/admin/ldap`, auto-discover, import/export, test connection |
 | **Kerberos** | Setup, cleanup, status via `/api/admin/ldap/:id/setup-kerberos` |
-| **Roles** | Per-app roles & permissions, default roles |
 | **Mappings** | Identity mappings CRUD, resolve |
-| **Tokens** | One-time token CRUD |
 | **Operations** | Backup, restore, audit log, server info |
 
 See [docs/API.md](docs/API.md) for the complete API reference with request/response examples.
@@ -352,23 +369,22 @@ See [docs/API.md](docs/API.md) for the complete API reference with request/respo
 
 ```
 User types "jsmith" + password into your app
-        │
-        ▼
+        |
+        v
   POST /api/auth/login
-  { "username": "jsmith", "app_id": "my-app" }
-        │
-        ├─ Check mapping: (app:my-app, jsmith) → GUID?
-        │   └─ No mapping? Search LDAP providers
-        │       └─ Found in AD → create GUID + mapping
-        │
-        ├─ Authenticate: LDAP bind with password
-        │
-        ├─ Sync profile: name, email, dept, company, title, groups
-        │
-        ├─ Load roles/permissions for app
-        │   └─ No roles? Assign default roles
-        │
-        └─ Issue JWT
+  { "username": "jsmith" }
+        |
+        +-- Search LDAP providers for "jsmith"
+        |     +-- Found in AD -> create GUID + mapping (if first login)
+        |
+        +-- Authenticate: LDAP bind with password
+        |
+        +-- Sync profile: name, email, dept, company, title, groups
+        |
+        +-- Load roles/permissions
+        |     +-- No roles? Assign default roles
+        |
+        +-- Issue JWT
             {
               "sub": "a1b2c3d4-...",
               "name": "John Smith",
@@ -379,7 +395,7 @@ User types "jsmith" + password into your app
             }
 ```
 
-New app added? Users log in immediately. No import, no sync, no migration.
+Users are auto-created on first login. No import, no sync, no migration.
 
 ## Architecture
 
@@ -391,7 +407,7 @@ simpleauth
 ├── docker-compose.yml             # Full stack with nginx
 ├── internal/
 │   ├── config/config.go           # YAML + env config, auto TLS cert generation
-│   ├── store/store.go             # BoltDB storage (users, apps, sessions, audit...)
+│   ├── store/store.go             # BoltDB storage (users, sessions, audit...)
 │   ├── auth/
 │   │   ├── jwt.go                 # RSA keys, JWT signing/validation, JWKS, OIDC tokens
 │   │   ├── ldap.go                # LDAP search, bind, groups, attribute sync
@@ -401,7 +417,7 @@ simpleauth
 │       ├── auth.go                # Login, refresh, negotiate, SPNEGO, impersonate
 │       ├── oidc.go                # OIDC/Keycloak compatibility layer
 │       ├── hosted_login.go        # Hosted login page (redirect flow)
-│       ├── admin.go               # App/user CRUD, backup/restore, audit
+│       ├── admin.go               # User CRUD, roles, backup/restore, audit
 │       ├── admin_ldap.go          # LDAP management, auto-discover, import/export
 │       ├── admin_kerberos.go      # Kerberos setup, keytab generation, SPN mgmt
 │       └── middleware.go          # Admin auth, rate limiting
@@ -427,7 +443,7 @@ simpleauth
 │   └── nginx/                     # Production nginx config with SSL
 └── ui/dist/                       # Embedded Preact admin UI
     ├── index.html
-    ├── app.js                     # SPA: Dashboard, Users, Apps, LDAP, Mappings, Audit
+    ├── app.js                     # SPA: Dashboard, Users, LDAP, Mappings, Audit
     └── vendor/                    # Preact, htm (offline, no CDN)
 ```
 

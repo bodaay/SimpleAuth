@@ -20,8 +20,6 @@ using SimpleAuth;
 var client = new SimpleAuthClient(new SimpleAuthOptions
 {
     Url = "https://auth.corp.local:9090",
-    AppId = "my-app",
-    AppSecret = "sk-...",
     Realm = "simpleauth",
 });
 
@@ -46,8 +44,6 @@ builder.Services.AddControllers();
 builder.Services.AddSimpleAuth(options =>
 {
     options.Url = "https://auth.corp.local:9090";
-    options.AppId = "my-app";
-    options.AppSecret = "sk-...";
 });
 
 var app = builder.Build();
@@ -175,11 +171,19 @@ To disable SSL certificate validation (development only):
 var client = new SimpleAuthClient(new SimpleAuthOptions
 {
     Url = "https://localhost:9090",
-    AppId = "my-app",
-    AppSecret = "sk-...",
     ValidateSsl = false,
 });
 ```
+
+## Configuration
+
+| Option         | Type     | Required | Default         | Description                              |
+|----------------|----------|----------|-----------------|------------------------------------------|
+| `Url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
+| `ClientId`     | `string` | No       | `""`            | OIDC client ID (for auth code flows)     |
+| `ClientSecret` | `string` | No       | `""`            | OIDC client secret for server-side ops   |
+| `Realm`        | `string` | No       | `"simpleauth"`  | OIDC realm name                          |
+| `ValidateSsl`  | `bool`   | No       | `true`          | Whether to validate SSL certificates     |
 
 ## Error Handling
 

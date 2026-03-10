@@ -29,8 +29,8 @@ import (
 // Options configures a new Client.
 type Options struct {
 	URL               string // SimpleAuth server URL (e.g. "https://auth.example.com")
-	AppID             string // Application / client ID
-	AppSecret         string // Application API key / client secret
+	ClientID          string // OIDC client ID (optional, for authorization code / client credentials flows)
+	ClientSecret      string // OIDC client secret (optional)
 	Realm             string // OIDC realm (default "simpleauth")
 	InsecureSkipVerify bool  // Allow self-signed TLS certificates
 }
@@ -57,7 +57,6 @@ type User struct {
 	Department       string   `json:"department,omitempty"`
 	Company          string   `json:"company,omitempty"`
 	JobTitle         string   `json:"job_title,omitempty"`
-	AppID            string   `json:"app_id,omitempty"`
 }
 
 // HasRole returns true if the user has the given role.
@@ -105,11 +104,11 @@ type UserInfo struct {
 
 // Client is the main entry point for interacting with SimpleAuth.
 type Client struct {
-	baseURL   string
-	realm     string
-	appID     string
-	appSecret string
-	http      *http.Client
+	baseURL      string
+	realm        string
+	clientID     string
+	clientSecret string
+	http         *http.Client
 
 	mu        sync.RWMutex
 	keys      map[string]*rsa.PublicKey
@@ -130,10 +129,10 @@ func New(opts Options) *Client {
 	}
 
 	return &Client{
-		baseURL:   strings.TrimRight(opts.URL, "/"),
-		realm:     realm,
-		appID:     opts.AppID,
-		appSecret: opts.AppSecret,
+		baseURL:      strings.TrimRight(opts.URL, "/"),
+		realm:        realm,
+		clientID:     opts.ClientID,
+		clientSecret: opts.ClientSecret,
 		http:      &http.Client{Transport: transport, Timeout: 30 * time.Second},
 		keys:      make(map[string]*rsa.PublicKey),
 		keysTTL:   1 * time.Hour,
@@ -149,7 +148,7 @@ func (c *Client) tokenURL() string {
 }
 
 func (c *Client) basicAuth() string {
-	return base64.StdEncoding.EncodeToString([]byte(c.appID + ":" + c.appSecret))
+	return base64.StdEncoding.EncodeToString([]byte(c.clientID + ":" + c.clientSecret))
 }
 
 func (c *Client) postToken(ctx context.Context, form url.Values) (*TokenResponse, error) {

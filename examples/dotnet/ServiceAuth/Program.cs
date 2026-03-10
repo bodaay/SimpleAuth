@@ -30,8 +30,8 @@ var builder = Host.CreateApplicationBuilder(args);
 var authOptions = new SimpleAuthOptions
 {
     Url = "https://auth.example.com",
-    AppId = "inventory-service",
-    AppSecret = "service-secret-key-here",
+    ClientId = "inventory-service",
+    ClientSecret = "service-secret-key-here",
     Realm = "simpleauth",
     ValidateSsl = true,
 };

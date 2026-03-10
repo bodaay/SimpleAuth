@@ -24,8 +24,6 @@ import { createSimpleAuth, SimpleAuthError, SimpleAuthUser } from "@simpleauth/j
 
 const auth = createSimpleAuth({
   url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local:9090",
-  appId: process.env.SIMPLEAUTH_APP_ID ?? "my-nextjs-app",
-  appSecret: process.env.SIMPLEAUTH_APP_SECRET,
 });
 
 /**

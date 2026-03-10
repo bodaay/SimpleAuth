@@ -34,9 +34,6 @@ public class SimpleAuthUser
     [JsonPropertyName("job_title")]
     public string? JobTitle { get; set; }
 
-    [JsonPropertyName("app_id")]
-    public string? AppId { get; set; }
-
     public bool HasRole(string role) =>
         Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
 
@@ -52,11 +49,11 @@ public class SimpleAuthOptions
     /// <summary>SimpleAuth server URL (e.g. https://auth.corp.local:9090)</summary>
     public string Url { get; set; } = string.Empty;
 
-    /// <summary>App ID (client_id)</summary>
-    public string AppId { get; set; } = string.Empty;
+    /// <summary>OIDC client ID (optional, for authorization code / client credentials flows)</summary>
+    public string ClientId { get; set; } = string.Empty;
 
-    /// <summary>App API key (client_secret)</summary>
-    public string AppSecret { get; set; } = string.Empty;
+    /// <summary>OIDC client secret (optional)</summary>
+    public string ClientSecret { get; set; } = string.Empty;
 
     /// <summary>Realm name</summary>
     public string Realm { get; set; } = "simpleauth";

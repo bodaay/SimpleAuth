@@ -37,117 +37,6 @@ func TestOpenClose(t *testing.T) {
 	s2.Close()
 }
 
-// ---- App CRUD ----
-
-func TestAppCRUD(t *testing.T) {
-	s := openTestStore(t)
-
-	// CreateApp with auto-generated fields.
-	app := &App{Name: "TestApp", Description: "desc", RedirectURIs: []string{"http://localhost"}}
-	if err := s.CreateApp(app); err != nil {
-		t.Fatalf("CreateApp: %v", err)
-	}
-	if app.AppID == "" {
-		t.Fatal("expected AppID to be generated")
-	}
-	if app.APIKey == "" {
-		t.Fatal("expected APIKey to be generated")
-	}
-
-	// GetApp
-	got, err := s.GetApp(app.AppID)
-	if err != nil {
-		t.Fatalf("GetApp: %v", err)
-	}
-	if got.Name != "TestApp" {
-		t.Fatalf("got Name=%q, want TestApp", got.Name)
-	}
-
-	// ListApps
-	apps, err := s.ListApps()
-	if err != nil {
-		t.Fatalf("ListApps: %v", err)
-	}
-	if len(apps) != 1 {
-		t.Fatalf("ListApps: got %d, want 1", len(apps))
-	}
-
-	// UpdateApp
-	app.Description = "updated"
-	if err := s.UpdateApp(app); err != nil {
-		t.Fatalf("UpdateApp: %v", err)
-	}
-	got, _ = s.GetApp(app.AppID)
-	if got.Description != "updated" {
-		t.Fatalf("UpdateApp: description not updated")
-	}
-
-	// GetAppByAPIKey (LookupByAPIKey)
-	got, err = s.GetAppByAPIKey(app.APIKey)
-	if err != nil {
-		t.Fatalf("GetAppByAPIKey: %v", err)
-	}
-	if got.AppID != app.AppID {
-		t.Fatalf("GetAppByAPIKey returned wrong app")
-	}
-
-	// RotateAppKey
-	oldKey := app.APIKey
-	newKey, err := s.RotateAppKey(app.AppID)
-	if err != nil {
-		t.Fatalf("RotateAppKey: %v", err)
-	}
-	if newKey == oldKey {
-		t.Fatal("RotateAppKey: key did not change")
-	}
-
-	// Old key should no longer resolve.
-	_, err = s.GetAppByAPIKey(oldKey)
-	if err == nil {
-		t.Fatal("expected error looking up old API key")
-	}
-
-	// New key should resolve.
-	got, err = s.GetAppByAPIKey(newKey)
-	if err != nil {
-		t.Fatalf("GetAppByAPIKey (new): %v", err)
-	}
-	if got.AppID != app.AppID {
-		t.Fatal("new key resolved to wrong app")
-	}
-
-	// DeleteApp
-	if err := s.DeleteApp(app.AppID); err != nil {
-		t.Fatalf("DeleteApp: %v", err)
-	}
-	_, err = s.GetApp(app.AppID)
-	if err == nil {
-		t.Fatal("expected error after DeleteApp")
-	}
-
-	// API key index should be cleaned up.
-	_, err = s.GetAppByAPIKey(newKey)
-	if err == nil {
-		t.Fatal("expected error looking up API key after DeleteApp")
-	}
-}
-
-func TestGetApp_NotFound(t *testing.T) {
-	s := openTestStore(t)
-	_, err := s.GetApp("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for nonexistent app")
-	}
-}
-
-func TestUpdateApp_NotFound(t *testing.T) {
-	s := openTestStore(t)
-	err := s.UpdateApp(&App{AppID: "nope", APIKey: "sk-xyz"})
-	if err == nil {
-		t.Fatal("expected error updating nonexistent app")
-	}
-}
-
 // ---- User CRUD ----
 
 func TestUserCRUD(t *testing.T) {
@@ -317,15 +206,14 @@ func TestRolesAndPermissions(t *testing.T) {
 	s := openTestStore(t)
 
 	guid := "user-1"
-	appID := "app-1"
 
 	// SetUserRoles
-	if err := s.SetUserRoles(guid, appID, []string{"admin", "editor"}); err != nil {
+	if err := s.SetUserRoles(guid, []string{"admin", "editor"}); err != nil {
 		t.Fatalf("SetUserRoles: %v", err)
 	}
 
 	// GetUserRoles
-	roles, err := s.GetUserRoles(guid, appID)
+	roles, err := s.GetUserRoles(guid)
 	if err != nil {
 		t.Fatalf("GetUserRoles: %v", err)
 	}
@@ -334,46 +222,34 @@ func TestRolesAndPermissions(t *testing.T) {
 	}
 
 	// GetUserRoles for nonexistent returns nil (no error)
-	roles, err = s.GetUserRoles(guid, "app-nonexistent")
+	roles, err = s.GetUserRoles("nonexistent-guid")
 	if err != nil {
 		t.Fatalf("GetUserRoles (empty): %v", err)
 	}
 	if roles != nil {
-		t.Fatalf("expected nil roles for nonexistent app, got %v", roles)
+		t.Fatalf("expected nil roles for nonexistent user, got %v", roles)
 	}
 
 	// SetUserPermissions
-	if err := s.SetUserPermissions(guid, appID, []string{"read", "write", "delete"}); err != nil {
+	if err := s.SetUserPermissions(guid, []string{"read", "write", "delete"}); err != nil {
 		t.Fatalf("SetUserPermissions: %v", err)
 	}
 
 	// GetUserPermissions
-	perms, err := s.GetUserPermissions(guid, appID)
+	perms, err := s.GetUserPermissions(guid)
 	if err != nil {
 		t.Fatalf("GetUserPermissions: %v", err)
 	}
 	if len(perms) != 3 {
 		t.Fatalf("GetUserPermissions: got %d, want 3", len(perms))
 	}
-
-	// GetUsersWithRolesInApp
-	s.SetUserRoles("user-2", appID, []string{"viewer"})
-	guids, err := s.GetUsersWithRolesInApp(appID)
-	if err != nil {
-		t.Fatalf("GetUsersWithRolesInApp: %v", err)
-	}
-	if len(guids) != 2 {
-		t.Fatalf("GetUsersWithRolesInApp: got %d, want 2", len(guids))
-	}
 }
 
 func TestDefaultRoles(t *testing.T) {
 	s := openTestStore(t)
 
-	appID := "app-dr"
-
 	// Initially nil
-	roles, err := s.GetDefaultRoles(appID)
+	roles, err := s.GetDefaultRoles()
 	if err != nil {
 		t.Fatalf("GetDefaultRoles: %v", err)
 	}
@@ -382,16 +258,46 @@ func TestDefaultRoles(t *testing.T) {
 	}
 
 	// SetDefaultRoles
-	if err := s.SetDefaultRoles(appID, []string{"member"}); err != nil {
+	if err := s.SetDefaultRoles([]string{"member"}); err != nil {
 		t.Fatalf("SetDefaultRoles: %v", err)
 	}
 
-	roles, err = s.GetDefaultRoles(appID)
+	roles, err = s.GetDefaultRoles()
 	if err != nil {
 		t.Fatalf("GetDefaultRoles (after set): %v", err)
 	}
 	if len(roles) != 1 || roles[0] != "member" {
 		t.Fatalf("expected [member], got %v", roles)
+	}
+}
+
+func TestRolePermissions(t *testing.T) {
+	s := openTestStore(t)
+
+	mapping := map[string][]string{
+		"admin":  {"read", "write", "delete"},
+		"viewer": {"read"},
+	}
+	if err := s.SetRolePermissions(mapping); err != nil {
+		t.Fatalf("SetRolePermissions: %v", err)
+	}
+
+	got, err := s.GetRolePermissions()
+	if err != nil {
+		t.Fatalf("GetRolePermissions: %v", err)
+	}
+	if len(got["admin"]) != 3 {
+		t.Fatalf("expected 3 admin perms, got %d", len(got["admin"]))
+	}
+
+	// ResolvePermissions
+	resolved, err := s.ResolvePermissions([]string{"admin"}, []string{"custom"})
+	if err != nil {
+		t.Fatalf("ResolvePermissions: %v", err)
+	}
+	// Should have read, write, delete, custom = 4
+	if len(resolved) != 4 {
+		t.Fatalf("expected 4 resolved perms, got %d: %v", len(resolved), resolved)
 	}
 }
 
@@ -404,7 +310,6 @@ func TestRefreshTokens(t *testing.T) {
 		TokenID:   "tok-1",
 		FamilyID:  "fam-1",
 		UserGUID:  "user-1",
-		AppID:     "app-1",
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 		CreatedAt: time.Now(),
 	}
@@ -448,9 +353,9 @@ func TestRefreshTokens(t *testing.T) {
 	}
 
 	// RevokeTokenFamily
-	rt2 := &RefreshToken{TokenID: "tok-2", FamilyID: "fam-1", UserGUID: "user-1", AppID: "app-1",
+	rt2 := &RefreshToken{TokenID: "tok-2", FamilyID: "fam-1", UserGUID: "user-1",
 		ExpiresAt: time.Now().Add(24 * time.Hour), CreatedAt: time.Now()}
-	rt3 := &RefreshToken{TokenID: "tok-3", FamilyID: "fam-2", UserGUID: "user-1", AppID: "app-1",
+	rt3 := &RefreshToken{TokenID: "tok-3", FamilyID: "fam-2", UserGUID: "user-1",
 		ExpiresAt: time.Now().Add(24 * time.Hour), CreatedAt: time.Now()}
 	s.SaveRefreshToken(rt2)
 	s.SaveRefreshToken(rt3)
@@ -494,10 +399,10 @@ func TestMergeUsers(t *testing.T) {
 	s.SetIdentityMapping("google", "u2google", u2.GUID)
 
 	// Set up roles/permissions on source users.
-	s.SetUserRoles(u1.GUID, "app-1", []string{"admin"})
-	s.SetUserRoles(u2.GUID, "app-1", []string{"editor"})
-	s.SetUserPermissions(u1.GUID, "app-1", []string{"read"})
-	s.SetUserPermissions(u2.GUID, "app-1", []string{"write"})
+	s.SetUserRoles(u1.GUID, []string{"admin"})
+	s.SetUserRoles(u2.GUID, []string{"editor"})
+	s.SetUserPermissions(u1.GUID, []string{"read"})
+	s.SetUserPermissions(u2.GUID, []string{"write"})
 
 	// Merge
 	merged, err := s.MergeUsers([]string{u1.GUID, u2.GUID}, "MergedUser", "merged@example.com")
@@ -538,13 +443,13 @@ func TestMergeUsers(t *testing.T) {
 	}
 
 	// Merged user should have combined roles.
-	roles, _ := s.GetUserRoles(merged.GUID, "app-1")
+	roles, _ := s.GetUserRoles(merged.GUID)
 	if len(roles) < 2 {
 		t.Fatalf("expected at least 2 merged roles, got %d", len(roles))
 	}
 
 	// Merged user should have combined permissions.
-	perms, _ := s.GetUserPermissions(merged.GUID, "app-1")
+	perms, _ := s.GetUserPermissions(merged.GUID)
 	if len(perms) < 2 {
 		t.Fatalf("expected at least 2 merged perms, got %d", len(perms))
 	}
@@ -682,8 +587,6 @@ func TestBackupAndRestore(t *testing.T) {
 	s := openTestStore(t)
 
 	// Create some data.
-	app := &App{Name: "BackupApp"}
-	s.CreateApp(app)
 	u := &User{DisplayName: "BackupUser", Email: "bu@example.com"}
 	s.CreateUser(u)
 
@@ -697,13 +600,12 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 
 	// Delete data.
-	s.DeleteApp(app.AppID)
 	s.DeleteUser(u.GUID)
 
 	// Verify data is gone.
-	_, err := s.GetApp(app.AppID)
+	_, err := s.GetUser(u.GUID)
 	if err == nil {
-		t.Fatal("expected app to be deleted before restore")
+		t.Fatal("expected user to be deleted before restore")
 	}
 
 	// Restore from the buffer.
@@ -712,14 +614,6 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 
 	// Data should be back.
-	got, err := s.GetApp(app.AppID)
-	if err != nil {
-		t.Fatalf("GetApp after Restore: %v", err)
-	}
-	if got.Name != "BackupApp" {
-		t.Fatalf("restored app name=%q, want BackupApp", got.Name)
-	}
-
 	gotU, err := s.GetUser(u.GUID)
 	if err != nil {
 		t.Fatalf("GetUser after Restore: %v", err)
@@ -732,20 +626,13 @@ func TestBackupAndRestore(t *testing.T) {
 func TestBackupToFile(t *testing.T) {
 	s := openTestStore(t)
 
-	app := &App{Name: "FileBackupApp"}
-	s.CreateApp(app)
+	u := &User{DisplayName: "FileBackupUser"}
+	s.CreateUser(u)
 
 	backupPath := t.TempDir() + "/backup.db"
 	if err := s.Backup(backupPath); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
-
-	// Open the backup as a separate store.
-	s2, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("Open s2: %v", err)
-	}
-	defer s2.Close()
 
 	// The backup file should be a valid BoltDB. Open it directly.
 	s3 := &Store{}
@@ -756,14 +643,6 @@ func TestBackupToFile(t *testing.T) {
 }
 
 // ---- Edge Cases ----
-
-func TestDeleteApp_Nonexistent(t *testing.T) {
-	s := openTestStore(t)
-	// Deleting a nonexistent app should not error (BoltDB Delete is idempotent).
-	if err := s.DeleteApp("nope"); err != nil {
-		t.Fatalf("DeleteApp nonexistent: %v", err)
-	}
-}
 
 func TestDeleteIdentityMapping_Nonexistent(t *testing.T) {
 	s := openTestStore(t)
@@ -797,17 +676,6 @@ func TestRevokeTokenFamily_Empty(t *testing.T) {
 	// Should not error when no tokens exist.
 	if err := s.RevokeTokenFamily("nope"); err != nil {
 		t.Fatalf("RevokeTokenFamily empty: %v", err)
-	}
-}
-
-func TestListApps_Empty(t *testing.T) {
-	s := openTestStore(t)
-	apps, err := s.ListApps()
-	if err != nil {
-		t.Fatalf("ListApps: %v", err)
-	}
-	if apps != nil {
-		t.Fatalf("expected nil for empty list, got %v", apps)
 	}
 }
 

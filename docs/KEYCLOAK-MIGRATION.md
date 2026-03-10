@@ -10,7 +10,7 @@ You're running Keycloak. It works, but it's a lot of infrastructure for what you
 |---|---|---|
 | **Runtime** | JVM, PostgreSQL, 512MB+ RAM | Single Go binary, ~20MB RAM |
 | **Database** | PostgreSQL/MySQL required | Embedded BoltDB (single file) |
-| **Config** | Admin console with hundreds of options | YAML file with 17 options |
+| **Config** | Admin console with hundreds of options | YAML file with ~20 options |
 | **Deployment** | Multiple containers, DB migrations | One container, one volume |
 | **LDAP setup** | Realm > User Federation > LDAP > attribute mapping wizards | One API call |
 | **Upgrade path** | Theme migrations, DB migrations, breaking changes | Replace the binary |
@@ -18,11 +18,11 @@ You're running Keycloak. It works, but it's a lot of infrastructure for what you
 
 **What SimpleAuth doesn't do (on purpose):**
 - Social login (Google, GitHub, etc.) -- use a dedicated service like Auth0 for that
-- SAML -- it's 2024+, use OIDC
+- SAML -- use OIDC
 - User self-service (password reset emails, registration flows) -- your app should own that UX
 - Themes and branding -- the hosted login page is intentionally simple; use the authorization code flow with your own login page
 - Fine-grained authorization policies (UMA) -- keep authorization logic in your app where it belongs
-- Multi-realm -- use `jwt_issuer` to create separate issuers, or just run another instance (it's 20MB)
+- Multi-app per instance -- one SimpleAuth instance = one app; run another instance for another app (it's 20MB)
 
 These aren't missing features. They're deliberate omissions that keep SimpleAuth simple and fast.
 
@@ -33,16 +33,16 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Keycloak | SimpleAuth | Notes |
 |---|---|---|
 | Realm | `jwt_issuer` config | SimpleAuth has one "realm" per instance. The OIDC URLs use it the same way: `/realms/{issuer}/...` |
-| Client | App | Created via `POST /api/admin/apps` |
-| Client ID | `app_id` | Auto-generated like `app-a1b2c3d4` |
-| Client Secret | `api_key` | Auto-generated like `sk-uuid` |
+| Client | Instance-level config | OIDC client settings are configured via `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URIS` env vars |
+| Client ID | `AUTH_CLIENT_ID` | Set at instance level |
+| Client Secret | `AUTH_CLIENT_SECRET` | Set at instance level |
 | User Federation (LDAP) | LDAP Provider | Created via `POST /api/admin/ldap` |
-| Realm Roles | Roles | Set per-user per-app via `PUT /api/admin/apps/{app_id}/users/{guid}/roles` |
-| Client Roles | Also Roles | SimpleAuth doesn't distinguish; roles are always scoped to an app |
+| Realm Roles | Roles | Set per-user via `PUT /api/admin/users/{guid}/roles` (global per instance) |
+| Client Roles | Also Roles | SimpleAuth doesn't distinguish; roles are global per instance |
 | Client Scopes | Not needed | Claims are always included in tokens |
 | Protocol Mappers | Not needed | Standard claims are always mapped |
 | Groups | AD Groups | Passed through from `memberOf` attribute |
-| Service Account | Client Credentials | The app itself authenticates (no service account user needed) |
+| Service Account | Client Credentials | The instance itself authenticates (no service account user needed) |
 | Admin Console | Admin API + UI | Same operations, simpler interface |
 
 ---
@@ -78,10 +78,13 @@ docker run -d \
   -v simpleauth-data:/data \
   -e AUTH_ADMIN_KEY="your-admin-key" \
   -e AUTH_JWT_ISSUER="myrealm" \
+  -e AUTH_CLIENT_ID="my-app" \
+  -e AUTH_CLIENT_SECRET="my-client-secret" \
+  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
   simpleauth
 ```
 
-Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible.
+Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. The OIDC client settings are configured at the instance level.
 
 ### Step 2: Configure the same LDAP provider
 
@@ -109,40 +112,32 @@ curl -k -X POST https://simpleauth:8080/api/admin/ldap \
   }'
 ```
 
-### Step 3: Register your apps
-
-For each Keycloak client, create a SimpleAuth app:
-
-```bash
-curl -k -X POST https://simpleauth:8080/api/admin/apps \
-  -H "Authorization: Bearer your-admin-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "My Frontend App",
-    "redirect_uris": ["https://myapp.example.com/callback"]
-  }'
-```
-
-Note the returned `app_id` and `api_key`. These replace your Keycloak client ID and secret.
-
-### Step 4: Set up roles
+### Step 3: Set up roles
 
 If you used Keycloak roles, set default roles for new users:
 
 ```bash
 # Set default roles
 curl -k -X PUT \
-  https://simpleauth:8080/api/admin/apps/app-abc/defaults/roles \
+  https://simpleauth:8080/api/admin/defaults/roles \
   -H "Authorization: Bearer your-admin-key" \
   -H "Content-Type: application/json" \
   -d '["user"]'
 ```
 
-For existing users who need specific roles, set them after they first log in, or pre-create users and assign roles.
+For existing users who need specific roles, set them after they first log in, or pre-create users and assign roles:
 
-### Step 5: Update your application
+```bash
+curl -k -X PUT \
+  https://simpleauth:8080/api/admin/users/{guid}/roles \
+  -H "Authorization: Bearer your-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '["admin", "user"]'
+```
 
-This is the core change. You need to update your app's OIDC configuration.
+### Step 4: Update your application
+
+This is the core change. You need to update your app's OIDC configuration to point to SimpleAuth. The client ID and secret are now the values you set via `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET`.
 
 ---
 
@@ -168,8 +163,6 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://simpleauth.example.com',
-  appId: 'app-abc',
-  appSecret: 'sk-xxxx',
   realm: 'myrealm',  // optional, defaults to 'simpleauth'
 });
 
@@ -198,7 +191,7 @@ curl -X POST https://keycloak.example.com/realms/myrealm/protocol/openid-connect
 
 ```bash
 curl -k -X POST https://simpleauth.example.com/realms/myrealm/protocol/openid-connect/token \
-  -d "client_id=app-abc&client_secret=sk-xxxx&grant_type=password&username=user&password=pass"
+  -d "client_id=my-app&client_secret=my-client-secret&grant_type=password&username=user&password=pass"
 ```
 
 Same endpoint path. Just change the hostname and credentials.
@@ -216,7 +209,7 @@ curl -X POST https://keycloak.example.com/realms/myrealm/protocol/openid-connect
 
 ```bash
 curl -k -X POST https://simpleauth.example.com/realms/myrealm/protocol/openid-connect/token \
-  -d "client_id=app-abc&client_secret=sk-xxxx&grant_type=client_credentials"
+  -d "client_id=my-app&client_secret=my-client-secret&grant_type=client_credentials"
 ```
 
 ### Token Verification
@@ -242,8 +235,6 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://simpleauth.example.com',
-  appId: 'app-abc',
-  appSecret: 'sk-xxxx',
 });
 app.use(auth.expressMiddleware());
 ```
@@ -261,22 +252,21 @@ Or with any generic OIDC/JWT library -- just point the JWKS URL to SimpleAuth.
 }
 ```
 
-**SimpleAuth token claim structure (identical):**
+**SimpleAuth token claim structure (compatible):**
 
 ```json
 {
   "roles": ["admin"],
   "permissions": ["read:reports"],
-  "realm_access": {"roles": ["admin"]},
-  "resource_access": {"app-abc": {"roles": ["admin"]}}
+  "realm_access": {"roles": ["admin"]}
 }
 ```
 
-SimpleAuth includes **both** the flat `roles` array and the Keycloak-compatible `realm_access`/`resource_access` structures. So existing Keycloak role-checking code works unchanged.
+SimpleAuth includes **both** the flat `roles` array and the Keycloak-compatible `realm_access` structure. Existing Keycloak role-checking code that uses `realm_access` works unchanged.
 
 ---
 
-## Step 6: Switch DNS / Load Balancer
+## Step 5: Switch DNS / Load Balancer
 
 Once your app is working with SimpleAuth:
 
@@ -317,36 +307,33 @@ Once your app is working with SimpleAuth:
   "iat": 1699971200,
   "jti": "uuid",
   "iss": "https://simpleauth.example.com/realms/myrealm",
-  "aud": ["app-abc"],
+  "aud": ["my-app"],
   "sub": "simpleauth-user-guid",
   "typ": "Bearer",
-  "azp": "app-abc",
+  "azp": "my-app",
   "scope": "openid profile email",
   "name": "John Smith",
   "email": "jsmith@corp.local",
   "preferred_username": "jsmith@corp.local",
-  "app_id": "app-abc",
   "roles": ["admin"],
   "permissions": ["read:reports"],
   "groups": ["CN=Engineering,..."],
   "department": "Engineering",
   "company": "Acme Corp",
   "job_title": "Senior Engineer",
-  "realm_access": {"roles": ["admin"]},
-  "resource_access": {"app-abc": {"roles": ["admin"]}}
+  "realm_access": {"roles": ["admin"]}
 }
 ```
 
 **Key differences:**
 - `sub` is a new GUID (SimpleAuth generates its own user IDs)
 - `aud` is an array (matches OIDC spec)
-- SimpleAuth adds `roles`, `permissions`, `groups`, `department`, `company`, `job_title` as top-level claims (in addition to Keycloak-compatible nested structures)
+- SimpleAuth adds `roles`, `permissions`, `groups`, `department`, `company`, `job_title` as top-level claims (in addition to Keycloak-compatible `realm_access`)
 - `preferred_username` defaults to email (Keycloak uses the Keycloak username)
 
 ### Impact on your code
 
 - If you check `token.realm_access.roles` -- works unchanged
-- If you check `token.resource_access["my-app"].roles` -- update the client name to the new `app_id`
 - If you use `token.sub` as a user identifier -- you'll get new GUIDs (users will appear as new users in your app's database on first login)
 
 **Handling the sub change:** If your app stores user data keyed by `sub`, you have two options:
@@ -376,3 +363,7 @@ SimpleAuth doesn't do social login. If you need it, keep Keycloak for those apps
 ### What about user federation sync?
 
 Keycloak has a "sync all users" feature. SimpleAuth doesn't. Users are created on first login. This is simpler and means you don't have stale users in your database. If you need to pre-populate users, use the admin API.
+
+### What about multiple Keycloak clients?
+
+If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_REDIRECT_URIS`. They can all point to the same LDAP provider(s).

@@ -30,7 +30,6 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
-		AppID    string `json:"app_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -41,45 +40,52 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userGUID, ldapGroups, err := h.authenticateUser(req.Username, req.Password)
+	if err != nil {
+		h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "reason": err.Error()})
+		if err.Error() == "account disabled" {
+			jsonError(w, "account disabled", http.StatusForbidden)
+		} else {
+			jsonError(w, "invalid credentials", http.StatusUnauthorized)
+		}
+		return
+	}
+
+	// Resolve the final user (follow merges)
+	finalUser, err := h.store.ResolveUser(userGUID)
+	if err != nil {
+		jsonError(w, "user resolution error", http.StatusInternalServerError)
+		return
+	}
+
+	// Assign default roles if user has none
+	h.assignDefaultRoles(finalUser.GUID)
+
+	// Issue tokens
+	h.issueTokenResponse(w, finalUser, ldapGroups, ip)
+}
+
+// authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
+// Simplified flow: try `local` mapping -> try LDAP providers -> authenticate.
+func (h *Handler) authenticateUser(username, password string) (string, []string, error) {
 	var userGUID string
-	var ldapResult *auth.LDAPResult
 	var ldapGroups []string
 	var authenticated bool
 
-	if req.AppID != "" {
-		// Step 1: Try existing identity mapping
-		guid, err := h.store.ResolveMapping("app:"+req.AppID, req.Username)
-		if err == nil {
-			userGUID = guid
-		} else {
-			// Step 2: Check app's provider_mappings
-			app, appErr := h.store.GetApp(req.AppID)
-			if appErr != nil {
-				h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "app_id": req.AppID, "reason": "app not found"})
-				jsonError(w, "invalid app_id", http.StatusBadRequest)
-				return
-			}
-
-			if app.ProviderMappings != nil {
-				userGUID, ldapResult = h.searchProviderMappings(app, req.Username)
-			}
-		}
+	// Step 1: Try existing local identity mapping
+	guid, err := h.store.ResolveMapping("local", username)
+	if err == nil {
+		userGUID = guid
 	}
 
 	if userGUID != "" {
-		// Resolve merged users
 		user, err := h.store.ResolveUser(userGUID)
 		if err != nil {
-			h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "reason": "user resolution failed"})
-			jsonError(w, "user not found", http.StatusUnauthorized)
-			return
+			return "", nil, fmt.Errorf("user resolution failed")
 		}
 		userGUID = user.GUID
-
 		if user.Disabled {
-			h.audit("login_failed", userGUID, ip, map[string]interface{}{"username": req.Username, "reason": "user disabled"})
-			jsonError(w, "account disabled", http.StatusForbidden)
-			return
+			return "", nil, fmt.Errorf("account disabled")
 		}
 
 		// Try LDAP auth via mapped LDAP providers
@@ -92,9 +98,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				cfg := ldapConfigFromProvider(provider)
-				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, req.Password)
+				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, password)
 				if err == nil {
-					ldapResult = result
 					ldapGroups = result.Groups
 					authenticated = true
 					break
@@ -104,31 +109,26 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Fallback: local password
 		if !authenticated && user.PasswordHash != "" {
-			if auth.CheckPassword(user.PasswordHash, req.Password) {
+			if auth.CheckPassword(user.PasswordHash, password) {
 				authenticated = true
 			}
 		}
 	} else {
-		// No app_id or no mapping found — try LDAP directly
+		// Step 2: Try LDAP providers directly
 		providers, _ := h.store.ListLDAPProviders()
 		sort.Slice(providers, func(i, j int) bool {
 			return providers[i].Priority < providers[j].Priority
 		})
-
 		for _, p := range providers {
 			cfg := ldapConfigFromProvider(p)
-			result, err := auth.LDAPAuthenticate(cfg, req.Username, req.Password)
+			result, err := auth.LDAPAuthenticate(cfg, username, password)
 			if err == nil {
-				ldapResult = result
 				ldapGroups = result.Groups
 				authenticated = true
-
-				// Find or create user
-				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, req.Username)
+				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, username)
 				if mapErr == nil {
 					userGUID = guid
 				} else {
-					// Auto-create user
 					newUser := &store.User{
 						DisplayName: result.DisplayName,
 						Email:       result.Email,
@@ -138,27 +138,20 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					}
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
-					h.store.SetIdentityMapping("ldap:"+p.ProviderID, req.Username, userGUID)
-					h.audit("user_created", userGUID, ip, map[string]interface{}{"provider": "ldap:" + p.ProviderID, "username": req.Username})
-				}
-
-				// Auto-create app mapping if app_id provided
-				if req.AppID != "" {
-					h.store.SetIdentityMapping("app:"+req.AppID, req.Username, userGUID)
+					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
 				}
 				break
 			}
 		}
 
-		// Fallback: try local users (if no LDAP or LDAP failed)
+		// Step 3: Fallback — try local users
 		if !authenticated {
 			users, _ := h.store.ListUsers()
 			for _, u := range users {
 				if u.PasswordHash != "" {
-					// Check by username via identity mappings
 					mappings, _ := h.store.GetMappingsForUser(u.GUID)
 					for _, m := range mappings {
-						if m.ExternalID == req.Username && auth.CheckPassword(u.PasswordHash, req.Password) {
+						if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
 							userGUID = u.GUID
 							authenticated = true
 							break
@@ -173,105 +166,51 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !authenticated {
-		h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "app_id": req.AppID, "reason": "auth failed"})
-		jsonError(w, "invalid credentials", http.StatusUnauthorized)
-		return
+		return "", nil, fmt.Errorf("invalid credentials")
 	}
 
-	// Resolve the final user (follow merges)
+	// Resolve final user (follow merges)
 	finalUser, err := h.store.ResolveUser(userGUID)
 	if err != nil {
-		jsonError(w, "user resolution error", http.StatusInternalServerError)
+		return "", nil, fmt.Errorf("user resolution failed")
+	}
+
+	// Update user info from LDAP if we got LDAP results
+	// (we need to re-check LDAP result since we may have authenticated via LDAP)
+	// The LDAP info sync is handled in issueTokenResponse path via handleLogin
+
+	return finalUser.GUID, ldapGroups, nil
+}
+
+func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, groups []string, ip string) {
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
+
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, groups)
+	if err != nil {
+		jsonError(w, "token generation failed", http.StatusInternalServerError)
 		return
 	}
-	userGUID = finalUser.GUID
 
-	// Update user info from LDAP if available
-	if ldapResult != nil {
-		changed := false
-		if ldapResult.DisplayName != "" && finalUser.DisplayName != ldapResult.DisplayName {
-			finalUser.DisplayName = ldapResult.DisplayName
-			changed = true
-		}
-		if ldapResult.Email != "" && finalUser.Email != ldapResult.Email {
-			finalUser.Email = ldapResult.Email
-			changed = true
-		}
-		if ldapResult.Department != "" && finalUser.Department != ldapResult.Department {
-			finalUser.Department = ldapResult.Department
-			changed = true
-		}
-		if ldapResult.Company != "" && finalUser.Company != ldapResult.Company {
-			finalUser.Company = ldapResult.Company
-			changed = true
-		}
-		if ldapResult.JobTitle != "" && finalUser.JobTitle != ldapResult.JobTitle {
-			finalUser.JobTitle = ldapResult.JobTitle
-			changed = true
-		}
-		if changed {
-			h.store.UpdateUser(finalUser)
-		}
-	}
+	h.audit("login_success", user.GUID, ip, nil)
 
-	// Assign default roles if first time in this app
-	h.assignDefaultRoles(userGUID, req.AppID)
-
-	// Issue tokens
-	h.issueTokenResponse(w, finalUser, req.AppID, ldapGroups, ip)
+	jsonResp(w, map[string]interface{}{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    expiresIn,
+		"token_type":    "Bearer",
+	}, http.StatusOK)
 }
 
-func (h *Handler) searchProviderMappings(app *store.App, username string) (string, *auth.LDAPResult) {
-	providers, _ := h.store.ListLDAPProviders()
-	sort.Slice(providers, func(i, j int) bool {
-		return providers[i].Priority < providers[j].Priority
-	})
-
-	for _, p := range providers {
-		pm, ok := app.ProviderMappings["ldap:"+p.ProviderID]
-		if !ok {
-			continue
-		}
-		cfg := ldapConfigFromProvider(p)
-		result, err := auth.LDAPSearchUser(cfg, pm.Field, username)
-		if err != nil {
-			continue
-		}
-
-		// Found the user in LDAP — find or create GUID
-		ldapUsername := result.Username
-		guid, err := h.store.ResolveMapping("ldap:"+p.ProviderID, ldapUsername)
-		if err != nil {
-			// Auto-create user
-			newUser := &store.User{
-				DisplayName: result.DisplayName,
-				Email:       result.Email,
-				Department:  result.Department,
-				Company:     result.Company,
-				JobTitle:    result.JobTitle,
-			}
-			h.store.CreateUser(newUser)
-			guid = newUser.GUID
-			h.store.SetIdentityMapping("ldap:"+p.ProviderID, ldapUsername, guid)
-		}
-		// Auto-create app mapping
-		h.store.SetIdentityMapping("app:"+app.AppID, username, guid)
-		return guid, result
-	}
-	return "", nil
-}
-
-func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, appID string, groups []string, ip string) {
-	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms := h.resolveUserPermissions(user.GUID, appID, roles)
-
+// issueTokenPair creates access + refresh tokens and stores the refresh token.
+func (h *Handler) issueTokenPair(user *store.User, roles []string, perms []string, groups []string) (string, string, int, error) {
 	claims := auth.Claims{
+		GUID:        user.GUID,
 		Name:        user.DisplayName,
 		Email:       user.Email,
 		Department:  user.Department,
 		Company:     user.Company,
 		JobTitle:    user.JobTitle,
-		AppID:       appID,
 		Roles:       roles,
 		Permissions: perms,
 		Groups:      groups,
@@ -280,36 +219,45 @@ func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, ap
 
 	accessToken, err := h.jwt.IssueAccessToken(claims, h.cfg.AccessTTL)
 	if err != nil {
-		jsonError(w, "token generation failed", http.StatusInternalServerError)
-		return
+		return "", "", 0, err
 	}
 
-	refreshToken, tokenID, err := h.jwt.IssueRefreshToken(user.GUID, appID, "", h.cfg.RefreshTTL)
+	refreshToken, tokenID, err := h.jwt.IssueRefreshToken(user.GUID, "", h.cfg.RefreshTTL)
 	if err != nil {
-		jsonError(w, "refresh token generation failed", http.StatusInternalServerError)
-		return
+		return "", "", 0, err
 	}
 
-	// Parse to get family ID
 	rtClaims, _ := h.jwt.ValidateToken(refreshToken)
 	rt := &store.RefreshToken{
 		TokenID:   tokenID,
 		FamilyID:  rtClaims.FamilyID,
 		UserGUID:  user.GUID,
-		AppID:     appID,
 		ExpiresAt: time.Now().UTC().Add(h.cfg.RefreshTTL),
 		CreatedAt: time.Now().UTC(),
 	}
 	h.store.SaveRefreshToken(rt)
 
-	h.audit("login_success", user.GUID, ip, map[string]interface{}{"app_id": appID})
+	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
+}
 
-	jsonResp(w, map[string]interface{}{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"expires_in":    int(h.cfg.AccessTTL.Seconds()),
-		"token_type":    "Bearer",
-	}, http.StatusOK)
+// assignDefaultRoles assigns default roles if the user has no roles yet.
+func (h *Handler) assignDefaultRoles(userGUID string) {
+	existingRoles, _ := h.store.GetUserRoles(userGUID)
+	if len(existingRoles) > 0 {
+		return
+	}
+
+	defaults, _ := h.store.GetDefaultRoles()
+	if len(defaults) > 0 {
+		h.store.SetUserRoles(userGUID, defaults)
+	}
+}
+
+// resolveUserPermissions returns the merged set of role-derived + direct permissions.
+func (h *Handler) resolveUserPermissions(userGUID string, roles []string) []string {
+	directPerms, _ := h.store.GetUserPermissions(userGUID)
+	merged, _ := h.store.ResolvePermissions(roles, directPerms)
+	return merged
 }
 
 func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -364,16 +312,16 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue new tokens (same family)
-	roles, _ := h.store.GetUserRoles(user.GUID, claims.AppID)
-	perms, _ := h.store.GetUserPermissions(user.GUID, claims.AppID)
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
 
 	newClaims := auth.Claims{
+		GUID:        user.GUID,
 		Name:        user.DisplayName,
 		Email:       user.Email,
 		Department:  user.Department,
 		Company:     user.Company,
 		JobTitle:    user.JobTitle,
-		AppID:       claims.AppID,
 		Roles:       roles,
 		Permissions: perms,
 	}
@@ -385,7 +333,7 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newRefreshToken, newTokenID, err := h.jwt.IssueRefreshToken(user.GUID, claims.AppID, storedRT.FamilyID, h.cfg.RefreshTTL)
+	newRefreshToken, newTokenID, err := h.jwt.IssueRefreshToken(user.GUID, storedRT.FamilyID, h.cfg.RefreshTTL)
 	if err != nil {
 		jsonError(w, "refresh token generation failed", http.StatusInternalServerError)
 		return
@@ -395,13 +343,12 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		TokenID:   newTokenID,
 		FamilyID:  storedRT.FamilyID,
 		UserGUID:  user.GUID,
-		AppID:     claims.AppID,
 		ExpiresAt: time.Now().UTC().Add(h.cfg.RefreshTTL),
 		CreatedAt: time.Now().UTC(),
 	}
 	h.store.SaveRefreshToken(newRT)
 
-	h.audit("token_refresh", user.GUID, getClientIP(r), map[string]interface{}{"app_id": claims.AppID})
+	h.audit("token_refresh", user.GUID, getClientIP(r), nil)
 
 	jsonResp(w, map[string]interface{}{
 		"access_token":  accessToken,
@@ -437,7 +384,6 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"department":   user.Department,
 		"company":      user.Company,
 		"job_title":    user.JobTitle,
-		"app_id":       claims.AppID,
 		"roles":        claims.Roles,
 		"permissions":  claims.Permissions,
 		"groups":       claims.Groups,
@@ -447,7 +393,6 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetGUID string `json:"target_guid"`
-		AppID      string `json:"app_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -464,19 +409,19 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roles, _ := h.store.GetUserRoles(target.GUID, req.AppID)
-	perms, _ := h.store.GetUserPermissions(target.GUID, req.AppID)
+	roles, _ := h.store.GetUserRoles(target.GUID)
+	perms := h.resolveUserPermissions(target.GUID, roles)
 
 	// Get admin GUID from the Authorization header (it's the master key, so we use "admin")
 	adminActor := "admin"
 
 	claims := auth.Claims{
+		GUID:           target.GUID,
 		Name:           target.DisplayName,
 		Email:          target.Email,
 		Department:     target.Department,
 		Company:        target.Company,
 		JobTitle:       target.JobTitle,
-		AppID:          req.AppID,
 		Roles:          roles,
 		Permissions:    perms,
 		Impersonated:   true,
@@ -492,7 +437,7 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 
 	ip := getClientIP(r)
 	h.audit("impersonation", adminActor, ip, map[string]interface{}{
-		"target_guid": target.GUID, "app_id": req.AppID,
+		"target_guid": target.GUID,
 	})
 
 	jsonResp(w, map[string]interface{}{
@@ -515,207 +460,6 @@ func extractBearerToken(r *http.Request) string {
 		return a[7:]
 	}
 	return ""
-}
-
-// authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
-// Shared by API login and hosted login.
-func (h *Handler) authenticateUser(username, password, appID string) (string, []string, error) {
-	var userGUID string
-	var ldapGroups []string
-	var authenticated bool
-
-	if appID != "" {
-		// Try existing identity mapping
-		guid, err := h.store.ResolveMapping("app:"+appID, username)
-		if err == nil {
-			userGUID = guid
-		} else {
-			// Check app's provider_mappings
-			app, appErr := h.store.GetApp(appID)
-			if appErr != nil {
-				return "", nil, fmt.Errorf("invalid app_id")
-			}
-			if app.ProviderMappings != nil {
-				guid, result := h.searchProviderMappings(app, username)
-				if guid != "" {
-					userGUID = guid
-					if result != nil {
-						ldapGroups = result.Groups
-					}
-				}
-			}
-		}
-	}
-
-	if userGUID != "" {
-		user, err := h.store.ResolveUser(userGUID)
-		if err != nil {
-			return "", nil, fmt.Errorf("user resolution failed")
-		}
-		userGUID = user.GUID
-		if user.Disabled {
-			return "", nil, fmt.Errorf("account disabled")
-		}
-
-		// Try LDAP auth via mapped providers
-		mappings, _ := h.store.GetMappingsForUser(userGUID)
-		for _, m := range mappings {
-			if len(m.Provider) > 5 && m.Provider[:5] == "ldap:" {
-				providerID := m.Provider[5:]
-				provider, err := h.store.GetLDAPProvider(providerID)
-				if err != nil {
-					continue
-				}
-				cfg := ldapConfigFromProvider(provider)
-				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, password)
-				if err == nil {
-					ldapGroups = result.Groups
-					authenticated = true
-					break
-				}
-			}
-		}
-
-		// Fallback: local password
-		if !authenticated && user.PasswordHash != "" {
-			if auth.CheckPassword(user.PasswordHash, password) {
-				authenticated = true
-			}
-		}
-	} else {
-		// No app_id or no mapping — try LDAP directly
-		providers, _ := h.store.ListLDAPProviders()
-		sort.Slice(providers, func(i, j int) bool {
-			return providers[i].Priority < providers[j].Priority
-		})
-		for _, p := range providers {
-			cfg := ldapConfigFromProvider(p)
-			result, err := auth.LDAPAuthenticate(cfg, username, password)
-			if err == nil {
-				ldapGroups = result.Groups
-				authenticated = true
-				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, username)
-				if mapErr == nil {
-					userGUID = guid
-				} else {
-					newUser := &store.User{DisplayName: result.DisplayName, Email: result.Email, Department: result.Department, Company: result.Company, JobTitle: result.JobTitle}
-					h.store.CreateUser(newUser)
-					userGUID = newUser.GUID
-					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
-				}
-				if appID != "" {
-					h.store.SetIdentityMapping("app:"+appID, username, userGUID)
-				}
-				break
-			}
-		}
-
-		// Fallback: local users
-		if !authenticated {
-			users, _ := h.store.ListUsers()
-			for _, u := range users {
-				if u.PasswordHash != "" {
-					mappings, _ := h.store.GetMappingsForUser(u.GUID)
-					for _, m := range mappings {
-						if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
-							userGUID = u.GUID
-							authenticated = true
-							break
-						}
-					}
-					if authenticated {
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if !authenticated {
-		return "", nil, fmt.Errorf("invalid credentials")
-	}
-	return userGUID, ldapGroups, nil
-}
-
-// issueTokenPair creates access + refresh tokens and stores the refresh token.
-func (h *Handler) issueTokenPair(user *store.User, appID string, roles, perms, groups []string) (string, string, int, error) {
-	claims := auth.Claims{
-		Name:        user.DisplayName,
-		Email:       user.Email,
-		Department:  user.Department,
-		Company:     user.Company,
-		JobTitle:    user.JobTitle,
-		AppID:       appID,
-		Roles:       roles,
-		Permissions: perms,
-		Groups:      groups,
-	}
-	claims.Subject = user.GUID
-
-	accessToken, err := h.jwt.IssueAccessToken(claims, h.cfg.AccessTTL)
-	if err != nil {
-		return "", "", 0, err
-	}
-
-	refreshToken, tokenID, err := h.jwt.IssueRefreshToken(user.GUID, appID, "", h.cfg.RefreshTTL)
-	if err != nil {
-		return "", "", 0, err
-	}
-
-	rtClaims, _ := h.jwt.ValidateToken(refreshToken)
-	rt := &store.RefreshToken{
-		TokenID:   tokenID,
-		FamilyID:  rtClaims.FamilyID,
-		UserGUID:  user.GUID,
-		AppID:     appID,
-		ExpiresAt: time.Now().UTC().Add(h.cfg.RefreshTTL),
-		CreatedAt: time.Now().UTC(),
-	}
-	h.store.SaveRefreshToken(rt)
-
-	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
-}
-
-// assignDefaultRoles merges global + per-app default roles and assigns them if the user has no roles yet.
-func (h *Handler) assignDefaultRoles(userGUID, appID string) {
-	if appID == "" {
-		return
-	}
-	existingRoles, _ := h.store.GetUserRoles(userGUID, appID)
-	if len(existingRoles) > 0 {
-		return
-	}
-
-	// Merge global defaults + app defaults
-	seen := make(map[string]bool)
-	var merged []string
-
-	globalDefaults, _ := h.store.GetGlobalDefaultRoles()
-	for _, r := range globalDefaults {
-		if !seen[r] {
-			seen[r] = true
-			merged = append(merged, r)
-		}
-	}
-
-	appDefaults, _ := h.store.GetDefaultRoles(appID)
-	for _, r := range appDefaults {
-		if !seen[r] {
-			seen[r] = true
-			merged = append(merged, r)
-		}
-	}
-
-	if len(merged) > 0 {
-		h.store.SetUserRoles(userGUID, appID, merged)
-	}
-}
-
-// resolveUserPermissions returns the merged set of role-derived + direct permissions.
-func (h *Handler) resolveUserPermissions(userGUID, appID string, roles []string) []string {
-	directPerms, _ := h.store.GetUserPermissions(userGUID, appID)
-	merged, _ := h.store.ResolvePermissions(appID, roles, directPerms)
-	return merged
 }
 
 // handleResetPassword allows an authenticated user to change their password.
@@ -786,7 +530,7 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNegotiate handles Kerberos/SPNEGO authentication.
-// GET /api/auth/negotiate?app_id=X
+// GET /api/auth/negotiate
 // Browser sends Authorization: Negotiate <base64-token>
 func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 	keytabPath := h.getKeytabPath()
@@ -794,19 +538,6 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Kerberos not configured", http.StatusNotImplemented)
 		return
 	}
-
-	appID := r.URL.Query().Get("app_id")
-	if appID == "" {
-		jsonError(w, "app_id query parameter required", http.StatusBadRequest)
-		return
-	}
-
-	app, err := h.store.GetApp(appID)
-	if err != nil {
-		jsonError(w, "invalid app_id", http.StatusBadRequest)
-		return
-	}
-	_ = app // used later for token issuance
 
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Negotiate ") {
@@ -893,7 +624,7 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		}
 		if userGUID == "" {
 			h.audit("negotiate_failed", "", ip, map[string]interface{}{
-				"principal": cname, "app_id": appID, "reason": "no matching user",
+				"principal": cname, "reason": "no matching user",
 			})
 			jsonError(w, "no user found for Kerberos principal: "+cname, http.StatusUnauthorized)
 			return
@@ -910,17 +641,20 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Assign default roles if user has none
+	h.assignDefaultRoles(user.GUID)
+
 	// Issue tokens
-	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms, _ := h.store.GetUserPermissions(user.GUID, appID)
-	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, appID, roles, perms, nil)
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, nil)
 	if err != nil {
 		jsonError(w, "token generation failed", http.StatusInternalServerError)
 		return
 	}
 
 	h.audit("login_success", user.GUID, ip, map[string]interface{}{
-		"app_id": appID, "flow": "kerberos", "principal": cname,
+		"flow": "kerberos", "principal": cname,
 	})
 
 	jsonResp(w, map[string]interface{}{

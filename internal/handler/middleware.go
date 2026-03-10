@@ -12,36 +12,40 @@ import (
 type contextKey string
 
 const (
-	ctxAppID   contextKey = "app_id"
 	ctxIsAdmin contextKey = "is_admin"
 )
 
 func (h *Handler) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			jsonError(w, "missing authorization header", http.StatusUnauthorized)
 			return
 		}
-		key := strings.TrimPrefix(auth, "Bearer ")
+		token := strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Check master admin key
-		if key == h.cfg.AdminKey {
+		if token == h.cfg.AdminKey {
 			r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "true"))
-			r = r.WithContext(setContext(r.Context(), ctxAppID, ""))
 			next(w, r)
 			return
 		}
 
-		// Check app API key
-		app, err := h.store.GetAppByAPIKey(key)
-		if err != nil {
-			jsonError(w, "invalid api key", http.StatusUnauthorized)
+		// Check JWT with SimpleAuthAdmin role
+		claims, err := h.jwt.ValidateToken(token)
+		if err == nil {
+			for _, role := range claims.Roles {
+				if role == "SimpleAuthAdmin" {
+					r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "true"))
+					next(w, r)
+					return
+				}
+			}
+			jsonError(w, "insufficient privileges — SimpleAuthAdmin role required", http.StatusForbidden)
 			return
 		}
-		r = r.WithContext(setContext(r.Context(), ctxAppID, app.AppID))
-		r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "false"))
-		next(w, r)
+
+		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 	}
 }
 

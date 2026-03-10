@@ -7,27 +7,14 @@ import (
 )
 
 // handleHostedLoginPage serves the hosted login form.
-// Apps redirect users here: GET /login?app_id=X&redirect_uri=Y
+// Apps redirect users here: GET /login?redirect_uri=Y
 func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) {
-	appID := r.URL.Query().Get("app_id")
 	redirectURI := r.URL.Query().Get("redirect_uri")
 	errorMsg := r.URL.Query().Get("error")
 
-	if appID == "" {
-		http.Error(w, "app_id query parameter required", http.StatusBadRequest)
-		return
-	}
-
-	// Validate app exists
-	app, err := h.store.GetApp(appID)
-	if err != nil {
-		http.Error(w, "invalid app_id", http.StatusBadRequest)
-		return
-	}
-
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(app.RedirectURIs, redirectURI) {
-		http.Error(w, "redirect_uri not allowed for this app", http.StatusBadRequest)
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
 
@@ -37,7 +24,7 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, hostedLoginHTML, appID, redirectURI, app.Name, errorHTML)
+	fmt.Fprintf(w, hostedLoginHTML, redirectURI, errorHTML)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
@@ -47,68 +34,60 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	appID := r.FormValue("app_id")
 	redirectURI := r.FormValue("redirect_uri")
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
-	if appID == "" || username == "" || password == "" {
-		redirectToLoginError(w, r, appID, redirectURI, "Username and password are required")
+	if username == "" || password == "" {
+		redirectToLoginError(w, r, redirectURI, "Username and password are required")
 		return
 	}
 
-	// Validate app + redirect
-	app, err := h.store.GetApp(appID)
-	if err != nil {
-		http.Error(w, "invalid app_id", http.StatusBadRequest)
-		return
-	}
-	if redirectURI != "" && !isAllowedRedirect(app.RedirectURIs, redirectURI) {
+	// Validate redirect_uri
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
 
-	// Reuse the login logic by simulating a login request
-	// We'll call the internal auth flow directly
 	ip := getClientIP(r)
 
 	if !h.loginLimiter.allow(ip) {
-		redirectToLoginError(w, r, appID, redirectURI, "Too many login attempts. Please try again later.")
+		redirectToLoginError(w, r, redirectURI, "Too many login attempts. Please try again later.")
 		return
 	}
 
-	userGUID, ldapGroups, err := h.authenticateUser(username, password, appID)
+	userGUID, ldapGroups, err := h.authenticateUser(username, password)
 	if err != nil {
 		h.audit("login_failed", "", ip, map[string]interface{}{
-			"username": username, "app_id": appID, "reason": err.Error(), "flow": "hosted",
+			"username": username, "reason": err.Error(), "flow": "hosted",
 		})
-		redirectToLoginError(w, r, appID, redirectURI, "Invalid credentials")
+		redirectToLoginError(w, r, redirectURI, "Invalid credentials")
 		return
 	}
 
 	user, err := h.store.ResolveUser(userGUID)
 	if err != nil {
-		redirectToLoginError(w, r, appID, redirectURI, "User not found")
+		redirectToLoginError(w, r, redirectURI, "User not found")
 		return
 	}
 	if user.Disabled {
-		redirectToLoginError(w, r, appID, redirectURI, "Account disabled")
+		redirectToLoginError(w, r, redirectURI, "Account disabled")
 		return
 	}
 
 	// Assign default roles if needed
-	h.assignDefaultRoles(user.GUID, appID)
+	h.assignDefaultRoles(user.GUID)
 
 	// Issue tokens
-	roles, _ := h.store.GetUserRoles(user.GUID, appID)
-	perms := h.resolveUserPermissions(user.GUID, appID, roles)
-	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, appID, roles, perms, ldapGroups)
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, ldapGroups)
 	if err != nil {
-		redirectToLoginError(w, r, appID, redirectURI, "Token generation failed")
+		redirectToLoginError(w, r, redirectURI, "Token generation failed")
 		return
 	}
 
-	h.audit("login_success", user.GUID, ip, map[string]interface{}{"app_id": appID, "flow": "hosted"})
+	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "hosted"})
 
 	if redirectURI != "" {
 		// Redirect with tokens in fragment
@@ -142,8 +121,8 @@ func isAllowedRedirect(allowed []string, uri string) bool {
 	return false
 }
 
-func redirectToLoginError(w http.ResponseWriter, r *http.Request, appID, redirectURI, msg string) {
-	u := fmt.Sprintf("/login?app_id=%s&error=%s", url.QueryEscape(appID), url.QueryEscape(msg))
+func redirectToLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {
+	u := "/login?error=" + url.QueryEscape(msg)
 	if redirectURI != "" {
 		u += "&redirect_uri=" + url.QueryEscape(redirectURI)
 	}
@@ -182,24 +161,21 @@ input{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(
 input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
 button{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
 button:hover{background:var(--burgundy-hover)}
-.app-name{font-size:0.75rem;color:var(--muted);text-align:center;margin-top:16px}
 </style>
 </head>
 <body>
 <div class="card">
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
-  %[4]s
+  %[2]s
   <form method="POST" action="/login">
-    <input type="hidden" name="app_id" value="%[1]s">
-    <input type="hidden" name="redirect_uri" value="%[2]s">
+    <input type="hidden" name="redirect_uri" value="%[1]s">
     <label>Username</label>
     <input type="text" name="username" placeholder="Enter your username" autofocus required>
     <label>Password</label>
     <input type="password" name="password" placeholder="Enter your password" required>
     <button type="submit">Sign In</button>
   </form>
-  <div class="app-name">Signing into %[3]s</div>
 </div>
 </body>
 </html>`

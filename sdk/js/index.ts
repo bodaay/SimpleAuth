@@ -8,10 +8,10 @@
 export interface SimpleAuthOptions {
   /** SimpleAuth server URL (e.g. https://auth.corp.local:9090) */
   url: string;
-  /** App ID (client_id) */
-  appId: string;
-  /** App API key (client_secret) — required for server-side admin operations */
-  appSecret?: string;
+  /** OIDC client ID (optional, for authorization code / client credentials flows) */
+  clientId?: string;
+  /** OIDC client secret (optional) */
+  clientSecret?: string;
   /** OIDC realm (default: 'simpleauth') */
   realm?: string;
 }
@@ -63,7 +63,6 @@ export interface SimpleAuthUser {
   department?: string;
   company?: string;
   job_title?: string;
-  app_id?: string;
 
   /** Check if user has a specific role */
   hasRole(role: string): boolean;
@@ -105,7 +104,6 @@ interface JWTPayload {
   department?: string;
   company?: string;
   job_title?: string;
-  app_id?: string;
   roles?: string[];
   permissions?: string[];
   groups?: string[];
@@ -227,7 +225,6 @@ function payloadToUser(payload: JWTPayload): SimpleAuthUser {
     department: payload.department,
     company: payload.company,
     job_title: payload.job_title,
-    app_id: payload.app_id,
     hasRole(role: string): boolean {
       return roles.includes(role);
     },
@@ -376,16 +373,16 @@ class JWKSCache {
 
 export class SimpleAuth {
   private readonly url: string;
-  private readonly appId: string;
-  private readonly appSecret?: string;
+  private readonly clientId: string;
+  private readonly clientSecret?: string;
   private readonly realm: string;
   private readonly jwksCache: JWKSCache;
 
   constructor(options: SimpleAuthOptions) {
     // Strip trailing slash
     this.url = options.url.replace(/\/+$/, '');
-    this.appId = options.appId;
-    this.appSecret = options.appSecret;
+    this.clientId = options.clientId ?? '';
+    this.clientSecret = options.clientSecret;
     this.realm = options.realm ?? 'simpleauth';
 
     const jwksUrl = `${this.url}/realms/${this.realm}/protocol/openid-connect/certs`;
@@ -397,20 +394,20 @@ export class SimpleAuth {
     return `${this.url}/realms/${this.realm}/protocol/openid-connect`;
   }
 
-  /** Build Basic auth header from appId:appSecret */
+  /** Build Basic auth header from clientId:clientSecret */
   private basicAuthHeader(): string {
-    const secret = this.appSecret ?? '';
+    const secret = this.clientSecret ?? '';
     return 'Basic ' + base64Encode(
-      encodeURIComponent(this.appId) + ':' + encodeURIComponent(secret),
+      encodeURIComponent(this.clientId) + ':' + encodeURIComponent(secret),
     );
   }
 
-  /** Build admin Bearer header (uses appSecret as API key) */
+  /** Build admin Bearer header (uses clientSecret as API key) */
   private adminAuthHeader(): string {
-    if (!this.appSecret) {
-      throw new SimpleAuthError('appSecret is required for admin operations', 401);
+    if (!this.clientSecret) {
+      throw new SimpleAuthError('clientSecret is required for admin operations', 401);
     }
-    return 'Bearer ' + this.appSecret;
+    return 'Bearer ' + this.clientSecret;
   }
 
   // -------------------------------------------------------------------------
@@ -593,7 +590,7 @@ export class SimpleAuth {
     nonce?: string;
   }): string {
     const params = new URLSearchParams({
-      client_id: this.appId,
+      client_id: this.clientId,
       response_type: 'code',
       redirect_uri: options.redirectUri,
       scope: options.scope ?? 'openid profile email',
@@ -638,12 +635,12 @@ export class SimpleAuth {
   }
 
   // -------------------------------------------------------------------------
-  // Admin Operations (require appSecret as Bearer API key)
+  // Admin Operations (require clientSecret as Bearer API key)
   // -------------------------------------------------------------------------
 
   /**
    * Get a user by GUID.
-   * Requires appSecret (admin API key).
+   * Requires clientSecret (admin API key).
    */
   async getUser(guid: string): Promise<User> {
     const resp = await fetch(`${this.url}/api/admin/users/${encodeURIComponent(guid)}`, {
@@ -659,12 +656,12 @@ export class SimpleAuth {
   }
 
   /**
-   * Get the roles assigned to a user for this app.
-   * Requires appSecret (admin API key).
+   * Get the roles assigned to a user.
+   * Requires clientSecret (admin API key).
    */
   async getUserRoles(guid: string): Promise<string[]> {
     const resp = await fetch(
-      `${this.url}/api/admin/apps/${encodeURIComponent(this.appId)}/users/${encodeURIComponent(guid)}/roles`,
+      `${this.url}/api/admin/users/${encodeURIComponent(guid)}/roles`,
       { headers: { Authorization: this.adminAuthHeader() } },
     );
 
@@ -677,12 +674,12 @@ export class SimpleAuth {
   }
 
   /**
-   * Set the roles for a user in this app.
-   * Requires appSecret (admin API key).
+   * Set the roles for a user.
+   * Requires clientSecret (admin API key).
    */
   async setUserRoles(guid: string, roles: string[]): Promise<void> {
     const resp = await fetch(
-      `${this.url}/api/admin/apps/${encodeURIComponent(this.appId)}/users/${encodeURIComponent(guid)}/roles`,
+      `${this.url}/api/admin/users/${encodeURIComponent(guid)}/roles`,
       {
         method: 'PUT',
         headers: {
@@ -700,12 +697,12 @@ export class SimpleAuth {
   }
 
   /**
-   * Get the permissions assigned to a user for this app.
-   * Requires appSecret (admin API key).
+   * Get the permissions assigned to a user.
+   * Requires clientSecret (admin API key).
    */
   async getUserPermissions(guid: string): Promise<string[]> {
     const resp = await fetch(
-      `${this.url}/api/admin/apps/${encodeURIComponent(this.appId)}/users/${encodeURIComponent(guid)}/permissions`,
+      `${this.url}/api/admin/users/${encodeURIComponent(guid)}/permissions`,
       { headers: { Authorization: this.adminAuthHeader() } },
     );
 
@@ -718,12 +715,12 @@ export class SimpleAuth {
   }
 
   /**
-   * Set the permissions for a user in this app.
-   * Requires appSecret (admin API key).
+   * Set the permissions for a user.
+   * Requires clientSecret (admin API key).
    */
   async setUserPermissions(guid: string, permissions: string[]): Promise<void> {
     const resp = await fetch(
-      `${this.url}/api/admin/apps/${encodeURIComponent(this.appId)}/users/${encodeURIComponent(guid)}/permissions`,
+      `${this.url}/api/admin/users/${encodeURIComponent(guid)}/permissions`,
       {
         method: 'PUT',
         headers: {
@@ -796,8 +793,8 @@ export class SimpleAuth {
  *
  * const auth = createSimpleAuth({
  *   url: 'https://auth.corp.local:9090',
- *   appId: 'my-app',
- *   appSecret: 'my-api-key',
+ *   clientId: 'my-client',         // optional, for OIDC flows
+ *   clientSecret: 'my-secret',     // optional
  * });
  *
  * const tokens = await auth.login('admin', 'password');

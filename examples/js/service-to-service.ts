@@ -30,14 +30,14 @@ class TokenManager {
 
   constructor(options: {
     url: string;
-    appId: string;
-    appSecret: string;
+    clientId: string;
+    clientSecret: string;
     refreshMarginSec?: number;
   }) {
     this.auth = createSimpleAuth({
       url: options.url,
-      appId: options.appId,
-      appSecret: options.appSecret,
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
     });
     this.refreshMarginSec = options.refreshMarginSec ?? 30;
   }
@@ -78,8 +78,8 @@ class TokenManager {
 
     const body = new URLSearchParams({
       grant_type: "client_credentials",
-      client_id: this.auth["appId"],
-      client_secret: this.auth["appSecret"] ?? "",
+      client_id: this.auth["clientId"],
+      client_secret: this.auth["clientSecret"] ?? "",
     });
 
     const resp = await fetch(tokenUrl, {
@@ -238,8 +238,8 @@ async function main() {
   // Create a token manager for this service's identity
   const tokenManager = new TokenManager({
     url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local:9090",
-    appId: process.env.SIMPLEAUTH_APP_ID ?? "billing-service",
-    appSecret: process.env.SIMPLEAUTH_APP_SECRET ?? "billing-service-secret",
+    clientId: process.env.SIMPLEAUTH_CLIENT_ID ?? "billing-service",
+    clientSecret: process.env.SIMPLEAUTH_CLIENT_SECRET ?? "billing-service-secret",
     refreshMarginSec: 60, // Refresh 60 seconds before expiry
   });
 

@@ -20,7 +20,7 @@ public class SimpleAuthClient : IDisposable
     private string CertsUrl => $"{RealmUrl}/protocol/openid-connect/certs";
     private string UserInfoUrl => $"{RealmUrl}/protocol/openid-connect/userinfo";
     private string AuthUrl => $"{RealmUrl}/protocol/openid-connect/auth";
-    private string AdminUrl => $"{_options.Url.TrimEnd('/')}/admin/realms/{_options.Realm}";
+    private string AdminUrl => $"{_options.Url.TrimEnd('/')}/api/admin";
 
     public SimpleAuthClient(SimpleAuthOptions options)
     {
@@ -28,8 +28,7 @@ public class SimpleAuthClient : IDisposable
 
         if (string.IsNullOrWhiteSpace(options.Url))
             throw new ArgumentException("Url is required.", nameof(options));
-        if (string.IsNullOrWhiteSpace(options.AppId))
-            throw new ArgumentException("AppId is required.", nameof(options));
+        // ClientId is optional — only needed for OIDC flows
 
         var handler = new HttpClientHandler();
         if (!options.ValidateSsl)
@@ -44,7 +43,7 @@ public class SimpleAuthClient : IDisposable
     private string BasicAuthHeader()
     {
         var credentials = Convert.ToBase64String(
-            Encoding.UTF8.GetBytes($"{_options.AppId}:{_options.AppSecret}"));
+            Encoding.UTF8.GetBytes($"{_options.ClientId}:{_options.ClientSecret}"));
         return $"Basic {credentials}";
     }
 
@@ -57,10 +56,10 @@ public class SimpleAuthClient : IDisposable
             ["grant_type"] = "password",
             ["username"] = username,
             ["password"] = password,
-            ["client_id"] = _options.AppId,
+            ["client_id"] = _options.ClientId,
         };
-        if (!string.IsNullOrEmpty(_options.AppSecret))
-            form["client_secret"] = _options.AppSecret;
+        if (!string.IsNullOrEmpty(_options.ClientSecret))
+            form["client_secret"] = _options.ClientSecret;
 
         return await PostTokenAsync(form);
     }
@@ -71,10 +70,10 @@ public class SimpleAuthClient : IDisposable
         {
             ["grant_type"] = "refresh_token",
             ["refresh_token"] = refreshToken,
-            ["client_id"] = _options.AppId,
+            ["client_id"] = _options.ClientId,
         };
-        if (!string.IsNullOrEmpty(_options.AppSecret))
-            form["client_secret"] = _options.AppSecret;
+        if (!string.IsNullOrEmpty(_options.ClientSecret))
+            form["client_secret"] = _options.ClientSecret;
 
         return await PostTokenAsync(form);
     }
@@ -84,8 +83,8 @@ public class SimpleAuthClient : IDisposable
         var form = new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
-            ["client_id"] = _options.AppId,
-            ["client_secret"] = _options.AppSecret,
+            ["client_id"] = _options.ClientId,
+            ["client_secret"] = _options.ClientSecret,
         };
         return await PostTokenAsync(form);
     }
@@ -97,10 +96,10 @@ public class SimpleAuthClient : IDisposable
             ["grant_type"] = "authorization_code",
             ["code"] = code,
             ["redirect_uri"] = redirectUri,
-            ["client_id"] = _options.AppId,
+            ["client_id"] = _options.ClientId,
         };
-        if (!string.IsNullOrEmpty(_options.AppSecret))
-            form["client_secret"] = _options.AppSecret;
+        if (!string.IsNullOrEmpty(_options.ClientSecret))
+            form["client_secret"] = _options.ClientSecret;
 
         return await PostTokenAsync(form);
     }
@@ -113,7 +112,7 @@ public class SimpleAuthClient : IDisposable
         };
         request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.AppId}:{_options.AppSecret}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.ClientId}:{_options.ClientSecret}")));
 
         using var response = await _http.SendAsync(request);
         var json = await response.Content.ReadAsStringAsync();
@@ -180,7 +179,6 @@ public class SimpleAuthClient : IDisposable
             Department = root.TryGetProperty("department", out var dept) ? dept.GetString() : null,
             Company = root.TryGetProperty("company", out var comp) ? comp.GetString() : null,
             JobTitle = root.TryGetProperty("job_title", out var jt) ? jt.GetString() : null,
-            AppId = root.TryGetProperty("app_id", out var aid) ? aid.GetString() : null,
             Roles = GetStringList(root, "roles"),
             Permissions = GetStringList(root, "permissions"),
             Groups = GetStringList(root, "groups"),
@@ -354,7 +352,7 @@ public class SimpleAuthClient : IDisposable
     {
         var qs = HttpUtility.ParseQueryString(string.Empty);
         qs["response_type"] = "code";
-        qs["client_id"] = _options.AppId;
+        qs["client_id"] = _options.ClientId;
         qs["redirect_uri"] = redirectUri;
         qs["scope"] = scope ?? "openid profile email";
 

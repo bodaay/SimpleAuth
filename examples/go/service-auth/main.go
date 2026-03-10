@@ -13,7 +13,7 @@
 //   go run main.go
 //
 // Environment variables:
-//   SIMPLEAUTH_URL, SIMPLEAUTH_APP_ID, SIMPLEAUTH_APP_SECRET, ORDER_SERVICE_URL
+//   SIMPLEAUTH_URL, SIMPLEAUTH_CLIENT_ID, SIMPLEAUTH_CLIENT_SECRET, ORDER_SERVICE_URL
 // ---------------------------------------------------------------------------
 package main
 
@@ -249,8 +249,8 @@ func main() {
 	// Initialize the SimpleAuth client for this service's identity
 	authClient := simpleauth.New(simpleauth.Options{
 		URL:                envOr("SIMPLEAUTH_URL", "https://auth.corp.local:9090"),
-		AppID:              envOr("SIMPLEAUTH_APP_ID", "billing-service"),
-		AppSecret:          envOr("SIMPLEAUTH_APP_SECRET", "billing-service-secret"),
+		ClientID:           envOr("SIMPLEAUTH_CLIENT_ID", "billing-service"),
+		ClientSecret:       envOr("SIMPLEAUTH_CLIENT_SECRET", "billing-service-secret"),
 		InsecureSkipVerify: true,
 	})
 

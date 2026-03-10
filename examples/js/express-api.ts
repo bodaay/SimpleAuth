@@ -36,8 +36,6 @@ declare global {
 
 const auth = createSimpleAuth({
   url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local:9090",
-  appId: process.env.SIMPLEAUTH_APP_ID ?? "my-api-service",
-  appSecret: process.env.SIMPLEAUTH_APP_SECRET ?? "my-api-secret",
 });
 
 const app = express();
@@ -161,8 +159,6 @@ app.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       // In a real app, you would query your database here.
-      // The admin API key on the SimpleAuth client could also be used
-      // to fetch user details from SimpleAuth's admin endpoints.
       res.json({
         users: [
           { id: "user-1", name: "Alice", role: "editor" },
