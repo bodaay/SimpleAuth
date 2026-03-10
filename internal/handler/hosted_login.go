@@ -100,13 +100,13 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// No redirect — show tokens on page
-	jsonResp(w, map[string]interface{}{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"expires_in":    expiresIn,
-		"token_type":    "Bearer",
-	}, http.StatusOK)
+	// No redirect URI — send user to account page with token in fragment
+	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
+		url.QueryEscape(accessToken),
+		url.QueryEscape(refreshToken),
+		expiresIn,
+	)
+	http.Redirect(w, r, "/account#"+fragment, http.StatusFound)
 }
 
 func isAllowedRedirect(allowed []string, uri string) bool {
@@ -177,5 +177,11 @@ button:hover{background:var(--burgundy-hover)}
     <button type="submit">Sign In</button>
   </form>
 </div>
+<script>
+// If already logged in, show account link
+try{if(sessionStorage.getItem('sa_access_token')){
+  document.querySelector('.brand p').innerHTML='Sign in to continue or <a href="/account" style="color:var(--burgundy);font-weight:600">go to your account</a>';
+}}catch(e){}
+</script>
 </body>
 </html>`

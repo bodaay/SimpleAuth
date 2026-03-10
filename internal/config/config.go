@@ -38,6 +38,9 @@ type Config struct {
 	KRB5Realm       string        `yaml:"krb5_realm"`
 	TLSCert         string        `yaml:"tls_cert"`
 	TLSKey          string        `yaml:"tls_key"`
+	TLSDisabled     bool          `yaml:"tls_disabled"`
+	TrustedProxies   []string      `yaml:"trusted_proxies"`
+	TrustedProxyCIDRs []*net.IPNet `yaml:"-"`
 	AuditRetention  time.Duration `yaml:"audit_retention"`
 	RateLimitMax    int           `yaml:"rate_limit_max"`
 	RateLimitWindow time.Duration `yaml:"rate_limit_window"`
@@ -64,6 +67,8 @@ type configFile struct {
 	KRB5Realm       string `yaml:"krb5_realm"`
 	TLSCert         string `yaml:"tls_cert"`
 	TLSKey          string `yaml:"tls_key"`
+	TLSDisabled     bool     `yaml:"tls_disabled"`
+	TrustedProxies  []string `yaml:"trusted_proxies"`
 	AuditRetention  string `yaml:"audit_retention"`
 	RateLimitMax    int    `yaml:"rate_limit_max"`
 	RateLimitWindow string `yaml:"rate_limit_window"`
@@ -112,8 +117,10 @@ func Load() *Config {
 		log.Fatalf("deployment_name must be 1-6 letters only (a-z/A-Z), got: %q", cfg.DeploymentName)
 	}
 
-	// Auto-generate TLS cert if not configured (self-signed in data dir)
-	if cfg.TLSCert == "" || cfg.TLSKey == "" {
+	// Auto-generate TLS cert if not configured and TLS is not disabled
+	if cfg.TLSDisabled {
+		log.Printf("TLS disabled — serving plain HTTP (ensure a reverse proxy handles TLS)")
+	} else if cfg.TLSCert == "" || cfg.TLSKey == "" {
 		certPath := filepath.Join(cfg.DataDir, "tls.crt")
 		keyPath := filepath.Join(cfg.DataDir, "tls.key")
 
@@ -135,6 +142,28 @@ func Load() *Config {
 
 		cfg.TLSCert = certPath
 		cfg.TLSKey = keyPath
+	}
+
+	// Parse trusted proxy CIDRs
+	if len(cfg.TrustedProxies) > 0 {
+		for _, p := range cfg.TrustedProxies {
+			p = strings.TrimSpace(p)
+			if !strings.Contains(p, "/") {
+				// Bare IP — make it a /32 or /128
+				if strings.Contains(p, ":") {
+					p += "/128"
+				} else {
+					p += "/32"
+				}
+			}
+			_, cidr, err := net.ParseCIDR(p)
+			if err != nil {
+				log.Printf("Warning: invalid trusted proxy CIDR %q: %v", p, err)
+				continue
+			}
+			cfg.TrustedProxyCIDRs = append(cfg.TrustedProxyCIDRs, cidr)
+		}
+		log.Printf("Trusted proxies: %v", cfg.TrustedProxies)
 	}
 
 	// Auto-generate OIDC client credentials if not configured
@@ -183,6 +212,17 @@ impersonate_ttl: "1h"
 # TLS certificate and key paths (auto-generated if empty)
 # tls_cert: "/path/to/cert.pem"
 # tls_key: "/path/to/key.pem"
+
+# Set to true to disable TLS (use when behind a reverse proxy like nginx)
+# tls_disabled: false
+
+# Trusted proxy IPs/CIDRs — X-Forwarded-For and X-Real-IP headers are only
+# trusted when the request comes from these addresses. If empty, headers are
+# trusted from any source (not recommended in production).
+# trusted_proxies:
+#   - "172.16.0.0/12"
+#   - "10.0.0.0/8"
+#   - "192.168.0.0/16"
 
 # Kerberos settings (usually auto-configured via admin UI)
 # krb5_keytab: "/path/to/krb5.keytab"
@@ -303,6 +343,12 @@ func loadConfigFile(cfg *Config) {
 	if fc.TLSKey != "" {
 		cfg.TLSKey = fc.TLSKey
 	}
+	if fc.TLSDisabled {
+		cfg.TLSDisabled = true
+	}
+	if len(fc.TrustedProxies) > 0 {
+		cfg.TrustedProxies = fc.TrustedProxies
+	}
 	if fc.AuditRetention != "" {
 		if d, err := time.ParseDuration(fc.AuditRetention); err == nil {
 			cfg.AuditRetention = d
@@ -381,6 +427,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_TLS_KEY"); v != "" {
 		cfg.TLSKey = v
+	}
+	if v := os.Getenv("AUTH_TLS_DISABLED"); v != "" {
+		cfg.TLSDisabled = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_TRUSTED_PROXIES"); v != "" {
+		cfg.TrustedProxies = strings.Split(v, ",")
 	}
 	if v := os.Getenv("AUTH_AUDIT_RETENTION"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

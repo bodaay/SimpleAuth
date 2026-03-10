@@ -435,6 +435,16 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine auth source (local vs ldap) for the account page
+	authSource := "local"
+	mappings, _ := h.store.GetMappingsForUser(user.GUID)
+	for _, m := range mappings {
+		if m.Provider != "local" {
+			authSource = "ldap"
+			break
+		}
+	}
+
 	jsonResp(w, map[string]interface{}{
 		"guid":               user.GUID,
 		"preferred_username": h.resolvePreferredUsername(user),
@@ -446,6 +456,7 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"roles":              claims.Roles,
 		"permissions":        claims.Permissions,
 		"groups":             claims.Groups,
+		"auth_source":        authSource,
 	}, http.StatusOK)
 }
 

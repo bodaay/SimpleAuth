@@ -33,6 +33,9 @@ func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS
 		mux:          http.NewServeMux(),
 		version:      version,
 	}
+	// Set trusted proxy CIDRs for getClientIP
+	trustedCIDRs = cfg.TrustedProxyCIDRs
+
 	h.registerRoutes(uiFS)
 	return h
 }
@@ -80,6 +83,9 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	// Hosted login page
 	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)
 	h.mux.HandleFunc("POST /login", h.handleHostedLoginSubmit)
+
+	// User self-service account page
+	h.mux.HandleFunc("GET /account", h.handleAccountPage)
 
 	// JWKS
 	h.mux.HandleFunc("GET /.well-known/jwks.json", h.handleJWKS)

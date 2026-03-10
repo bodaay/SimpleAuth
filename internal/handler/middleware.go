@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -125,18 +126,48 @@ func (rl *rateLimiter) cleanup() {
 	}
 }
 
+// trustedCIDRs is set during handler initialization from config.TrustedProxyCIDRs.
+// If empty, forwarded headers are trusted from any source (backwards compatible).
+var trustedCIDRs []*net.IPNet
+
 func getClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
+	remoteIP := extractIP(r.RemoteAddr)
+
+	// Only trust forwarded headers if the direct connection is from a trusted proxy
+	if isTrustedProxy(remoteIP, trustedCIDRs) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.SplitN(xff, ",", 2)
+			return strings.TrimSpace(parts[0])
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return xri
+		}
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	// Strip port
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx > 0 {
-		return addr[:idx]
+
+	return remoteIP
+}
+
+func extractIP(addr string) string {
+	// Handle IPv6 addresses like [::1]:8080
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
 	}
 	return addr
+}
+
+func isTrustedProxy(ip string, trustedCIDRs []*net.IPNet) bool {
+	// If no trusted proxies configured, trust all (backwards compatible)
+	if len(trustedCIDRs) == 0 {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, cidr := range trustedCIDRs {
+		if cidr.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }

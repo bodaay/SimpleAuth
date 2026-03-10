@@ -92,45 +92,58 @@ func main() {
 	log.Printf("Data directory: %s", cfg.DataDir)
 
 	// Print access URLs
-	log.Printf("Access: https://%s:%s", cfg.Hostname, cfg.Port)
+	scheme := "https"
+	if cfg.TLSDisabled {
+		scheme = "http"
+	}
+	log.Printf("Access: %s://%s:%s", scheme, cfg.Hostname, cfg.Port)
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				log.Printf("Access: https://%s:%s", ipnet.IP, cfg.Port)
+				log.Printf("Access: %s://%s:%s", scheme, ipnet.IP, cfg.Port)
 			}
 		}
 	}
 
-	// Start HTTP → HTTPS redirect server
-	if cfg.HTTPPort != "" {
-		go func() {
-			httpAddr := ":" + cfg.HTTPPort
-			httpsPort := cfg.Port
-			log.Printf("HTTP redirect :%s → HTTPS :%s", cfg.HTTPPort, httpsPort)
-			redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				host := r.Host
-				// Strip port from host if present
-				if h, _, err := net.SplitHostPort(host); err == nil {
-					host = h
+	if cfg.TLSDisabled {
+		// HTTP-only mode (behind reverse proxy)
+		addr := ":" + cfg.Port
+		log.Printf("HTTP listening on %s (TLS disabled — reverse proxy mode)", addr)
+		if err := http.ListenAndServe(addr, h); err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
+	} else {
+		// Start HTTP → HTTPS redirect server
+		if cfg.HTTPPort != "" {
+			go func() {
+				httpAddr := ":" + cfg.HTTPPort
+				httpsPort := cfg.Port
+				log.Printf("HTTP redirect :%s → HTTPS :%s", cfg.HTTPPort, httpsPort)
+				redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					host := r.Host
+					// Strip port from host if present
+					if h, _, err := net.SplitHostPort(host); err == nil {
+						host = h
+					}
+					target := "https://" + host
+					if httpsPort != "443" {
+						target += ":" + httpsPort
+					}
+					target += r.URL.RequestURI()
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+				})
+				if err := http.ListenAndServe(httpAddr, redirectHandler); err != nil {
+					log.Printf("HTTP redirect server failed: %v (non-fatal)", err)
 				}
-				target := "https://" + host
-				if httpsPort != "443" {
-					target += ":" + httpsPort
-				}
-				target += r.URL.RequestURI()
-				http.Redirect(w, r, target, http.StatusMovedPermanently)
-			})
-			if err := http.ListenAndServe(httpAddr, redirectHandler); err != nil {
-				log.Printf("HTTP redirect server failed: %v (non-fatal)", err)
-			}
-		}()
-	}
+			}()
+		}
 
-	// Always serve HTTPS
-	tlsAddr := ":" + cfg.Port
-	log.Printf("HTTPS listening on %s", tlsAddr)
-	if err := http.ListenAndServeTLS(tlsAddr, cfg.TLSCert, cfg.TLSKey, h); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		// Serve HTTPS
+		tlsAddr := ":" + cfg.Port
+		log.Printf("HTTPS listening on %s", tlsAddr)
+		if err := http.ListenAndServeTLS(tlsAddr, cfg.TLSCert, cfg.TLSKey, h); err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
 	}
 }
 
