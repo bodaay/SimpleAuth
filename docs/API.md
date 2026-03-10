@@ -2,7 +2,7 @@
 
 Complete reference for every endpoint. All endpoints return JSON. All request bodies are JSON unless noted otherwise.
 
-**Base URL:** `https://your-simpleauth-server:port`
+**Base URL:** `https://your-simpleauth-server:port` (if `AUTH_BASE_PATH` is set, e.g., `/auth`, prefix all paths: `https://your-simpleauth-server:port/auth/api/...`)
 
 **Authentication types:**
 - **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config, or a token from a user with the `SimpleAuthAdmin` role)

@@ -304,6 +304,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_TLS_KEY` | auto-generated | TLS private key path |
 | `AUTH_TLS_DISABLED` | `false` | Disable TLS for reverse proxy mode (plain HTTP) |
 | `AUTH_TRUSTED_PROXIES` | | Trusted proxy CIDRs for X-Forwarded-For (comma-separated) |
+| `AUTH_BASE_PATH` | | URL path prefix for sub-path mounting (e.g., `/auth`) |
 | `AUTH_KRB5_KEYTAB` | | Kerberos keytab path (usually auto-configured) |
 | `AUTH_KRB5_REALM` | | Kerberos realm (usually auto-configured) |
 | `AUTH_AUDIT_RETENTION` | `2160h` | Audit log retention (90 days) |
@@ -319,6 +320,12 @@ When running behind a reverse proxy, disable TLS and configure trusted proxies:
 ```bash
 AUTH_TLS_DISABLED=true
 AUTH_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8"
+```
+
+To mount SimpleAuth at a sub-path (e.g., `https://example.com/auth/`):
+
+```bash
+AUTH_BASE_PATH=/auth
 ```
 
 See [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md) for full nginx/Traefik/Caddy/HAProxy examples and Docker Compose setup.

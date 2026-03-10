@@ -37,16 +37,22 @@ func (h *Handler) registerOIDCRoutes() {
 }
 
 // oidcBaseURL returns the base URL for OIDC endpoints.
+// Respects X-Forwarded-Proto from trusted proxies for correct scheme detection.
 func (h *Handler) oidcBaseURL(r *http.Request) string {
 	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if h.cfg.TLSDisabled {
+		scheme = "http"
+	}
 	host := r.Host
 	if host == "" {
 		host = h.cfg.Hostname
-		if h.cfg.Port != "443" {
+		if (scheme == "https" && h.cfg.Port != "443") || (scheme == "http" && h.cfg.Port != "80") {
 			host += ":" + h.cfg.Port
 		}
 	}
-	return scheme + "://" + host
+	return scheme + "://" + host + h.cfg.BasePath
 }
 
 // oidcIssuer returns the OIDC issuer URL (Keycloak-style).
@@ -257,7 +263,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	realm := h.cfg.JWTIssuer
-	action := "/realms/" + realm + "/protocol/openid-connect/auth"
+	action := h.cfg.BasePath + "/realms/" + realm + "/protocol/openid-connect/auth"
 
 	appName := h.cfg.DeploymentName
 	if appName == "" {
@@ -730,8 +736,8 @@ func (h *Handler) handleOIDCLogout(w http.ResponseWriter, r *http.Request) {
 // renderOIDCLoginError redirects back to the OIDC login page with an error.
 func (h *Handler) renderOIDCLoginError(w http.ResponseWriter, r *http.Request, msg string) {
 	realm := h.cfg.JWTIssuer
-	u := fmt.Sprintf("/realms/%s/protocol/openid-connect/auth?client_id=%s&redirect_uri=%s&state=%s&nonce=%s&scope=%s&response_type=code&error=%s",
-		realm,
+	u := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/auth?client_id=%s&redirect_uri=%s&state=%s&nonce=%s&scope=%s&response_type=code&error=%s",
+		h.cfg.BasePath, realm,
 		url.QueryEscape(r.FormValue("client_id")),
 		url.QueryEscape(r.FormValue("redirect_uri")),
 		url.QueryEscape(r.FormValue("state")),

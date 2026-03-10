@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -55,6 +56,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Strip base path prefix from incoming requests
+	if bp := h.cfg.BasePath; bp != "" {
+		p := r.URL.Path
+		if p == bp || strings.HasPrefix(p, bp+"/") {
+			r2 := new(http.Request)
+			*r2 = *r
+			r2.URL = new(url.URL)
+			*r2.URL = *r.URL
+			r2.URL.Path = p[len(bp):]
+			if r2.URL.Path == "" {
+				r2.URL.Path = "/"
+			}
+			r = r2
+		} else {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
 	h.mux.ServeHTTP(w, r)
 }
 
@@ -68,6 +89,16 @@ func (h *Handler) isAllowedOrigin(origin string) bool {
 		}
 	}
 	return false
+}
+
+// url returns a path prefixed with the configured base path.
+func (h *Handler) url(path string) string {
+	return h.cfg.BasePath + path
+}
+
+// bp replaces {{BASE_PATH}} markers in HTML templates with the configured base path.
+func (h *Handler) bp(tmpl string) string {
+	return strings.ReplaceAll(tmpl, "{{BASE_PATH}}", h.cfg.BasePath)
 }
 
 func (h *Handler) registerRoutes(uiFS fs.FS) {
@@ -170,7 +201,30 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 
 	// Hosted login page + UI
 	if uiFS != nil {
-		h.mux.Handle("GET /", http.FileServerFS(uiFS))
+		// Pre-process index.html to inject __BASE_PATH__ and rewrite asset paths
+		indexData, _ := fs.ReadFile(uiFS, "index.html")
+		if indexData != nil {
+			content := string(indexData)
+			bp := h.cfg.BasePath
+			injection := fmt.Sprintf("<script>window.__BASE_PATH__=%q;</script>", bp)
+			content = strings.Replace(content, "<head>", "<head>\n  "+injection, 1)
+			if bp != "" {
+				content = strings.ReplaceAll(content, `href="/`, `href="`+bp+`/`)
+				content = strings.ReplaceAll(content, `src="/`, `src="`+bp+`/`)
+				content = strings.ReplaceAll(content, `"/vendor/`, `"`+bp+`/vendor/`)
+			}
+			indexData = []byte(content)
+		}
+
+		fileServer := http.FileServerFS(uiFS)
+		h.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			if indexData != nil && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Write(indexData)
+				return
+			}
+			fileServer.ServeHTTP(w, r)
+		})
 	}
 }
 

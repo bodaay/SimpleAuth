@@ -10,7 +10,7 @@ import (
 // GET /account — requires access_token in query or stored in sessionStorage via /login flow.
 func (h *Handler) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, accountPageHTML)
+	fmt.Fprint(w, h.bp(accountPageHTML))
 }
 
 const accountPageHTML = `<!DOCTYPE html>
@@ -80,7 +80,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
 
     <div id="login-prompt" style="display:none" class="login-prompt">
       <p>You need to sign in to view your account.</p>
-      <a href="/login">Sign In</a>
+      <a href="{{BASE_PATH}}/login">Sign In</a>
     </div>
 
     <div id="profile" style="display:none">
@@ -131,7 +131,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
         if (rt) sessionStorage.setItem('sa_refresh_token', rt);
       } catch(e) {}
       // Clean up URL
-      history.replaceState(null, '', '/account');
+      history.replaceState(null, '', '{{BASE_PATH}}/account');
     }
   }
   if (!token) {
@@ -149,7 +149,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
   }
 
   // Fetch user info
-  fetch('/api/auth/userinfo', {
+  fetch('{{BASE_PATH}}/api/auth/userinfo', {
     headers: { 'Authorization': 'Bearer ' + token }
   })
   .then(function(res) {
@@ -219,7 +219,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
     btn.disabled = true;
     btn.textContent = 'Updating...';
 
-    fetch('/api/auth/reset-password', {
+    fetch('{{BASE_PATH}}/api/auth/reset-password', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + token,
@@ -257,7 +257,7 @@ button:disabled{opacity:0.6;cursor:not-allowed}
       sessionStorage.removeItem('sa_access_token');
       sessionStorage.removeItem('sa_refresh_token');
     } catch(ex) {}
-    location.href = '/login';
+    location.href = '{{BASE_PATH}}/login';
   });
 
   function setText(id, val) {

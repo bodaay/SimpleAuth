@@ -24,7 +24,7 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, hostedLoginHTML, redirectURI, errorHTML)
+	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
@@ -39,7 +39,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	password := r.FormValue("password")
 
 	if username == "" || password == "" {
-		redirectToLoginError(w, r, redirectURI, "Username and password are required")
+		h.redirectToLoginError(w, r, redirectURI, "Username and password are required")
 		return
 	}
 
@@ -52,7 +52,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	ip := getClientIP(r)
 
 	if !h.loginLimiter.allow(ip) {
-		redirectToLoginError(w, r, redirectURI, "Too many login attempts. Please try again later.")
+		h.redirectToLoginError(w, r, redirectURI, "Too many login attempts. Please try again later.")
 		return
 	}
 
@@ -61,17 +61,17 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		h.audit("login_failed", "", ip, map[string]interface{}{
 			"username": username, "reason": err.Error(), "flow": "hosted",
 		})
-		redirectToLoginError(w, r, redirectURI, "Invalid credentials")
+		h.redirectToLoginError(w, r, redirectURI, "Invalid credentials")
 		return
 	}
 
 	user, err := h.store.ResolveUser(userGUID)
 	if err != nil {
-		redirectToLoginError(w, r, redirectURI, "User not found")
+		h.redirectToLoginError(w, r, redirectURI, "User not found")
 		return
 	}
 	if user.Disabled {
-		redirectToLoginError(w, r, redirectURI, "Account disabled")
+		h.redirectToLoginError(w, r, redirectURI, "Account disabled")
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	perms := h.resolveUserPermissions(user.GUID, roles)
 	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, ldapGroups)
 	if err != nil {
-		redirectToLoginError(w, r, redirectURI, "Token generation failed")
+		h.redirectToLoginError(w, r, redirectURI, "Token generation failed")
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		url.QueryEscape(refreshToken),
 		expiresIn,
 	)
-	http.Redirect(w, r, "/account#"+fragment, http.StatusFound)
+	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
 }
 
 func isAllowedRedirect(allowed []string, uri string) bool {
@@ -121,8 +121,8 @@ func isAllowedRedirect(allowed []string, uri string) bool {
 	return false
 }
 
-func redirectToLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {
-	u := "/login?error=" + url.QueryEscape(msg)
+func (h *Handler) redirectToLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {
+	u := h.url("/login") + "?error=" + url.QueryEscape(msg)
 	if redirectURI != "" {
 		u += "&redirect_uri=" + url.QueryEscape(redirectURI)
 	}
@@ -168,7 +168,7 @@ button:hover{background:var(--burgundy-hover)}
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
   %[2]s
-  <form method="POST" action="/login">
+  <form method="POST" action="{{BASE_PATH}}/login">
     <input type="hidden" name="redirect_uri" value="%[1]s">
     <label>Username</label>
     <input type="text" name="username" placeholder="Enter your username" autofocus required>
@@ -180,7 +180,7 @@ button:hover{background:var(--burgundy-hover)}
 <script>
 // If already logged in, show account link
 try{if(sessionStorage.getItem('sa_access_token')){
-  document.querySelector('.brand p').innerHTML='Sign in to continue or <a href="/account" style="color:var(--burgundy);font-weight:600">go to your account</a>';
+  document.querySelector('.brand p').innerHTML='Sign in to continue or <a href="{{BASE_PATH}}/account" style="color:var(--burgundy);font-weight:600">go to your account</a>';
 }}catch(e){}
 </script>
 </body>
