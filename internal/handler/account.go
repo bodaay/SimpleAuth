@@ -19,7 +19,6 @@ const accountPageHTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>My Account — SimpleAuth</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #FAFAF8; --card: #FFFFFF; --text: #333F48; --muted: #A59F8A;
@@ -37,7 +36,7 @@ const accountPageHTML = `<!DOCTYPE html>
   --tag-bg:#2A3038;--tag-text:#A59F8A;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px}
 .container{width:100%;max-width:520px}
 .card{padding:32px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1);margin-bottom:24px}
 .brand{text-align:center;margin-bottom:24px}

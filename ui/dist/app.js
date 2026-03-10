@@ -36,7 +36,6 @@ const icons = {
   close: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   plus: html`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
   copy: html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
-  token: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
   roles: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
 };
 
@@ -1643,155 +1642,6 @@ function LoginSetup({ onLogin }) {
   `;
 }
 
-// === One-Time Tokens Page ===
-function TokensPage() {
-  const [tokens, setTokens] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [scope, setScope] = useState('general');
-  const [label, setLabel] = useState('');
-  const [ttl, setTtl] = useState('24h');
-  const [scopeFilter, setScopeFilter] = useState('');
-  const [toast, setToast] = useState(null);
-  const [copiedToken, setCopiedToken] = useState(null);
-
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => setToast(null), 3000);
-  };
-
-  const load = () => {
-    setLoading(true);
-    const params = scopeFilter ? `?scope=${encodeURIComponent(scopeFilter)}` : '';
-    api('GET', `/api/admin/tokens${params}`).then(setTokens).catch(e => showToast(e.message, 'error')).finally(() => setLoading(false));
-  };
-
-  useEffect(load, [scopeFilter]);
-
-  const create = async () => {
-    try {
-      const tok = await api('POST', '/api/admin/tokens', { scope, label, ttl });
-      setShowCreate(false);
-      setLabel('');
-      setTtl('24h');
-      showToast(`Token created: ${tok.token}`);
-      load();
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const remove = async (token) => {
-    if (!confirm('Delete this token?')) return;
-    try {
-      await api('DELETE', `/api/admin/tokens/${token}`);
-      showToast('Token deleted');
-      load();
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const copyToken = (token) => {
-    navigator.clipboard.writeText(token);
-    setCopiedToken(token);
-    setTimeout(() => setCopiedToken(null), 2000);
-  };
-
-  const scopes = [...new Set(tokens.map(t => t.scope))].sort();
-  const now = new Date();
-  const active = tokens.filter(t => !t.used && new Date(t.expires_at) > now);
-  const usedOrExpired = tokens.filter(t => t.used || new Date(t.expires_at) <= now);
-
-  return html`
-    <${Toast} ...${toast} />
-    <div class="page-header">
-      <h2>One-Time Tokens</h2>
-      <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>${icons.plus} Create Token</button>
-    </div>
-    <p style="color:var(--text-secondary);margin-bottom:var(--sp-4)">Scoped, single-use tokens for various administrative purposes.</p>
-
-    ${scopes.length > 0 && html`
-      <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4);flex-wrap:wrap">
-        <button class="btn btn-sm ${!scopeFilter ? 'btn-primary' : 'btn-secondary'}" onClick=${() => setScopeFilter('')}>All</button>
-        ${scopes.map(s => html`
-          <button class="btn btn-sm ${scopeFilter === s ? 'btn-primary' : 'btn-secondary'}" onClick=${() => setScopeFilter(s)}>${s}</button>
-        `)}
-      </div>
-    `}
-
-    ${showCreate && html`
-      <${Modal} title="Create One-Time Token" onClose=${() => setShowCreate(false)}>
-        <div class="form-group">
-          <label class="form-label">Scope</label>
-          <input class="form-input" value=${scope} onInput=${e => setScope(e.target.value)} placeholder="e.g. general" />
-          <div class="form-help">Defines what this token can be used for</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Label (optional)</label>
-          <input class="form-input" value=${label} onInput=${e => setLabel(e.target.value)} placeholder="e.g. For deployment team" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Expires After</label>
-          <select class="form-input" value=${ttl} onChange=${e => setTtl(e.target.value)}>
-            <option value="1h">1 hour</option>
-            <option value="6h">6 hours</option>
-            <option value="24h">24 hours</option>
-            <option value="72h">3 days</option>
-            <option value="168h">7 days</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" style="width:100%" onClick=${create}>Generate Token</button>
-      <//>
-    `}
-
-    ${loading ? html`<p>Loading...</p>` : html`
-      ${active.length > 0 ? html`
-        <h3 style="margin-bottom:var(--sp-3)">Active Tokens</h3>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Token</th><th>Scope</th><th>Label</th><th>Expires</th><th>Actions</th></tr></thead>
-            <tbody>
-              ${active.map(t => html`
-                <tr key=${t.token}>
-                  <td>
-                    <code style="font-size:1.1em;font-weight:600;letter-spacing:0.05em">${t.token}</code>
-                    <button class="btn btn-sm" style="margin-left:var(--sp-2);padding:2px 6px" onClick=${() => copyToken(t.token)} title="Copy token">
-                      ${copiedToken === t.token ? 'Copied!' : icons.copy}
-                    </button>
-                  </td>
-                  <td><span class="badge">${t.scope}</span></td>
-                  <td>${t.label || '—'}</td>
-                  <td>${new Date(t.expires_at).toLocaleString()}</td>
-                  <td><button class="btn btn-sm btn-danger" onClick=${() => remove(t.token)}>Delete</button></td>
-                </tr>
-              `)}
-            </tbody>
-          </table>
-        </div>
-      ` : html`<div class="empty-state"><p>No active tokens.</p></div>`}
-
-      ${usedOrExpired.length > 0 ? html`
-        <h3 style="margin:var(--sp-5) 0 var(--sp-3)">Used / Expired</h3>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Token</th><th>Scope</th><th>Label</th><th>Status</th><th>Used By</th><th>Actions</th></tr></thead>
-            <tbody>
-              ${usedOrExpired.map(t => html`
-                <tr key=${t.token} style="opacity:0.6">
-                  <td><code>${t.token}</code></td>
-                  <td><span class="badge">${t.scope}</span></td>
-                  <td>${t.label || '—'}</td>
-                  <td>${t.used ? html`<span class="badge badge-info">Used</span>` : html`<span class="badge badge-warning">Expired</span>`}</td>
-                  <td>${t.used_by || '—'}</td>
-                  <td><button class="btn btn-sm btn-danger" onClick=${() => remove(t.token)}>Delete</button></td>
-                </tr>
-              `)}
-            </tbody>
-          </table>
-        </div>
-      ` : null}
-    `}
-  `;
-}
-
 // === App Shell ===
 function App() {
   const [page, setPage] = useState('dashboard');
@@ -1830,7 +1680,6 @@ function App() {
     { id: 'roles', label: 'Roles', icon: icons.roles },
     { id: 'ldap', label: 'LDAP Providers', icon: icons.ldap },
     { id: 'mappings', label: 'Mappings', icon: icons.mappings },
-    { id: 'tokens', label: 'Tokens', icon: icons.token },
     { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
     { id: 'audit', label: 'Audit Log', icon: icons.audit },
   ];
@@ -1841,7 +1690,6 @@ function App() {
     roles: RolesPage,
     ldap: LDAPPage,
     mappings: MappingsPage,
-    tokens: TokensPage,
     impersonate: ImpersonatePage,
     audit: AuditPage,
   };

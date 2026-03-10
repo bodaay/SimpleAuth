@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"sort"
 	"path/filepath"
@@ -1003,119 +1002,6 @@ func (s *Store) reopen(dbPath string) error {
 	}
 	s.db = db
 	return nil
-}
-
-// --- One-Time Tokens ---
-
-type OneTimeToken struct {
-	Token     string    `json:"token"`
-	Scope     string    `json:"scope"`
-	Label     string    `json:"label"`
-	Used      bool      `json:"used"`
-	UsedBy    string    `json:"used_by,omitempty"`
-	UsedAt    time.Time `json:"used_at,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// generateToken creates a token in XXX-XXXX format (all caps letters + digits).
-func generateToken() string {
-	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 7)
-	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
-	}
-	return string(b[:3]) + "-" + string(b[3:])
-}
-
-func (s *Store) CreateOneTimeToken(scope, label string, ttl time.Duration) (*OneTimeToken, error) {
-	tok := &OneTimeToken{
-		Token:     generateToken(),
-		Scope:     scope,
-		Label:     label,
-		ExpiresAt: time.Now().UTC().Add(ttl),
-		CreatedAt: time.Now().UTC(),
-	}
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		data, err := json.Marshal(tok)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketRegTokens).Put([]byte(tok.Token), data)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tok, nil
-}
-
-func (s *Store) GetOneTimeToken(token string) (*OneTimeToken, error) {
-	var ot OneTimeToken
-	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketRegTokens).Get([]byte(token))
-		if data == nil {
-			return fmt.Errorf("token not found")
-		}
-		return json.Unmarshal(data, &ot)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &ot, nil
-}
-
-// UseOneTimeToken validates scope, marks used, returns error if invalid/used/expired.
-func (s *Store) UseOneTimeToken(token, scope, usedBy string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketRegTokens).Get([]byte(token))
-		if data == nil {
-			return fmt.Errorf("token not found")
-		}
-		var ot OneTimeToken
-		if err := json.Unmarshal(data, &ot); err != nil {
-			return err
-		}
-		if ot.Used {
-			return fmt.Errorf("token already used")
-		}
-		if time.Now().After(ot.ExpiresAt) {
-			return fmt.Errorf("token expired")
-		}
-		if ot.Scope != scope {
-			return fmt.Errorf("token scope mismatch")
-		}
-		ot.Used = true
-		ot.UsedBy = usedBy
-		ot.UsedAt = time.Now().UTC()
-		newData, err := json.Marshal(&ot)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketRegTokens).Put([]byte(token), newData)
-	})
-}
-
-func (s *Store) ListOneTimeTokens(scope string) ([]*OneTimeToken, error) {
-	var tokens []*OneTimeToken
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketRegTokens).ForEach(func(k, v []byte) error {
-			var ot OneTimeToken
-			if err := json.Unmarshal(v, &ot); err != nil {
-				return nil
-			}
-			if scope == "" || ot.Scope == scope {
-				tokens = append(tokens, &ot)
-			}
-			return nil
-		})
-	})
-	return tokens, err
-}
-
-func (s *Store) DeleteOneTimeToken(token string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketRegTokens).Delete([]byte(token))
-	})
 }
 
 // --- OIDC Authorization Codes ---
