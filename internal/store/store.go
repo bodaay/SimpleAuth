@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"sort"
 	"path/filepath"
 	"strings"
 	"time"
@@ -453,6 +454,57 @@ func (s *Store) GetUserPermissions(guid string) ([]string, error) {
 		return json.Unmarshal(data, &perms)
 	})
 	return perms, err
+}
+
+// ListAllRoles returns all unique roles across all users.
+func (s *Store) ListAllRoles() ([]string, error) {
+	set := map[string]struct{}{}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUserRoles).ForEach(func(k, v []byte) error {
+			var roles []string
+			if err := json.Unmarshal(v, &roles); err == nil {
+				for _, r := range roles {
+					set[r] = struct{}{}
+				}
+			}
+			return nil
+		})
+	})
+	result := make([]string, 0, len(set))
+	for r := range set {
+		result = append(result, r)
+	}
+	sort.Strings(result)
+	return result, err
+}
+
+// ListAllPermissions returns all unique permissions across all users.
+func (s *Store) ListAllPermissions() ([]string, error) {
+	set := map[string]struct{}{}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUserPermissions).ForEach(func(k, v []byte) error {
+			var perms []string
+			if err := json.Unmarshal(v, &perms); err == nil {
+				for _, p := range perms {
+					set[p] = struct{}{}
+				}
+			}
+			return nil
+		})
+	})
+	// Also include permissions from role-permission mapping
+	mapping, _ := s.GetRolePermissions()
+	for _, perms := range mapping {
+		for _, p := range perms {
+			set[p] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for p := range set {
+		result = append(result, p)
+	}
+	sort.Strings(result)
+	return result, err
 }
 
 // --- Config (generic key-value in config bucket) ---

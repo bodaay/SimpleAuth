@@ -60,6 +60,15 @@ func main() {
 	}
 	defer s.Close()
 
+	// Seed default roles from config if store has none
+	if len(cfg.DefaultRoles) > 0 {
+		existing, _ := s.GetDefaultRoles()
+		if len(existing) == 0 {
+			s.SetDefaultRoles(cfg.DefaultRoles)
+			log.Printf("Default roles set from config: %v", cfg.DefaultRoles)
+		}
+	}
+
 	// Initialize JWT manager (auto-generates RSA keys on first run)
 	jwtMgr, err := auth.NewJWTManager(cfg.DataDir, cfg.JWTIssuer)
 	if err != nil {

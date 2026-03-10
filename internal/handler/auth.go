@@ -67,9 +67,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
 // Simplified flow: try `local` mapping -> try LDAP providers -> authenticate.
+// On successful LDAP auth, user profile is synced from the LDAP result.
 func (h *Handler) authenticateUser(username, password string) (string, []string, error) {
 	var userGUID string
 	var ldapGroups []string
+	var ldapResult *auth.LDAPResult
 	var authenticated bool
 
 	// Step 1: Try existing local identity mapping
@@ -101,6 +103,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, password)
 				if err == nil {
 					ldapGroups = result.Groups
+					ldapResult = result
 					authenticated = true
 					break
 				}
@@ -124,11 +127,13 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 			result, err := auth.LDAPAuthenticate(cfg, username, password)
 			if err == nil {
 				ldapGroups = result.Groups
+				ldapResult = result
 				authenticated = true
 				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, username)
 				if mapErr == nil {
 					userGUID = guid
 				} else {
+					// JIT provisioning
 					newUser := &store.User{
 						DisplayName: result.DisplayName,
 						Email:       result.Email,
@@ -139,6 +144,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
 					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
+					h.store.SetIdentityMapping("local", username, userGUID)
 				}
 				break
 			}
@@ -175,11 +181,40 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 		return "", nil, fmt.Errorf("user resolution failed")
 	}
 
-	// Update user info from LDAP if we got LDAP results
-	// (we need to re-check LDAP result since we may have authenticated via LDAP)
-	// The LDAP info sync is handled in issueTokenResponse path via handleLogin
+	// Sync profile from LDAP on every successful LDAP login
+	if ldapResult != nil {
+		h.syncUserFromLDAP(finalUser, ldapResult)
+	}
 
 	return finalUser.GUID, ldapGroups, nil
+}
+
+// syncUserFromLDAP updates a user's profile fields from LDAP result (non-empty fields only).
+func (h *Handler) syncUserFromLDAP(user *store.User, result *auth.LDAPResult) {
+	changed := false
+	if result.DisplayName != "" && result.DisplayName != user.DisplayName {
+		user.DisplayName = result.DisplayName
+		changed = true
+	}
+	if result.Email != "" && result.Email != user.Email {
+		user.Email = result.Email
+		changed = true
+	}
+	if result.Department != "" && result.Department != user.Department {
+		user.Department = result.Department
+		changed = true
+	}
+	if result.Company != "" && result.Company != user.Company {
+		user.Company = result.Company
+		changed = true
+	}
+	if result.JobTitle != "" && result.JobTitle != user.JobTitle {
+		user.JobTitle = result.JobTitle
+		changed = true
+	}
+	if changed {
+		h.store.UpdateUser(user)
+	}
 }
 
 func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, groups []string, ip string) {
@@ -205,15 +240,16 @@ func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, gr
 // issueTokenPair creates access + refresh tokens and stores the refresh token.
 func (h *Handler) issueTokenPair(user *store.User, roles []string, perms []string, groups []string) (string, string, int, error) {
 	claims := auth.Claims{
-		GUID:        user.GUID,
-		Name:        user.DisplayName,
-		Email:       user.Email,
-		Department:  user.Department,
-		Company:     user.Company,
-		JobTitle:    user.JobTitle,
-		Roles:       roles,
-		Permissions: perms,
-		Groups:      groups,
+		GUID:              user.GUID,
+		Name:              user.DisplayName,
+		Email:             user.Email,
+		Department:        user.Department,
+		Company:           user.Company,
+		JobTitle:          user.JobTitle,
+		Roles:             roles,
+		Permissions:       perms,
+		Groups:            groups,
+		PreferredUsername:  h.resolvePreferredUsername(user),
 	}
 	claims.Subject = user.GUID
 
@@ -253,6 +289,21 @@ func (h *Handler) assignDefaultRoles(userGUID string) {
 	}
 }
 
+// resolvePreferredUsername finds the local username for a user from identity mappings.
+func (h *Handler) resolvePreferredUsername(user *store.User) string {
+	mappings, _ := h.store.GetMappingsForUser(user.GUID)
+	for _, m := range mappings {
+		if m.Provider == "local" {
+			return m.ExternalID
+		}
+	}
+	// Fallback: email or display name
+	if user.Email != "" {
+		return user.Email
+	}
+	return user.DisplayName
+}
+
 // resolveUserPermissions returns the merged set of role-derived + direct permissions.
 func (h *Handler) resolveUserPermissions(userGUID string, roles []string) []string {
 	directPerms, _ := h.store.GetUserPermissions(userGUID)
@@ -261,6 +312,12 @@ func (h *Handler) resolveUserPermissions(userGUID string, roles []string) []stri
 }
 
 func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	ip := getClientIP(r)
+	if !h.loginLimiter.allow(ip) {
+		jsonError(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
@@ -316,14 +373,15 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	perms := h.resolveUserPermissions(user.GUID, roles)
 
 	newClaims := auth.Claims{
-		GUID:        user.GUID,
-		Name:        user.DisplayName,
-		Email:       user.Email,
-		Department:  user.Department,
-		Company:     user.Company,
-		JobTitle:    user.JobTitle,
-		Roles:       roles,
-		Permissions: perms,
+		GUID:              user.GUID,
+		Name:              user.DisplayName,
+		Email:             user.Email,
+		Department:        user.Department,
+		Company:           user.Company,
+		JobTitle:          user.JobTitle,
+		Roles:             roles,
+		Permissions:       perms,
+		PreferredUsername:  h.resolvePreferredUsername(user),
 	}
 	newClaims.Subject = user.GUID
 
@@ -378,15 +436,16 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResp(w, map[string]interface{}{
-		"guid":         user.GUID,
-		"display_name": user.DisplayName,
-		"email":        user.Email,
-		"department":   user.Department,
-		"company":      user.Company,
-		"job_title":    user.JobTitle,
-		"roles":        claims.Roles,
-		"permissions":  claims.Permissions,
-		"groups":       claims.Groups,
+		"guid":               user.GUID,
+		"preferred_username": h.resolvePreferredUsername(user),
+		"display_name":       user.DisplayName,
+		"email":              user.Email,
+		"department":         user.Department,
+		"company":            user.Company,
+		"job_title":          user.JobTitle,
+		"roles":              claims.Roles,
+		"permissions":        claims.Permissions,
+		"groups":             claims.Groups,
 	}, http.StatusOK)
 }
 

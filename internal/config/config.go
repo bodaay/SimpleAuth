@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,12 +22,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var deploymentNameRe = regexp.MustCompile(`^[a-zA-Z]{1,6}$`)
+
 type Config struct {
-	Hostname        string        `yaml:"hostname"`
-	Port            string        `yaml:"port"`
-	DataDir         string        `yaml:"data_dir"`
-	AdminKey        string        `yaml:"admin_key"`
-	ProjectName     string        `yaml:"project_name"`
+	Hostname       string        `yaml:"hostname"`
+	Port           string        `yaml:"port"`
+	DataDir        string        `yaml:"data_dir"`
+	AdminKey       string        `yaml:"admin_key"`
+	DeploymentName string        `yaml:"deployment_name"`
 	JWTIssuer       string        `yaml:"jwt_issuer"`
 	AccessTTL       time.Duration `yaml:"access_ttl"`
 	RefreshTTL      time.Duration `yaml:"refresh_ttl"`
@@ -43,6 +46,7 @@ type Config struct {
 	ClientID        string        `yaml:"client_id"`
 	ClientSecret    string        `yaml:"client_secret"`
 	RedirectURIs    []string      `yaml:"redirect_uris"`
+	DefaultRoles    []string      `yaml:"default_roles"`
 }
 
 // configFile is an intermediate struct for YAML parsing with string durations.
@@ -51,7 +55,7 @@ type configFile struct {
 	Port            string `yaml:"port"`
 	DataDir         string `yaml:"data_dir"`
 	AdminKey        string `yaml:"admin_key"`
-	ProjectName     string `yaml:"project_name"`
+	DeploymentName     string `yaml:"deployment_name"`
 	JWTIssuer       string `yaml:"jwt_issuer"`
 	AccessTTL       string `yaml:"access_ttl"`
 	RefreshTTL      string `yaml:"refresh_ttl"`
@@ -68,6 +72,7 @@ type configFile struct {
 	ClientID        string   `yaml:"client_id"`
 	ClientSecret    string   `yaml:"client_secret"`
 	RedirectURIs    []string `yaml:"redirect_uris"`
+	DefaultRoles    []string `yaml:"default_roles"`
 }
 
 // Load reads config with priority: config file > env vars > defaults.
@@ -77,7 +82,7 @@ func Load() *Config {
 	cfg := &Config{
 		Port:            "9090",
 		DataDir:         "./data",
-		ProjectName:     "default",
+		DeploymentName:     "sauth",
 		JWTIssuer:       "simpleauth",
 		AccessTTL:       8 * time.Hour,
 		RefreshTTL:      720 * time.Hour,
@@ -97,9 +102,14 @@ func Load() *Config {
 	// Ensure data directory exists
 	os.MkdirAll(cfg.DataDir, 0700)
 
-	// Default hostname to OS hostname if not set
+	// Hostname is mandatory
 	if cfg.Hostname == "" {
-		cfg.Hostname, _ = os.Hostname()
+		log.Fatalf("hostname is required — set it in config file (hostname:) or AUTH_HOSTNAME env var")
+	}
+
+	// Validate deployment name: 1-6 letters only
+	if !deploymentNameRe.MatchString(cfg.DeploymentName) {
+		log.Fatalf("deployment_name must be 1-6 letters only (a-z/A-Z), got: %q", cfg.DeploymentName)
 	}
 
 	// Auto-generate TLS cert if not configured (self-signed in data dir)
@@ -144,9 +154,13 @@ func WriteDefaultConfig(path string) error {
 	defaultYAML := `# SimpleAuth Configuration
 # Priority: this file < environment variables (env vars override file values)
 
-# The FQDN clients use to access SimpleAuth (used for TLS certificate SANs)
-# This should match the Kerberos SPN hostname if using SPNEGO
+# REQUIRED: The FQDN clients use to access SimpleAuth
+# Used for TLS certificate SANs, Kerberos SPN, and AD setup scripts
 hostname: ""
+
+# Deployment name (1-6 letters only, used in AD service account: svc-sauth-{name})
+# Default: "sauth" — change if running multiple instances against the same AD
+deployment_name: "sauth"
 
 # Server port (HTTPS)
 port: "9090"
@@ -159,10 +173,6 @@ data_dir: "./data"
 
 # Master admin API key (auto-generated if empty)
 admin_key: ""
-
-# Project name (used in AD service account naming: svc-simpleauth-{project_name})
-# Useful when running multiple SimpleAuth instances against the same AD
-project_name: "default"
 
 # JWT settings
 jwt_issuer: "simpleauth"
@@ -198,6 +208,10 @@ client_secret: ""
 # redirect_uris:
 #   - "https://app.example.com/callback"
 #   - "http://localhost:3000/callback"
+
+# Default roles assigned to new users on first login (comma-separated in env var)
+# default_roles:
+#   - "user"
 `
 	return os.WriteFile(path, []byte(defaultYAML), 0600)
 }
@@ -221,6 +235,12 @@ func loadConfigFile(cfg *Config) {
 	}
 
 	if configPath == "" {
+		// No config file found — create a default one
+		configPath = "simpleauth.yaml"
+		log.Printf("No config file found — creating default %s", configPath)
+		if err := WriteDefaultConfig(configPath); err != nil {
+			log.Printf("Warning: could not create default config file: %v", err)
+		}
 		return
 	}
 
@@ -250,8 +270,8 @@ func loadConfigFile(cfg *Config) {
 	if fc.AdminKey != "" {
 		cfg.AdminKey = fc.AdminKey
 	}
-	if fc.ProjectName != "" {
-		cfg.ProjectName = fc.ProjectName
+	if fc.DeploymentName != "" {
+		cfg.DeploymentName = fc.DeploymentName
 	}
 	if fc.JWTIssuer != "" {
 		cfg.JWTIssuer = fc.JWTIssuer
@@ -311,6 +331,9 @@ func loadConfigFile(cfg *Config) {
 	if len(fc.RedirectURIs) > 0 {
 		cfg.RedirectURIs = fc.RedirectURIs
 	}
+	if len(fc.DefaultRoles) > 0 {
+		cfg.DefaultRoles = fc.DefaultRoles
+	}
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -326,8 +349,8 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("AUTH_ADMIN_KEY"); v != "" {
 		cfg.AdminKey = v
 	}
-	if v := os.Getenv("AUTH_PROJECT_NAME"); v != "" {
-		cfg.ProjectName = v
+	if v := os.Getenv("AUTH_DEPLOYMENT_NAME"); v != "" {
+		cfg.DeploymentName = v
 	}
 	if v := os.Getenv("AUTH_JWT_ISSUER"); v != "" {
 		cfg.JWTIssuer = v
@@ -388,6 +411,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_REDIRECT_URIS"); v != "" {
 		cfg.RedirectURIs = strings.Split(v, ",")
+	}
+	if v := os.Getenv("AUTH_DEFAULT_ROLES"); v != "" {
+		cfg.DefaultRoles = strings.Split(v, ",")
 	}
 }
 

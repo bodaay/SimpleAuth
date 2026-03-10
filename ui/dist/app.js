@@ -661,7 +661,7 @@ function LDAPPage() {
   };
 
   const generateScript = () => {
-    const acct = form.script_account || 'svc-simpleauth';
+    const acct = form.script_account || 'svc-sauth-simpleauth';
     const pw = form.script_password || '';
     if (!pw) { showToast('Password is required', 'error'); return; }
     // Escape for PowerShell single-quoted strings: ' becomes ''
@@ -1098,11 +1098,46 @@ function LDAPPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const syncAllUsers = async (providerId) => {
+    try {
+      showToast('Syncing all users...', 'info');
+      const result = await api('POST', `/api/admin/ldap/${providerId}/sync-all`);
+      const msg = `Synced ${result.synced} user(s)` + (result.failed > 0 ? `, ${result.failed} failed` : '');
+      showToast(msg, result.failed > 0 ? 'warning' : 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const syncSingleUser = async () => {
+    try {
+      const result = await api('POST', `/api/admin/ldap/${form.sync_provider_id}/sync-user`, { username: form.sync_username });
+      setModal(null);
+      setForm({});
+      showToast(`Synced: ${result.user.display_name || result.user.guid}`);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const downloadSetupScript = async () => {
+    try {
+      const res = await fetch('/api/admin/setup-script', {
+        headers: { 'Authorization': `Bearer ${getApiKey()}` },
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      const text = await res.text();
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([bom, text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'simpleauth-setup.ps1'; a.click();
+      URL.revokeObjectURL(url);
+      showToast('Setup script downloaded');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   return html`
     <div class="page-header">
       <h2>LDAP Providers</h2>
       <div class="page-header-actions">
-        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-simpleauth-' + (serverInfo.project_name || 'default') }); setModal('generate-script'); }}>Generate AD Script</button>
+        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-sauth-' + (serverInfo.deployment_name || 'sauth') }); setModal('generate-script'); }}>Generate AD Script</button>
         <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('import-config'); }}>Import Config</button>
         <button class="btn btn-primary" onClick=${() => { setForm({ user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', groups_attr: 'memberOf' }); setModal('create'); }}>${icons.plus} Manual Setup</button>
       </div>
@@ -1125,8 +1160,11 @@ function LDAPPage() {
                   <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => testConnection(p.provider_id)}>Test</button>
                   ${krbStatus?.configured && krbStatus?.provider_id === p.provider_id
                     ? html`<button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-cleanup'); }}>Remove Kerberos</button>`
-                    : html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-setup'); }}>Setup Kerberos</button>`
+                    : html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id, service_hostname: serverInfo.hostname || '' }); setModal('krb-setup'); }}>Setup Kerberos</button>`
                   }
+                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => syncAllUsers(p.provider_id)}>Sync All</button>
+                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ sync_provider_id: p.provider_id }); setModal('sync-user'); }}>Sync User</button>
+                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => downloadSetupScript()}>AD Script</button>
                   <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteProvider(p.provider_id)}>Delete</button>
                 </td>
               </tr>
@@ -1269,7 +1307,7 @@ function LDAPPage() {
         <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Generate a PowerShell script to run on a Domain Controller. The script will interactively guide the AD admin through creating a service account, selecting an OU, and optionally setting up Kerberos.</p>
         <div class="form-group">
           <label class="form-label">Service Account Name</label>
-          <input class="form-input" value=${form.script_account || ''} onInput=${e => setForm({ ...form, script_account: e.target.value })} placeholder="svc-simpleauth" />
+          <input class="form-input" value=${form.script_account || ''} onInput=${e => setForm({ ...form, script_account: e.target.value })} placeholder="svc-sauth-simpleauth" />
         </div>
         <div class="form-group">
           <label class="form-label">Password</label>
@@ -1317,6 +1355,19 @@ function LDAPPage() {
         <div class="modal-footer">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
           <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import & Configure</button>
+        </div>
+      <//>
+    `}
+    ${modal === 'sync-user' && html`
+      <${Modal} title="Sync User from AD" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter the sAMAccountName of a user to sync their profile (display name, email, department, company, job title) from Active Directory.</p>
+        <div class="form-group">
+          <label class="form-label">Username (sAMAccountName)</label>
+          <input class="form-input" value=${form.sync_username || ''} onInput=${e => setForm({ ...form, sync_username: e.target.value })} placeholder="alice" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" disabled=${!form.sync_username} onClick=${syncSingleUser}>Sync User</button>
         </div>
       <//>
     `}

@@ -42,7 +42,7 @@ SimpleAuth looks for a config file in this order:
 | `client_id` | `AUTH_CLIENT_ID` | (none) | OIDC client ID for this instance. Used in authorization code flow, token endpoint, and introspection. |
 | `client_secret` | `AUTH_CLIENT_SECRET` | (none) | OIDC client secret for this instance. |
 | `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Comma-separated list of allowed OIDC redirect URIs. |
-| `project_name` | `AUTH_PROJECT_NAME` | `default` | Project name, used in AD service account naming (`svc-simpleauth-{project_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
+| `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
 | `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
 | `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime. Go duration format (e.g., `30m`, `8h`, `24h`). |
 | `refresh_ttl` | `AUTH_JWT_REFRESH_TTL` | `720h` | Refresh token lifetime (default 30 days). |
@@ -82,8 +82,8 @@ client_id: "my-web-app"
 client_secret: "my-client-secret"
 redirect_uris: "https://myapp.example.com/callback,https://myapp.example.com/silent-renew"
 
-# Project name for multi-instance deployments
-project_name: "production"
+# Deployment name for multi-instance deployments (max 6 chars, letters only)
+deployment_name: "prod"
 
 # JWT settings
 jwt_issuer: "simpleauth"
@@ -241,9 +241,9 @@ Set this when your frontend app runs on a different origin than SimpleAuth:
 
 When set, SimpleAuth responds to preflight `OPTIONS` requests and adds `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, and `Access-Control-Allow-Headers` headers.
 
-### `project_name`
+### `deployment_name`
 
-Only matters when you're running multiple SimpleAuth instances against the same Active Directory. It's used to namespace Kerberos SPNs and service accounts, so they don't collide.
+Only matters when you're running multiple SimpleAuth instances against the same Active Directory. It's used to namespace Kerberos SPNs and service accounts (e.g., `svc-sauth`), so they don't collide. Max 6 characters, letters only (a-z/A-Z).
 
 ### `rate_limit_max` / `rate_limit_window`
 
