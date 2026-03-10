@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // handleHostedLoginPage serves the hosted login form.
@@ -114,7 +115,11 @@ func isAllowedRedirect(allowed []string, uri string) bool {
 		return true // No restrictions configured
 	}
 	for _, a := range allowed {
-		if a == uri {
+		if strings.HasSuffix(a, "*") {
+			if strings.HasPrefix(uri, a[:len(a)-1]) {
+				return true
+			}
+		} else if a == uri {
 			return true
 		}
 	}

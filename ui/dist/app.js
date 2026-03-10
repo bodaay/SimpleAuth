@@ -1265,7 +1265,7 @@ function LDAPPage() {
           </span>
           <div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px">SPNEGO test will authenticate via Kerberos and look up user data across all LDAP providers</div>
         </div>
-        <a href="/auth/test-negotiate" target="_blank" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 12px;text-decoration:none">Test SPNEGO</a>
+        <a href="${BASE_PATH}/test-negotiate" target="_blank" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 12px;text-decoration:none">Test SPNEGO</a>
       </div>
     `}
 

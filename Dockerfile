@@ -66,15 +66,15 @@ COPY --from=builder /simpleauth /usr/local/bin/simpleauth
 ENV AUTH_DATA_DIR=/data \
     AUTH_PORT=8080 \
     AUTH_HTTP_PORT="" \
-    AUTH_HOSTNAME=""
+    AUTH_HOSTNAME="" \
+    AUTH_BASE_PATH=""
 
 # Expose the HTTPS port (the app handles its own TLS)
 EXPOSE 8080
 
-# Health check: use /health endpoint (works with both HTTP and HTTPS modes)
+# Health check: uses AUTH_BASE_PATH and AUTH_PORT env vars at runtime
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-check-certificate --spider -q https://localhost:8080/health 2>/dev/null || \
-      wget --spider -q http://localhost:8080/health || exit 1
+  CMD wget --spider -q http://localhost:${AUTH_PORT}${AUTH_BASE_PATH}/health || exit 1
 
 # Run as non-root
 USER simpleauth
