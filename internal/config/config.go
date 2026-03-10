@@ -82,7 +82,7 @@ type configFile struct {
 	DefaultRoles    []string `yaml:"default_roles"`
 }
 
-// Load reads config with priority: config file > env vars > defaults.
+// Load reads config with priority: env vars > config file > defaults.
 // Config file is looked up at: ./simpleauth.yaml, /etc/simpleauth/config.yaml,
 // or the path specified by AUTH_CONFIG_FILE env var.
 func Load() *Config {
@@ -194,7 +194,7 @@ func Load() *Config {
 // WriteDefaultConfig writes a default config file to the given path.
 func WriteDefaultConfig(path string) error {
 	defaultYAML := `# SimpleAuth Configuration
-# Priority: this file < environment variables (env vars override file values)
+# Priority: env vars > this file > defaults (env vars always win)
 
 # REQUIRED: The FQDN clients use to access SimpleAuth
 # Used for TLS certificate SANs, Kerberos SPN, and AD setup scripts
@@ -293,12 +293,7 @@ func loadConfigFile(cfg *Config) {
 	}
 
 	if configPath == "" {
-		// No config file found — create a default one
-		configPath = "simpleauth.yaml"
-		log.Printf("No config file found — creating default %s", configPath)
-		if err := WriteDefaultConfig(configPath); err != nil {
-			log.Printf("Warning: could not create default config file: %v", err)
-		}
+		log.Printf("No config file found — using defaults + env vars (run 'simpleauth init-config' to create one)")
 		return
 	}
 
