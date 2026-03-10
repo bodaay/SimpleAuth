@@ -2,7 +2,9 @@
 set -euo pipefail
 
 APP="simpleauth"
-VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
+FILE_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]')
+GIT_DIRTY=$(git diff --quiet 2>/dev/null && echo "" || echo "-dirty")
+VERSION="${VERSION:-${FILE_VERSION:-0.0.0}${GIT_DIRTY}}"
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS="-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}"
 OUT_DIR="dist"

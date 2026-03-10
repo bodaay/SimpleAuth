@@ -21,21 +21,24 @@ type Handler struct {
 	jwt         *auth.JWTManager
 	loginLimiter *rateLimiter
 	mux         *http.ServeMux
+	version     string
 }
 
-func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS) *Handler {
+func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
 	h := &Handler{
 		cfg:          cfg,
 		store:        s,
 		jwt:          jwtMgr,
 		loginLimiter: newRateLimiter(cfg.RateLimitMax, cfg.RateLimitWindow),
 		mux:          http.NewServeMux(),
+		version:      version,
 	}
 	h.registerRoutes(uiFS)
 	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-SimpleAuth-Version", h.version)
 	if h.cfg.CORSOrigins != "" {
 		origin := r.Header.Get("Origin")
 		if origin != "" && h.isAllowedOrigin(origin) {
@@ -90,7 +93,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 			"hostname":     h.cfg.Hostname,
 			"deployment_name": h.cfg.DeploymentName,
 			"jwt_issuer":   h.cfg.JWTIssuer,
-			"version":      "dev",
+			"version":      h.version,
 		}, http.StatusOK)
 	}))
 

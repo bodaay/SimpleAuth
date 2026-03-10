@@ -82,7 +82,7 @@ func main() {
 	}
 
 	// Create handler
-	h := handler.New(cfg, s, jwtMgr, uiFS)
+	h := handler.New(cfg, s, jwtMgr, uiFS, Version)
 
 	// Start audit log pruner
 	h.StartAuditPruner()

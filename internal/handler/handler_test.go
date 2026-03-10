@@ -39,7 +39,7 @@ func testSetup(t *testing.T) (*Handler, *store.Store) {
 		ClientSecret:   "test-secret",
 	}
 
-	h := New(cfg, s, jwtMgr, nil)
+	h := New(cfg, s, jwtMgr, nil, "test")
 	return h, s
 }
 
