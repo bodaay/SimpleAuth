@@ -51,6 +51,7 @@ SimpleAuth looks for a config file in this order:
 | `tls_key` | `AUTH_TLS_KEY` | (auto-generated) | Path to TLS private key file. |
 | `tls_disabled` | `AUTH_TLS_DISABLED` | `false` | Disable TLS and serve plain HTTP. Use when behind a reverse proxy (nginx, Traefik, etc.) that handles TLS termination. |
 | `trusted_proxies` | `AUTH_TRUSTED_PROXIES` | (none) | Comma-separated list of trusted proxy IPs/CIDRs. `X-Forwarded-For` and `X-Real-IP` headers are only trusted from these addresses. If empty, headers are trusted from any source. Example: `172.16.0.0/12,10.0.0.0/8` |
+| `base_path` | `AUTH_BASE_PATH` | (none) | URL path prefix for sub-path deployments behind a reverse proxy. Example: `/auth` makes all routes available at `/auth/login`, `/auth/api/...`, `/auth/realms/...`. Leave empty when SimpleAuth is at the root path. |
 | `krb5_keytab` | `AUTH_KRB5_KEYTAB` | (none) | Path to Kerberos keytab file for SPNEGO authentication. Usually auto-configured via the admin UI. |
 | `krb5_realm` | `AUTH_KRB5_REALM` | (none) | Kerberos realm (e.g., `CORP.LOCAL`). |
 | `audit_retention` | `AUTH_AUDIT_RETENTION` | `2160h` | How long to keep audit log entries (default 90 days). Pruned daily. |

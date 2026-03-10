@@ -51,6 +51,7 @@ services:
       AUTH_AUDIT_RETENTION: "${AUTH_AUDIT_RETENTION:-2160h}"
       AUTH_CORS_ORIGINS: "${AUTH_CORS_ORIGINS:-}"
       AUTH_DEFAULT_ROLES: "${AUTH_DEFAULT_ROLES:-}"
+      AUTH_BASE_PATH: "${AUTH_BASE_PATH:-}"
       AUTH_DATA_DIR: "${AUTH_DATA_DIR:-/data}"
       # Kerberos (uncomment if needed)
       # AUTH_KRB5_KEYTAB: "/data/krb5.keytab"

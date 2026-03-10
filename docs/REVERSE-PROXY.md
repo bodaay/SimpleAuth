@@ -36,6 +36,47 @@ trusted_proxies:
   - "192.168.0.0/16"
 ```
 
+### Sub-path deployment (optional)
+
+To serve SimpleAuth at a sub-path (e.g., `https://example.com/auth/`) instead of the root:
+
+```bash
+AUTH_BASE_PATH=/auth
+```
+
+Or in `simpleauth.yaml`:
+
+```yaml
+base_path: "/auth"
+```
+
+This makes all routes available under `/auth/`:
+- `/auth/login` — hosted login page
+- `/auth/account` — user account page
+- `/auth/api/auth/login` — login API
+- `/auth/.well-known/openid-configuration` — OIDC discovery
+- `/auth/realms/{realm}/protocol/openid-connect/...` — OIDC endpoints
+
+Your nginx config should forward the path as-is (no stripping):
+
+```nginx
+location /auth/ {
+    proxy_pass http://simpleauth:8080;    # no trailing slash — path forwarded as-is
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+SDK clients should use the full URL including the path prefix:
+
+```go
+client := simpleauth.New(simpleauth.Options{
+    URL: "https://example.com/auth",
+})
+```
+
 ### Why `trusted_proxies` is important
 
 Without `trusted_proxies`, SimpleAuth trusts `X-Forwarded-For` and `X-Real-IP` headers from **any** client. An attacker can spoof these headers to:

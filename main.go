@@ -96,11 +96,11 @@ func main() {
 	if cfg.TLSDisabled {
 		scheme = "http"
 	}
-	log.Printf("Access: %s://%s:%s", scheme, cfg.Hostname, cfg.Port)
+	log.Printf("Access: %s://%s:%s%s", scheme, cfg.Hostname, cfg.Port, cfg.BasePath)
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				log.Printf("Access: %s://%s:%s", scheme, ipnet.IP, cfg.Port)
+				log.Printf("Access: %s://%s:%s%s", scheme, ipnet.IP, cfg.Port, cfg.BasePath)
 			}
 		}
 	}

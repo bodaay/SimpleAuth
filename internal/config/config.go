@@ -41,6 +41,7 @@ type Config struct {
 	TLSDisabled     bool          `yaml:"tls_disabled"`
 	TrustedProxies   []string      `yaml:"trusted_proxies"`
 	TrustedProxyCIDRs []*net.IPNet `yaml:"-"`
+	BasePath        string        `yaml:"base_path"`
 	AuditRetention  time.Duration `yaml:"audit_retention"`
 	RateLimitMax    int           `yaml:"rate_limit_max"`
 	RateLimitWindow time.Duration `yaml:"rate_limit_window"`
@@ -69,6 +70,7 @@ type configFile struct {
 	TLSKey          string `yaml:"tls_key"`
 	TLSDisabled     bool     `yaml:"tls_disabled"`
 	TrustedProxies  []string `yaml:"trusted_proxies"`
+	BasePath        string   `yaml:"base_path"`
 	AuditRetention  string `yaml:"audit_retention"`
 	RateLimitMax    int    `yaml:"rate_limit_max"`
 	RateLimitWindow string `yaml:"rate_limit_window"`
@@ -166,6 +168,17 @@ func Load() *Config {
 		log.Printf("Trusted proxies: %v", cfg.TrustedProxies)
 	}
 
+	// Normalize base path: ensure leading /, strip trailing /
+	if cfg.BasePath != "" {
+		cfg.BasePath = "/" + strings.Trim(cfg.BasePath, "/")
+		if cfg.BasePath == "/" {
+			cfg.BasePath = ""
+		}
+		if cfg.BasePath != "" {
+			log.Printf("Base path: %s", cfg.BasePath)
+		}
+	}
+
 	// Auto-generate OIDC client credentials if not configured
 	if cfg.ClientID == "" {
 		cfg.ClientID = "simpleauth"
@@ -223,6 +236,11 @@ impersonate_ttl: "1h"
 #   - "172.16.0.0/12"
 #   - "10.0.0.0/8"
 #   - "192.168.0.0/16"
+
+# Base path prefix for reverse proxy sub-path mounting (e.g., "/auth")
+# When set, SimpleAuth is accessible at https://hostname:port/auth/
+# Leave empty when SimpleAuth is at the root path (default)
+# base_path: ""
 
 # Kerberos settings (usually auto-configured via admin UI)
 # krb5_keytab: "/path/to/krb5.keytab"
@@ -349,6 +367,9 @@ func loadConfigFile(cfg *Config) {
 	if len(fc.TrustedProxies) > 0 {
 		cfg.TrustedProxies = fc.TrustedProxies
 	}
+	if fc.BasePath != "" {
+		cfg.BasePath = fc.BasePath
+	}
 	if fc.AuditRetention != "" {
 		if d, err := time.ParseDuration(fc.AuditRetention); err == nil {
 			cfg.AuditRetention = d
@@ -433,6 +454,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_TRUSTED_PROXIES"); v != "" {
 		cfg.TrustedProxies = strings.Split(v, ",")
+	}
+	if v := os.Getenv("AUTH_BASE_PATH"); v != "" {
+		cfg.BasePath = v
 	}
 	if v := os.Getenv("AUTH_AUDIT_RETENTION"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {

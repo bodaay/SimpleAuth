@@ -6,6 +6,7 @@ const html = htm.bind(h);
 
 // === API Helper ===
 const API_KEY_STORAGE = 'simpleauth_admin_key';
+const BASE_PATH = (window.__BASE_PATH__ || '');
 
 function getApiKey() { return localStorage.getItem(API_KEY_STORAGE) || ''; }
 function setApiKey(key) { localStorage.setItem(API_KEY_STORAGE, key); }
@@ -16,7 +17,7 @@ async function api(method, path, body) {
     headers: { 'Authorization': `Bearer ${getApiKey()}`, 'Content-Type': 'application/json' },
   };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
+  const res = await fetch(BASE_PATH + path, opts);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
@@ -1118,7 +1119,7 @@ function LDAPPage() {
 
   const downloadSetupScript = async () => {
     try {
-      const res = await fetch('/api/admin/setup-script', {
+      const res = await fetch(BASE_PATH + '/api/admin/setup-script', {
         headers: { 'Authorization': `Bearer ${getApiKey()}` },
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error); }

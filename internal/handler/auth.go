@@ -748,7 +748,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, negotiateTestWaitHTML)
+		fmt.Fprint(w, h.bp(negotiateTestWaitHTML))
 		return
 	}
 
@@ -764,7 +764,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	if isNTLMToken(tokenBytes) {
 		// NTLM fallback: show form with explanation
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, negotiateTestNTLMFallbackHTML)
+		fmt.Fprint(w, h.bp(negotiateTestNTLMFallbackHTML))
 		return
 	}
 
@@ -793,7 +793,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 			patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
 			if err3 := apReq.Ticket.DecryptEncPart(kt, nil); err3 != nil {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				fmt.Fprintf(w, negotiateTestKrbFailedHTML,
+				fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML),
 					"Kerberos ticket decryption failed: "+err3.Error())
 				return
 			}
@@ -803,7 +803,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		}
 		// Can't parse as SPNEGO or raw AP-REQ — fall back to login form
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Invalid SPNEGO token: "+err.Error())
+		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Invalid SPNEGO token: "+err.Error())
 		return
 	}
 
@@ -814,7 +814,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 
 	if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "No mechanism token in SPNEGO negotiation.")
+		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "No mechanism token in SPNEGO negotiation.")
 		return
 	}
 
@@ -824,7 +824,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	if isNTLMToken(mechBytes) {
 		log.Printf("[spnego] NTLM token detected inside SPNEGO")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, negotiateTestNTLMFallbackHTML)
+		fmt.Fprint(w, h.bp(negotiateTestNTLMFallbackHTML))
 		return
 	}
 
@@ -836,7 +836,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[spnego] AP-REQ unmarshal failed: %v, mechToken first bytes: %x", err, mechBytes[:min(32, len(mechBytes))])
 		// AP-REQ parse failed — fall back to login form
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, negotiateTestKrbFailedHTML, "Kerberos ticket could not be parsed: "+err.Error())
+		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Kerberos ticket could not be parsed: "+err.Error())
 		return
 	}
 
@@ -844,7 +844,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	if err = apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
 		// Ticket decryption failed — keytab mismatch
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, negotiateTestKrbFailedHTML,
+		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML),
 			"Kerberos ticket decryption failed: "+err.Error()+
 				". The keytab may not match the AD account (password changed, wrong encryption type, or SPN mismatch).")
 		return
@@ -883,7 +883,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 	password := r.FormValue("password")
 	if username == "" || password == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, negotiateTestFormErrorHTML)
+		fmt.Fprint(w, h.bp(negotiateTestFormErrorHTML))
 		return
 	}
 
@@ -914,7 +914,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 		}
 		log.Printf("[test-negotiate] All providers failed for user=%q: %s", username, errMsg)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, negotiateTestLoginFailedHTML, html.EscapeString(errMsg))
+		fmt.Fprintf(w, h.bp(negotiateTestLoginFailedHTML), html.EscapeString(errMsg))
 		return
 	}
 
@@ -1010,7 +1010,7 @@ func (h *Handler) enrichUserInfoFromLDAP(userInfo map[string]string, username st
 // renderNegotiateSuccess renders the success page with user info.
 func (h *Handler) renderNegotiateSuccess(w http.ResponseWriter, userInfo map[string]string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, negotiateTestSuccessHTML,
+	fmt.Fprintf(w, h.bp(negotiateTestSuccessHTML),
 		userInfo["auth_method"],
 		mapGet(userInfo, "principal", "-"),
 		mapGet(userInfo, "realm", "-"),
@@ -1074,7 +1074,7 @@ const negotiateTestWaitHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <p>Kerberos not available — enter your AD credentials</p>
 <div class="gold-bar"></div>
-<form method="POST" action="/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1095,7 +1095,7 @@ const negotiateTestNTLMFallbackHTML = `<!DOCTYPE html>
 <p>Kerberos unavailable (browser sent NTLM) — use credentials instead</p>
 <div class="gold-bar"></div>
 <div class="error">Your browser could not obtain a Kerberos ticket and fell back to NTLM. Check that the SPN matches the URL hostname and you are on the domain.</div>
-<form method="POST" action="/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1112,7 +1112,7 @@ const negotiateTestFormErrorHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
 <div class="error">Username and password are required.</div>
-<form method="POST" action="/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1130,7 +1130,7 @@ const negotiateTestKrbFailedHTML = `<!DOCTYPE html>
 <p>Kerberos authentication failed — use credentials instead</p>
 <div class="gold-bar"></div>
 <div class="error">%s</div>
-<form method="POST" action="/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1147,7 +1147,7 @@ const negotiateTestLoginFailedHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
 <div class="error">Authentication failed: %s</div>
-<form method="POST" action="/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
