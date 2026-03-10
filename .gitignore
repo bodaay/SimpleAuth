@@ -18,5 +18,9 @@ data/
 # Node (UI build)
 ui/node_modules/
 
+# Config (auto-generated on first run)
+simpleauth.yaml
+simpleauth.yml
+
 # Environment
 .env
