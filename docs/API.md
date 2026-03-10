@@ -142,13 +142,23 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 ```json
 {
   "guid": "550e8400-...",
+  "preferred_username": "jsmith",
   "display_name": "John Smith",
   "email": "jsmith@corp.local",
+  "department": "Engineering",
+  "company": "Acme Corp",
+  "job_title": "Software Engineer",
   "roles": ["admin"],
   "permissions": ["read:reports"],
-  "groups": ["CN=Engineering,..."]
+  "groups": ["CN=Engineering,..."],
+  "auth_source": "ldap"
 }
 ```
+
+| Field | Description |
+|---|---|
+| `preferred_username` | Local username, falls back to email or display name |
+| `auth_source` | `"local"` for password-based users, `"ldap"` for AD/LDAP users |
 
 ---
 
@@ -228,6 +238,22 @@ Reset a local user's password. Requires the current password.
 **Auth:** None
 
 Hosted login page. Renders a branded login form and handles form submission. Primarily used for the OIDC authorization code flow.
+
+On successful login without a `redirect_uri`, the user is redirected to `/account` with tokens in the URL fragment.
+
+---
+
+### `GET /account`
+
+**Auth:** None (page loads, then authenticates via JavaScript)
+
+User self-service page. Shows the authenticated user's profile information and allows password changes.
+
+- **Profile view** -- display name, email, username, department, company, job title, roles
+- **Password change** -- current password + new password (uses `POST /api/auth/reset-password` internally)
+- **LDAP users** -- password change form is hidden; shows a note that their password is managed by the directory
+
+The page reads the access token from the URL fragment (after login redirect) or from `sessionStorage`.
 
 ---
 

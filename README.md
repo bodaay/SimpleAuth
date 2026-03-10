@@ -192,7 +192,8 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 ### Operations
 - **Single binary** -- zero external dependencies, ~15MB, runs anywhere
 - **Embedded admin UI** -- Preact SPA with dark mode, no build step
-- **Always HTTPS** -- auto-generates self-signed certs, regenerates when hostname changes
+- **HTTPS or reverse proxy** -- auto-generates self-signed certs, or HTTP-only mode behind nginx/Traefik
+- **User self-service** -- `/account` page for profile view and password change
 - **Multi-LDAP/AD** -- connect multiple directories with priority-based failover
 - **Auto-discovery** -- point at a domain, SimpleAuth figures out DCs, base DN, and filters
 - **Backup/restore** -- live BoltDB snapshots via API
@@ -301,6 +302,8 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_IMPERSONATE_TTL` | `1h` | Impersonation token lifetime |
 | `AUTH_TLS_CERT` | auto-generated | TLS certificate path |
 | `AUTH_TLS_KEY` | auto-generated | TLS private key path |
+| `AUTH_TLS_DISABLED` | `false` | Disable TLS for reverse proxy mode (plain HTTP) |
+| `AUTH_TRUSTED_PROXIES` | | Trusted proxy CIDRs for X-Forwarded-For (comma-separated) |
 | `AUTH_KRB5_KEYTAB` | | Kerberos keytab path (usually auto-configured) |
 | `AUTH_KRB5_REALM` | | Kerberos realm (usually auto-configured) |
 | `AUTH_AUDIT_RETENTION` | `2160h` | Audit log retention (90 days) |
@@ -309,9 +312,20 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_CORS_ORIGINS` | | CORS origins (comma-separated or `*`) |
 | `AUTH_DEFAULT_ROLES` | | Default roles for new users on first login (comma-separated) |
 
+### Reverse Proxy (nginx / Traefik / Caddy)
+
+When running behind a reverse proxy, disable TLS and configure trusted proxies:
+
+```bash
+AUTH_TLS_DISABLED=true
+AUTH_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8"
+```
+
+See [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md) for full nginx/Traefik/Caddy/HAProxy examples and Docker Compose setup.
+
 ### TLS Certificates
 
-SimpleAuth **always runs over HTTPS**. If no certificate is configured:
+In standalone mode (no reverse proxy), SimpleAuth **always runs over HTTPS**. If no certificate is configured:
 
 - A self-signed ECDSA (P-256) certificate is generated in `{data_dir}/tls.crt`
 - Includes hostname, OS hostname, `localhost`, and all local IPs as SANs
@@ -333,6 +347,7 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 | `POST` | `/api/auth/impersonate` | Generate token as another user (admin) |
 | `POST` | `/api/auth/reset-password` | Change password (authenticated) |
 | `GET` | `/login` | Hosted login page (redirect flow) |
+| `GET` | `/account` | User self-service page (profile + password change) |
 | `GET` | `/auth/test-negotiate` | Kerberos SSO test page |
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |
 | `GET` | `/health` | Health check |
@@ -421,6 +436,7 @@ simpleauth
 │       ├── auth.go                # Login, refresh, negotiate, SPNEGO, impersonate
 │       ├── oidc.go                # OIDC/Keycloak compatibility layer
 │       ├── hosted_login.go        # Hosted login page (redirect flow)
+│       ├── account.go             # User self-service page (profile, password change)
 │       ├── admin.go               # User CRUD, roles, backup/restore, audit
 │       ├── admin_ldap.go          # LDAP management, auto-discover, import/export
 │       ├── admin_kerberos.go      # Kerberos setup, keytab generation, SPN mgmt
@@ -476,6 +492,7 @@ All attributes are editable per-provider in the admin UI. Changes in AD are auto
 | [Architecture](docs/ARCHITECTURE.md) | How it works under the hood |
 | [Active Directory Guide](docs/ACTIVE-DIRECTORY.md) | AD setup, Kerberos, troubleshooting |
 | [Keycloak Migration](docs/KEYCLOAK-MIGRATION.md) | Switching from Keycloak |
+| [Reverse Proxy](docs/REVERSE-PROXY.md) | nginx, Traefik, Caddy, HAProxy deployment |
 | [SDK Guide](docs/SDK-GUIDE.md) | Client SDK usage for all platforms |
 
 ## License

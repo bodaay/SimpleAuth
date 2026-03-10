@@ -2,13 +2,18 @@
 # SimpleAuth — Docker Compose
 # =============================================================================
 #
-# Quick start (minimal):
-#   docker compose up -d simpleauth
+# Quick start:
+#   cp .env.example .env    # Edit with your values
+#   docker compose up -d
 #
-# Full stack with nginx SSL termination:
-#   1. Place your TLS cert/key in deploy/nginx/certs/
+# Full stack with nginx TLS termination:
+#   1. Place TLS cert/key in deploy/nginx/certs/
 #   2. docker compose --profile full up -d
 #
+# With your app:
+#   docker compose --profile full --profile app up -d
+#
+# All config comes from .env — see .env.example for all options.
 # =============================================================================
 
 services:
@@ -26,47 +31,43 @@ services:
     restart: unless-stopped
 
     environment:
-      # --- Required -----------------------------------------------------------
-      AUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY:-}"                  # Master admin key (auto-generated if empty; set for persistence)
-
-      # --- Identity -----------------------------------------------------------
-      AUTH_HOSTNAME: "${AUTH_HOSTNAME:-localhost}"            # FQDN for TLS certificate SANs
-      AUTH_DEPLOYMENT_NAME: "${AUTH_DEPLOYMENT_NAME:-sauth}"   # Deployment name (max 6 chars, letters only; used in service account naming)
-
-      # --- Networking ---------------------------------------------------------
-      AUTH_PORT: "8080"                                      # HTTPS listen port inside container
-      AUTH_HTTP_PORT: ""                                      # Disable HTTP redirect (nginx handles it)
-
-      # --- JWT ----------------------------------------------------------------
+      # All values come from .env file (see .env.example)
+      AUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY:-}"
+      AUTH_HOSTNAME: "${AUTH_HOSTNAME:-localhost}"
+      AUTH_DEPLOYMENT_NAME: "${AUTH_DEPLOYMENT_NAME:-sauth}"
+      AUTH_PORT: "${AUTH_PORT:-8080}"
+      AUTH_HTTP_PORT: "${AUTH_HTTP_PORT:-}"
+      AUTH_TLS_DISABLED: "${AUTH_TLS_DISABLED:-true}"
+      AUTH_TRUSTED_PROXIES: "${AUTH_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}"
       AUTH_JWT_ISSUER: "${AUTH_JWT_ISSUER:-simpleauth}"
       AUTH_JWT_ACCESS_TTL: "${AUTH_JWT_ACCESS_TTL:-8h}"
       AUTH_JWT_REFRESH_TTL: "${AUTH_JWT_REFRESH_TTL:-720h}"
       AUTH_IMPERSONATE_TTL: "${AUTH_IMPERSONATE_TTL:-1h}"
-
-      # --- Kerberos / SPNEGO (optional) ---------------------------------------
+      AUTH_CLIENT_ID: "${AUTH_CLIENT_ID:-simpleauth}"
+      AUTH_CLIENT_SECRET: "${AUTH_CLIENT_SECRET:-}"
+      AUTH_REDIRECT_URIS: "${AUTH_REDIRECT_URIS:-}"
+      AUTH_RATE_LIMIT_MAX: "${AUTH_RATE_LIMIT_MAX:-10}"
+      AUTH_RATE_LIMIT_WINDOW: "${AUTH_RATE_LIMIT_WINDOW:-1m}"
+      AUTH_AUDIT_RETENTION: "${AUTH_AUDIT_RETENTION:-2160h}"
+      AUTH_CORS_ORIGINS: "${AUTH_CORS_ORIGINS:-}"
+      AUTH_DEFAULT_ROLES: "${AUTH_DEFAULT_ROLES:-}"
+      AUTH_DATA_DIR: "${AUTH_DATA_DIR:-/data}"
+      # Kerberos (uncomment if needed)
       # AUTH_KRB5_KEYTAB: "/data/krb5.keytab"
-      # AUTH_KRB5_REALM: "CORP.EXAMPLE.COM"
-
-      # --- TLS (optional — auto-generates self-signed if empty) ---------------
+      # AUTH_KRB5_REALM: "${AUTH_KRB5_REALM:-}"
+      # TLS (not needed when AUTH_TLS_DISABLED=true)
       # AUTH_TLS_CERT: "/data/tls.crt"
       # AUTH_TLS_KEY: "/data/tls.key"
 
-      # --- Security -----------------------------------------------------------
-      AUTH_RATE_LIMIT_MAX: "${AUTH_RATE_LIMIT_MAX:-10}"
-      AUTH_RATE_LIMIT_WINDOW: "${AUTH_RATE_LIMIT_WINDOW:-1m}"
-      AUTH_AUDIT_RETENTION: "${AUTH_AUDIT_RETENTION:-2160h}"  # 90 days
-      AUTH_CORS_ORIGINS: "${AUTH_CORS_ORIGINS:-}"
-
     volumes:
-      - simpleauth-data:/data          # BoltDB, auto-generated certs, keytabs
+      - simpleauth-data:/data
 
     ports:
-      - "${SIMPLEAUTH_PORT:-8080}:8080"
+      - "${SIMPLEAUTH_PORT:-8080}:${AUTH_PORT:-8080}"
 
     networks:
       - simpleauth-net
 
-    # Resource limits — adjust to your workload
     deploy:
       resources:
         limits:
@@ -95,11 +96,8 @@ services:
       - "443:443"
 
     volumes:
-      # Mount your real TLS certificates here
       - ./deploy/nginx/certs/fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
       - ./deploy/nginx/certs/privkey.pem:/etc/nginx/ssl/privkey.pem:ro
-      # Optional: mount custom nginx.conf
-      # - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
 
     networks:
       - simpleauth-net
@@ -108,6 +106,27 @@ services:
       resources:
         limits:
           memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # Example: Your app — shares AUTH_ADMIN_KEY from the same .env file
+  # Activate with: docker compose --profile app up -d
+  # ---------------------------------------------------------------------------
+  # myapp:
+  #   profiles: ["app"]
+  #   image: your-app:latest
+  #   container_name: myapp
+  #   restart: unless-stopped
+  #   environment:
+  #     # Same AUTH_ADMIN_KEY from .env — no duplication needed
+  #     SIMPLEAUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY:-}"
+  #     SIMPLEAUTH_URL: "http://simpleauth:${AUTH_PORT:-8080}"
+  #     # Or if your app uses different env var names:
+  #     # AUTH_SERVER: "http://simpleauth:8080"
+  #     # AUTH_KEY: "${AUTH_ADMIN_KEY:-}"
+  #   networks:
+  #     - simpleauth-net
+  #   depends_on:
+  #     - simpleauth
 
 volumes:
   simpleauth-data:

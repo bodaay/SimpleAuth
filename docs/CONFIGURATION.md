@@ -49,6 +49,8 @@ SimpleAuth looks for a config file in this order:
 | `impersonate_ttl` | `AUTH_IMPERSONATE_TTL` | `1h` | Token lifetime for impersonation tokens. |
 | `tls_cert` | `AUTH_TLS_CERT` | (auto-generated) | Path to TLS certificate file. If not set, SimpleAuth generates a self-signed cert in `data_dir`. |
 | `tls_key` | `AUTH_TLS_KEY` | (auto-generated) | Path to TLS private key file. |
+| `tls_disabled` | `AUTH_TLS_DISABLED` | `false` | Disable TLS and serve plain HTTP. Use when behind a reverse proxy (nginx, Traefik, etc.) that handles TLS termination. |
+| `trusted_proxies` | `AUTH_TRUSTED_PROXIES` | (none) | Comma-separated list of trusted proxy IPs/CIDRs. `X-Forwarded-For` and `X-Real-IP` headers are only trusted from these addresses. If empty, headers are trusted from any source. Example: `172.16.0.0/12,10.0.0.0/8` |
 | `krb5_keytab` | `AUTH_KRB5_KEYTAB` | (none) | Path to Kerberos keytab file for SPNEGO authentication. Usually auto-configured via the admin UI. |
 | `krb5_realm` | `AUTH_KRB5_REALM` | (none) | Kerberos realm (e.g., `CORP.LOCAL`). |
 | `audit_retention` | `AUTH_AUDIT_RETENTION` | `2160h` | How long to keep audit log entries (default 90 days). Pruned daily. |
@@ -261,6 +263,55 @@ On first startup, SimpleAuth auto-generates several things if they don't already
 3. **TLS certificate** -- `{data_dir}/tls.crt` and `{data_dir}/tls.key` (self-signed, 10-year validity, includes all local IPs in SANs)
 4. **RSA signing keys** -- Stored in the database, used for JWT signing (RS256)
 5. **Admin key** -- Printed to logs if not configured
+
+---
+
+## Reverse Proxy Deployment
+
+When running SimpleAuth behind a reverse proxy (nginx, Traefik, HAProxy, etc.), configure it for HTTP-only mode:
+
+```yaml
+# simpleauth.yaml
+tls_disabled: true
+trusted_proxies:
+  - "172.16.0.0/12"
+  - "10.0.0.0/8"
+  - "192.168.0.0/16"
+```
+
+Or via environment variables:
+
+```bash
+AUTH_TLS_DISABLED=true
+AUTH_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+```
+
+### Why trusted proxies matter
+
+When behind a reverse proxy, the client's real IP comes from `X-Forwarded-For` or `X-Real-IP` headers set by the proxy. Without `trusted_proxies`, anyone can spoof these headers and bypass IP-based rate limiting or pollute audit logs with fake IPs.
+
+Set `trusted_proxies` to your proxy's network range so SimpleAuth only trusts forwarded headers from known proxies. For Docker networks, `172.16.0.0/12` covers the default bridge range.
+
+### Nginx example
+
+See [deploy/nginx/nginx.conf](../deploy/nginx/nginx.conf) for a production-ready nginx config. Key points:
+
+- nginx terminates TLS (with your real certificate)
+- Proxies to SimpleAuth over plain HTTP inside the Docker network
+- Forwards `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto` headers
+- Large header buffers for Kerberos/SPNEGO tokens
+- Rate limiting at the nginx level (defense in depth)
+
+### Docker Compose with nginx
+
+```bash
+# Start SimpleAuth with nginx reverse proxy
+docker compose --profile full up -d
+```
+
+Place your TLS certificates in `deploy/nginx/certs/`:
+- `fullchain.pem` — certificate chain
+- `privkey.pem` — private key
 
 ---
 
