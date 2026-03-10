@@ -10,9 +10,6 @@
 # ---------------------------------------------------------------------------
 FROM golang:1.24-alpine AS builder
 
-# Build dependencies for CGO (needed for certain native extensions)
-RUN apk add --no-cache gcc musl-dev
-
 WORKDIR /src
 
 # Cache module downloads before copying full source
@@ -27,7 +24,7 @@ ARG VERSION=docker
 ARG BUILD_TIME=""
 
 RUN if [ -z "$BUILD_TIME" ]; then BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); fi && \
-    CGO_ENABLED=1 go build \
+    CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
       -o /simpleauth \
@@ -42,7 +39,7 @@ FROM alpine:3.19
 LABEL org.opencontainers.image.title="SimpleAuth" \
       org.opencontainers.image.description="Lightweight authentication server with LDAP, Kerberos/SPNEGO, and JWT support" \
       org.opencontainers.image.vendor="SimpleAuth" \
-      org.opencontainers.image.source="https://github.com/simpleauth/simpleauth" \
+      org.opencontainers.image.source="https://github.com/bodaay/SimpleAuth" \
       org.opencontainers.image.licenses="MIT"
 
 # Runtime dependencies:
@@ -74,9 +71,10 @@ ENV AUTH_DATA_DIR=/data \
 # Expose the HTTPS port (the app handles its own TLS)
 EXPOSE 8080
 
-# Health check: the app serves HTTPS with a self-signed cert, so use -k
+# Health check: use /health endpoint (works with both HTTP and HTTPS modes)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-check-certificate --spider -q https://localhost:8080/health || exit 1
+  CMD wget --no-check-certificate --spider -q https://localhost:8080/health 2>/dev/null || \
+      wget --spider -q http://localhost:8080/health || exit 1
 
 # Run as non-root
 USER simpleauth
