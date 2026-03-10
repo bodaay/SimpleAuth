@@ -114,6 +114,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	// Hosted login page
 	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)
 	h.mux.HandleFunc("POST /login", h.handleHostedLoginSubmit)
+	h.mux.HandleFunc("GET /login/sso", h.handleSSOLogin)
 
 	// User self-service account page
 	h.mux.HandleFunc("GET /account", h.handleAccountPage)
@@ -183,11 +184,6 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("PUT /api/admin/role-permissions", h.requireMasterAdmin(h.handleSetRolePermissions))
 	h.mux.HandleFunc("GET /api/admin/roles", h.requireMasterAdmin(h.handleListAllRoles))
 	h.mux.HandleFunc("GET /api/admin/permissions", h.requireMasterAdmin(h.handleListAllPermissions))
-
-	// Admin: One-Time Tokens
-	h.mux.HandleFunc("GET /api/admin/tokens", h.requireMasterAdmin(h.handleListTokens))
-	h.mux.HandleFunc("POST /api/admin/tokens", h.requireMasterAdmin(h.handleCreateToken))
-	h.mux.HandleFunc("DELETE /api/admin/tokens/{token}", h.requireMasterAdmin(h.handleDeleteToken))
 
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))

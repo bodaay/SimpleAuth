@@ -24,8 +24,17 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 		errorHTML = `<div class="error">` + errorMsg + `</div>`
 	}
 
+	ssoHTML := ""
+	if h.getKeytabPath() != "" {
+		ssoLink := h.url("/login/sso")
+		if redirectURI != "" {
+			ssoLink += "?redirect_uri=" + url.QueryEscape(redirectURI)
+		}
+		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML)
+	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoHTML)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
@@ -140,7 +149,6 @@ const hostedLoginHTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign In — SimpleAuth</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #FAFAF8; --card: #FFFFFF; --text: #333F48; --muted: #A59F8A;
@@ -154,7 +162,7 @@ const hostedLoginHTML = `<!DOCTYPE html>
   --error-bg:rgba(139,21,61,0.2);--error-text:#D4A0A0;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
 .card{width:400px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1)}
 .brand{text-align:center;margin-bottom:32px}
 .brand h1{font-size:1.5rem;font-weight:700;margin-bottom:4px}
@@ -166,6 +174,11 @@ input{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(
 input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
 button{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
 button:hover{background:var(--burgundy-hover)}
+.sso-btn{display:block;width:100%%;padding:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-weight:600;text-align:center;text-decoration:none;font-family:inherit;cursor:pointer}
+.sso-btn:hover{border-color:var(--burgundy);color:var(--burgundy)}
+.divider{display:flex;align-items:center;margin:20px 0;gap:12px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.divider span{color:var(--muted);font-size:0.75rem;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -173,6 +186,7 @@ button:hover{background:var(--burgundy-hover)}
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
   %[2]s
+  %[3]s
   <form method="POST" action="{{BASE_PATH}}/login">
     <input type="hidden" name="redirect_uri" value="%[1]s">
     <label>Username</label>

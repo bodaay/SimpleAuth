@@ -587,68 +587,6 @@ func (h *Handler) handleQueryAudit(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, entries, http.StatusOK)
 }
 
-// --- One-Time Tokens ---
-
-func (h *Handler) handleListTokens(w http.ResponseWriter, r *http.Request) {
-	scope := r.URL.Query().Get("scope")
-	tokens, err := h.store.ListOneTimeTokens(scope)
-	if err != nil {
-		jsonError(w, "failed to list tokens", http.StatusInternalServerError)
-		return
-	}
-	if tokens == nil {
-		tokens = []*store.OneTimeToken{}
-	}
-	jsonResp(w, tokens, http.StatusOK)
-}
-
-func (h *Handler) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Scope string `json:"scope"`
-		Label string `json:"label"`
-		TTL   string `json:"ttl"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.Scope == "" {
-		jsonError(w, "scope required", http.StatusBadRequest)
-		return
-	}
-
-	ttl := 24 * time.Hour // default 24h
-	if req.TTL != "" {
-		parsed, err := time.ParseDuration(req.TTL)
-		if err != nil {
-			jsonError(w, "invalid ttl duration", http.StatusBadRequest)
-			return
-		}
-		ttl = parsed
-	}
-
-	tok, err := h.store.CreateOneTimeToken(req.Scope, req.Label, ttl)
-	if err != nil {
-		jsonError(w, "failed to create token", http.StatusInternalServerError)
-		return
-	}
-
-	h.audit("token_created", "admin", getClientIP(r), map[string]interface{}{
-		"token": tok.Token, "scope": req.Scope, "label": req.Label,
-	})
-
-	jsonResp(w, tok, http.StatusCreated)
-}
-
-func (h *Handler) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
-	token := pathParam(r, "token")
-	if err := h.store.DeleteOneTimeToken(token); err != nil {
-		jsonError(w, "failed to delete token", http.StatusInternalServerError)
-		return
-	}
-	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
-}
-
 // --- AD/LDAP Sync ---
 
 // handleSyncUser syncs a single user's profile from the LDAP provider.

@@ -6,6 +6,7 @@ import (
 	"html"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -870,6 +871,215 @@ func (h *Handler) completeKerberosAuth(w http.ResponseWriter, r *http.Request, a
 
 	h.enrichUserInfoFromLDAP(userInfo, username)
 	h.renderNegotiateSuccess(w, userInfo)
+}
+
+// handleSSOLogin handles redirect-based SPNEGO authentication.
+// GET /login/sso?redirect_uri=... — browser triggers SPNEGO, on success redirects with tokens.
+func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
+	redirectURI := r.URL.Query().Get("redirect_uri")
+
+	// Validate redirect_uri
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+
+	// No auth header — send Negotiate challenge or fail
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Negotiate ") {
+		keytabPath := h.getKeytabPath()
+		if keytabPath == "" {
+			h.redirectToLoginError(w, r, redirectURI, "Kerberos not configured")
+			return
+		}
+
+		// If we already sent the challenge (sso_attempt=1) and the browser
+		// still didn't respond with a Negotiate token, SSO has failed.
+		if r.URL.Query().Get("sso_attempt") == "1" {
+			h.redirectToLoginError(w, r, redirectURI, "SSO authentication failed — your browser did not provide Kerberos credentials")
+			return
+		}
+
+		// First visit — send the 401 challenge
+		retryURL := h.url("/login/sso") + "?sso_attempt=1"
+		if redirectURI != "" {
+			retryURL += "&redirect_uri=" + url.QueryEscape(redirectURI)
+		}
+		w.Header().Set("WWW-Authenticate", "Negotiate")
+		w.WriteHeader(http.StatusUnauthorized)
+		// Redirect to self with sso_attempt=1 so we can detect failure
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=%s"></head><body><p>Authenticating...</p></body></html>`, html.EscapeString(retryURL))
+		return
+	}
+
+	// Decode SPNEGO token
+	tokenB64 := authHeader[10:]
+	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
+	if err != nil {
+		h.redirectToLoginError(w, r, redirectURI, "Invalid Negotiate token")
+		return
+	}
+
+	if isNTLMToken(tokenBytes) {
+		h.redirectToLoginError(w, r, redirectURI, "NTLM is not supported, Kerberos required")
+		return
+	}
+
+	keytabPath := h.getKeytabPath()
+	if keytabPath == "" {
+		h.redirectToLoginError(w, r, redirectURI, "Kerberos not configured")
+		return
+	}
+
+	kt, err := keytab.Load(keytabPath)
+	if err != nil {
+		h.redirectToLoginError(w, r, redirectURI, "Kerberos configuration error")
+		return
+	}
+
+	// Extract username from SPNEGO/Kerberos token
+	username, err := h.extractKerberosUsername(tokenBytes, kt)
+	if err != nil {
+		log.Printf("[sso] Kerberos auth failed: %v", err)
+		h.redirectToLoginError(w, r, redirectURI, "Kerberos authentication failed")
+		return
+	}
+
+	// Resolve or create user via LDAP lookup + JIT provisioning
+	userGUID, ldapGroups, err := h.resolveKerberosUser(username)
+	if err != nil {
+		log.Printf("[sso] User resolution failed for %q: %v", username, err)
+		h.redirectToLoginError(w, r, redirectURI, "User not found in directory")
+		return
+	}
+
+	user, err := h.store.ResolveUser(userGUID)
+	if err != nil {
+		h.redirectToLoginError(w, r, redirectURI, "User not found")
+		return
+	}
+	if user.Disabled {
+		h.redirectToLoginError(w, r, redirectURI, "Account disabled")
+		return
+	}
+
+	h.assignDefaultRoles(user.GUID)
+
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, ldapGroups)
+	if err != nil {
+		h.redirectToLoginError(w, r, redirectURI, "Token generation failed")
+		return
+	}
+
+	ip := getClientIP(r)
+	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
+
+	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
+		url.QueryEscape(accessToken),
+		url.QueryEscape(refreshToken),
+		expiresIn,
+	)
+
+	if redirectURI != "" {
+		http.Redirect(w, r, redirectURI+"#"+fragment, http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
+}
+
+// extractKerberosUsername validates a SPNEGO/Kerberos token and returns the username.
+func (h *Handler) extractKerberosUsername(tokenBytes []byte, kt *keytab.Keytab) (string, error) {
+	// Try SPNEGO-wrapped token first
+	var spnegoToken spnego.SPNEGOToken
+	if err := spnegoToken.Unmarshal(tokenBytes); err == nil {
+		if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
+			return "", fmt.Errorf("no mechanism token in SPNEGO")
+		}
+		mechBytes := spnegoToken.NegTokenInit.MechTokenBytes
+		if isNTLMToken(mechBytes) {
+			return "", fmt.Errorf("NTLM not supported")
+		}
+		mechBytes = stripGSSAPIWrapper(mechBytes)
+		var apReq krbmsg.APReq
+		if err := apReq.Unmarshal(mechBytes); err != nil {
+			return "", fmt.Errorf("AP-REQ parse failed: %w", err)
+		}
+		patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
+		if err := apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
+			return "", fmt.Errorf("ticket decryption failed: %w", err)
+		}
+		cname := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
+		if idx := strings.Index(cname, "@"); idx > 0 {
+			return cname[:idx], nil
+		}
+		return cname, nil
+	}
+
+	// Try raw AP-REQ
+	var apReq krbmsg.APReq
+	if err := apReq.Unmarshal(tokenBytes); err != nil {
+		return "", fmt.Errorf("invalid token: not SPNEGO or AP-REQ")
+	}
+	patchKeytabKVNO(kt, apReq.Ticket.EncPart.KVNO)
+	if err := apReq.Ticket.DecryptEncPart(kt, nil); err != nil {
+		return "", fmt.Errorf("ticket decryption failed: %w", err)
+	}
+	cname := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
+	if idx := strings.Index(cname, "@"); idx > 0 {
+		return cname[:idx], nil
+	}
+	return cname, nil
+}
+
+// resolveKerberosUser looks up a Kerberos-authenticated user by sAMAccountName,
+// creates via JIT provisioning if needed, and returns the user GUID and LDAP groups.
+func (h *Handler) resolveKerberosUser(username string) (string, []string, error) {
+	// Check existing identity mapping
+	if guid, err := h.store.ResolveMapping("local", username); err == nil {
+		user, err := h.store.ResolveUser(guid)
+		if err == nil {
+			// Fetch LDAP groups
+			var groups []string
+			providers, _ := h.store.ListLDAPProviders()
+			for _, p := range providers {
+				cfg := ldapConfigFromProvider(p)
+				result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+				if err == nil {
+					groups = result.Groups
+					h.syncUserFromLDAP(user, result)
+					break
+				}
+			}
+			return user.GUID, groups, nil
+		}
+	}
+
+	// JIT provisioning: search LDAP, create user, set mappings
+	providers, _ := h.store.ListLDAPProviders()
+	for _, p := range providers {
+		cfg := ldapConfigFromProvider(p)
+		result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+		if err != nil {
+			continue
+		}
+		newUser := &store.User{
+			DisplayName: result.DisplayName,
+			Email:       result.Email,
+			Department:  result.Department,
+			Company:     result.Company,
+			JobTitle:    result.JobTitle,
+		}
+		h.store.CreateUser(newUser)
+		h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, newUser.GUID)
+		h.store.SetIdentityMapping("local", username, newUser.GUID)
+		log.Printf("[sso] JIT provisioned user %q (GUID=%s) from LDAP provider %q", username, newUser.GUID, p.Name)
+		return newUser.GUID, result.Groups, nil
+	}
+
+	return "", nil, fmt.Errorf("user %q not found in any LDAP provider", username)
 }
 
 // handleNegotiateTestForm handles the fallback login form (POST).
