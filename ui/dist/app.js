@@ -241,6 +241,8 @@ function UsersPage() {
     if (apps.length > 0) loadRolesPerms(user.guid, apps[0].app_id);
   };
 
+  const [appRoleDefs, setAppRoleDefs] = useState({});
+
   const loadRolesPerms = async (guid, appId) => {
     if (!appId) return;
     try {
@@ -251,6 +253,10 @@ function UsersPage() {
       const p = await api('GET', `/api/admin/apps/${appId}/users/${guid}/permissions`);
       setPerms(p || []);
     } catch { setPerms([]); }
+    try {
+      const rp = await api('GET', `/api/admin/apps/${appId}/role-permissions`);
+      setAppRoleDefs(rp || {});
+    } catch { setAppRoleDefs({}); }
   };
 
   const onAppChange = (appId) => {
@@ -460,22 +466,50 @@ function UsersPage() {
                 `)}
                 ${roles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
               </div>
+              ${Object.keys(appRoleDefs).length > 0 && html`
+                <div style="margin-bottom:var(--sp-1)">
+                  <span style="font-size:0.7rem;color:var(--text-muted)">Available: </span>
+                  ${Object.keys(appRoleDefs).filter(r => !roles.includes(r)).map(r => html`
+                    <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
+                      const updated = [...roles, r];
+                      api('PUT', '/api/admin/apps/' + selectedApp + '/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast('Role added'); }).catch(e => showToast(e.message, 'error'));
+                    }}>+ ${r}</button>
+                  `)}
+                  ${Object.keys(appRoleDefs).filter(r => !roles.includes(r)).length === 0 && html`<span style="font-size:0.7rem;color:var(--text-muted)">all assigned</span>`}
+                </div>
+              `}
               <div style="display:flex;gap:var(--sp-1)">
-                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
+                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
                 <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
               </div>
             </div>
 
             <div>
-              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Permissions</label>
+              <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Direct Permissions</label>
+              <div class="form-help" style="font-size:0.7rem;margin-bottom:var(--sp-1)">Extra permissions for this user, on top of what their roles grant.</div>
               <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
                 ${perms.map(p => html`
                   <span class="badge" style="cursor:pointer" onClick=${() => removePerm(p)}>${p} ×</span>
                 `)}
                 ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
               </div>
+              ${(() => {
+                const allDefinedPerms = [...new Set(Object.values(appRoleDefs).flat())];
+                const available = allDefinedPerms.filter(p => !perms.includes(p));
+                return available.length > 0 && html`
+                  <div style="margin-bottom:var(--sp-1)">
+                    <span style="font-size:0.7rem;color:var(--text-muted)">Known: </span>
+                    ${available.map(p => html`
+                      <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
+                        const updated = [...perms, p];
+                        api('PUT', '/api/admin/apps/' + selectedApp + '/users/' + detail.guid + '/permissions', updated).then(() => { setPerms(updated); showToast('Permission added'); }).catch(e => showToast(e.message, 'error'));
+                      }}>+ ${p}</button>
+                    `)}
+                  </div>
+                `;
+              })()}
               <div style="display:flex;gap:var(--sp-1)">
-                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+                <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
                 <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
               </div>
             </div>
