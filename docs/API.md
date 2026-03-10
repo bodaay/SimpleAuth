@@ -776,6 +776,40 @@ Set the role-to-permissions mapping.
 
 ---
 
+### `GET /api/admin/roles`
+
+**Auth:** Admin
+
+List all unique roles across all users.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/roles
+```
+
+```json
+["admin", "editor", "user", "viewer"]
+```
+
+---
+
+### `GET /api/admin/permissions`
+
+**Auth:** Admin
+
+List all unique permissions across all users and the role-permissions mapping.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/permissions
+```
+
+```json
+["delete:all", "read:all", "write:all"]
+```
+
+---
+
 ## Admin: LDAP Providers
 
 ### `GET /api/admin/ldap`
@@ -800,7 +834,7 @@ Create a new LDAP provider.
   "name": "Corporate Active Directory",
   "url": "ldaps://dc01.corp.local:636",
   "base_dn": "DC=corp,DC=local",
-  "bind_dn": "CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local",
+  "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
   "bind_password": "ServiceAccountPassword",
   "user_filter": "(sAMAccountName={0})",
   "use_tls": true,
@@ -903,6 +937,54 @@ Remove Kerberos configuration (delete SPN, clean up keytab).
 **Auth:** Admin
 
 Check the status of Kerberos configuration (keytab exists, SPN configured, etc.).
+
+---
+
+### `GET /api/admin/setup-script`
+
+**Auth:** Admin
+
+Download an interactive PowerShell script for AD setup. The script has the SimpleAuth hostname pre-injected and offers:
+- Create a new service account or use an existing one
+- OU selection for new accounts
+- SPN registration for Kerberos
+- Config JSON export for one-click import into the admin UI
+
+Returns a `.ps1` file with UTF-8 BOM encoding.
+
+---
+
+### `POST /api/admin/ldap/{provider_id}/sync-user`
+
+**Auth:** Admin
+
+Sync a single user's profile from AD. Looks up the user by sAMAccountName in the LDAP provider, then updates their SimpleAuth profile (display name, email, department, company, job title).
+
+```bash
+curl -k -X POST \
+  https://localhost:8080/api/admin/ldap/corp-ad/sync-user \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "jsmith"}'
+```
+
+---
+
+### `POST /api/admin/ldap/{provider_id}/sync-all`
+
+**Auth:** Admin
+
+Sync all users mapped to this LDAP provider. Iterates all non-merged users with an `ldap:{provider_id}` identity mapping and updates their profiles from AD.
+
+```bash
+curl -k -X POST \
+  https://localhost:8080/api/admin/ldap/corp-ad/sync-all \
+  -H "Authorization: Bearer ADMIN_KEY"
+```
+
+```json
+{"synced": 42, "errors": 0}
+```
 
 ---
 

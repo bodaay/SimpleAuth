@@ -33,15 +33,17 @@ Create a dedicated service account in AD for SimpleAuth. This account is used to
 ### Option B: Using PowerShell
 
 ```powershell
-New-ADUser -Name "svc-simpleauth" `
-  -SamAccountName "svc-simpleauth" `
-  -UserPrincipalName "svc-simpleauth@corp.local" `
+New-ADUser -Name "svc-sauth-prod" `
+  -SamAccountName "svc-sauth-prod" `
+  -UserPrincipalName "svc-sauth-prod@corp.local" `
   -Path "OU=Service Accounts,DC=corp,DC=local" `
   -AccountPassword (ConvertTo-SecureString "YourStrongPassword" -AsPlainText -Force) `
   -PasswordNeverExpires $true `
   -CannotChangePassword $true `
   -Enabled $true
 ```
+
+> **Tip:** Use the server-side setup script instead — it handles all of this automatically including SPN registration and config export. Download it from the admin UI ("AD Script" button) or `GET /api/admin/setup-script`.
 
 ### Required Permissions
 
@@ -65,7 +67,7 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
     "name": "Corporate Active Directory",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
-    "bind_dn": "CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local",
+    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "YourStrongPassword",
     "user_filter": "(sAMAccountName={0})",
     "use_tls": true,
@@ -123,7 +125,7 @@ curl -k -X POST https://auth.corp.local:8080/api/auth/login \
 |---|---|---|
 | `url` | `ldaps://dc01.corp.local:636` | LDAP server URL. Use `ldaps://` for LDAPS (port 636) or `ldap://` for StartTLS (port 389). |
 | `base_dn` | `DC=corp,DC=local` | Base DN for user searches. Use your domain's DN. |
-| `bind_dn` | `CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local` | Full DN of the service account. |
+| `bind_dn` | `CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local` | Full DN of the service account. |
 | `bind_password` | (string) | Service account password. |
 | `use_tls` | `true` | Enable TLS. Should always be `true` in production. |
 | `skip_tls_verify` | `false` | Skip TLS certificate verification. Only for testing. |
@@ -205,7 +207,7 @@ If you prefer to set things up manually:
 
 ```powershell
 # On a domain controller or machine with RSAT tools
-setspn -S HTTP/auth.corp.local svc-simpleauth
+setspn -S HTTP/auth.corp.local svc-sauth-prod
 ```
 
 **2. Generate a keytab:**
@@ -319,7 +321,7 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
     "name": "corp.local",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
-    "bind_dn": "CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local",
+    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "Password1",
     "user_filter": "(sAMAccountName={0})",
     "priority": 10
@@ -334,7 +336,7 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
     "name": "subsidiary.com",
     "url": "ldaps://dc01.subsidiary.com:636",
     "base_dn": "DC=subsidiary,DC=com",
-    "bind_dn": "CN=svc-simpleauth,OU=Service Accounts,DC=subsidiary,DC=com",
+    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=subsidiary,DC=com",
     "bind_password": "Password2",
     "user_filter": "(sAMAccountName={0})",
     "priority": 20
@@ -373,7 +375,7 @@ After merging, the user gets a single GUID. Both LDAP identities map to the same
 ### "LDAP test failed: invalid credentials"
 
 - Verify the Bind DN is the full distinguished name, not just the username
-- Try the DN in `ldapsearch`: `ldapsearch -H ldaps://dc01.corp.local -D "CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local" -w password -b "DC=corp,DC=local" "(sAMAccountName=testuser)"`
+- Try the DN in `ldapsearch`: `ldapsearch -H ldaps://dc01.corp.local -D "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local" -w password -b "DC=corp,DC=local" "(sAMAccountName=testuser)"`
 - Check if the service account is locked out or disabled
 
 ### "User not found" when logging in
@@ -396,7 +398,7 @@ After merging, the user gets a single GUID. Both LDAP identities map to the same
 
 ### Kerberos not working
 
-- Verify the SPN exists: `setspn -L svc-simpleauth`
+- Verify the SPN exists: `setspn -L svc-sauth-prod`
 - Check that the hostname in the URL matches the SPN: `HTTP/auth.corp.local`
 - Verify DNS resolves the hostname from the client machine
 - Check `klist` on a client machine to see if a ticket was obtained

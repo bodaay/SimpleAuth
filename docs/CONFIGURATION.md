@@ -55,6 +55,7 @@ SimpleAuth looks for a config file in this order:
 | `rate_limit_max` | `AUTH_RATE_LIMIT_MAX` | `10` | Maximum login attempts per IP within the rate limit window. |
 | `rate_limit_window` | `AUTH_RATE_LIMIT_WINDOW` | `1m` | Rate limit sliding window duration. |
 | `cors_origins` | `AUTH_CORS_ORIGINS` | (none) | Allowed CORS origins. Comma-separated list or `*` for all. Example: `https://app1.example.com,https://app2.example.com` |
+| `default_roles` | `AUTH_DEFAULT_ROLES` | (none) | Default roles assigned to new users on first login. Comma-separated in env var, YAML list in config file. Example: `user,viewer` |
 
 ---
 

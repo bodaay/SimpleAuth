@@ -118,7 +118,7 @@ The script is **fully interactive** and **idempotent**:
   (e.g. simpleauth.corp.local) or press Enter to skip.
 
   SimpleAuth hostname: auth.corp.local
-  Registering SPN: HTTP/auth.corp.local on svc-simpleauth
+  Registering SPN: HTTP/auth.corp.local on svc-sauth-sauth
   SPN registered successfully
 
   [4/4] Exporting config...
@@ -307,6 +307,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_RATE_LIMIT_MAX` | `10` | Max login attempts per window |
 | `AUTH_RATE_LIMIT_WINDOW` | `1m` | Rate limit window |
 | `AUTH_CORS_ORIGINS` | | CORS origins (comma-separated or `*`) |
+| `AUTH_DEFAULT_ROLES` | | Default roles for new users on first login (comma-separated) |
 
 ### TLS Certificates
 
@@ -358,7 +359,10 @@ All admin endpoints require either `Authorization: Bearer <admin-key>` or a vali
 | **Roles** | `GET/PUT /api/admin/users/{guid}/roles`, `GET/PUT /api/admin/users/{guid}/permissions` |
 | **Default Roles** | `GET/PUT /api/admin/defaults/roles` |
 | **Role-Permissions** | `GET/PUT /api/admin/role-permissions` |
+| **All Roles/Perms** | `GET /api/admin/roles`, `GET /api/admin/permissions` |
 | **LDAP** | CRUD `/api/admin/ldap`, auto-discover, import/export, test connection |
+| **AD Sync** | `POST /api/admin/ldap/:id/sync-user`, `POST /api/admin/ldap/:id/sync-all` |
+| **AD Setup Script** | `GET /api/admin/setup-script` (interactive PowerShell with hostname pre-injected) |
 | **Kerberos** | Setup, cleanup, status via `/api/admin/ldap/:id/setup-kerberos` |
 | **Mappings** | Identity mappings CRUD, resolve |
 | **Operations** | Backup, restore, audit log, server info |
