@@ -61,7 +61,7 @@ curl -k -X POST https://localhost:8080/api/admin/ldap \
     "name": "Corporate AD",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
-    "bind_dn": "CN=svc-simpleauth,OU=Service Accounts,DC=corp,DC=local",
+    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "YourServiceAccountPassword",
     "user_filter": "(sAMAccountName={0})",
     "use_tls": true,
