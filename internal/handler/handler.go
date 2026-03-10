@@ -108,8 +108,8 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/auth/userinfo", h.handleUserInfo)
 	h.mux.HandleFunc("POST /api/auth/impersonate", h.requireMasterAdmin(h.handleImpersonate))
 	h.mux.HandleFunc("GET /api/auth/negotiate", h.handleNegotiate)
-	h.mux.HandleFunc("GET /auth/test-negotiate", h.handleNegotiateTest)
-	h.mux.HandleFunc("POST /auth/test-negotiate", h.handleNegotiateTestForm)
+	h.mux.HandleFunc("GET /test-negotiate", h.handleNegotiateTest)
+	h.mux.HandleFunc("POST /test-negotiate", h.handleNegotiateTestForm)
 
 	// Hosted login page
 	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)

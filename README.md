@@ -355,7 +355,7 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 | `POST` | `/api/auth/reset-password` | Change password (authenticated) |
 | `GET` | `/login` | Hosted login page (redirect flow) |
 | `GET` | `/account` | User self-service page (profile + password change) |
-| `GET` | `/auth/test-negotiate` | Kerberos SSO test page |
+| `GET` | `/test-negotiate` | Kerberos SSO test page |
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |
 | `GET` | `/health` | Health check |
 

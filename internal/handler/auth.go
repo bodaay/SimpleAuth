@@ -736,7 +736,7 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleNegotiateTest serves a Kerberos/SPNEGO test page.
-// GET /auth/test-negotiate — browser triggers SPNEGO, falls back to login form.
+// GET /test-negotiate — browser triggers SPNEGO, falls back to login form.
 func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 
@@ -1074,7 +1074,7 @@ const negotiateTestWaitHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <p>Kerberos not available — enter your AD credentials</p>
 <div class="gold-bar"></div>
-<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1095,7 +1095,7 @@ const negotiateTestNTLMFallbackHTML = `<!DOCTYPE html>
 <p>Kerberos unavailable (browser sent NTLM) — use credentials instead</p>
 <div class="gold-bar"></div>
 <div class="error">Your browser could not obtain a Kerberos ticket and fell back to NTLM. Check that the SPN matches the URL hostname and you are on the domain.</div>
-<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1112,7 +1112,7 @@ const negotiateTestFormErrorHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
 <div class="error">Username and password are required.</div>
-<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1130,7 +1130,7 @@ const negotiateTestKrbFailedHTML = `<!DOCTYPE html>
 <p>Kerberos authentication failed — use credentials instead</p>
 <div class="gold-bar"></div>
 <div class="error">%s</div>
-<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1147,7 +1147,7 @@ const negotiateTestLoginFailedHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
 <div class="error">Authentication failed: %s</div>
-<form method="POST" action="{{BASE_PATH}}/auth/test-negotiate">
+<form method="POST" action="{{BASE_PATH}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>

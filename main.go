@@ -92,15 +92,26 @@ func main() {
 	log.Printf("Data directory: %s", cfg.DataDir)
 
 	// Print access URLs
-	scheme := "https"
 	if cfg.TLSDisabled {
-		scheme = "http"
-	}
-	log.Printf("Access: %s://%s:%s%s", scheme, cfg.Hostname, cfg.Port, cfg.BasePath)
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				log.Printf("Access: %s://%s:%s%s", scheme, ipnet.IP, cfg.Port, cfg.BasePath)
+		// Behind reverse proxy — show the public URL and internal Docker/container URL
+		log.Printf("Public URL:   https://%s%s", cfg.Hostname, cfg.BasePath)
+		internalHost, _ := os.Hostname()
+		if internalHost == "" {
+			internalHost = "0.0.0.0"
+		}
+		log.Printf("Internal URL: http://%s:%s%s", internalHost, cfg.Port, cfg.BasePath)
+	} else {
+		port := cfg.Port
+		portSuffix := ":" + port
+		if port == "443" {
+			portSuffix = ""
+		}
+		log.Printf("Access: https://%s%s%s", cfg.Hostname, portSuffix, cfg.BasePath)
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, a := range addrs {
+				if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+					log.Printf("Access: https://%s%s%s", ipnet.IP, portSuffix, cfg.BasePath)
+				}
 			}
 		}
 	}

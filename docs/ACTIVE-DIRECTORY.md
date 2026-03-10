@@ -245,7 +245,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### Test Kerberos Authentication
 
-Open `https://auth.corp.local:8080/auth/test-negotiate` in a browser on a domain-joined machine. If Kerberos is working, you'll see your identity without entering a password.
+Open `https://auth.corp.local:8080/test-negotiate` in a browser on a domain-joined machine. If Kerberos is working, you'll see your identity without entering a password.
 
 ### Browser Configuration
 
@@ -402,7 +402,7 @@ After merging, the user gets a single GUID. Both LDAP identities map to the same
 - Check that the hostname in the URL matches the SPN: `HTTP/auth.corp.local`
 - Verify DNS resolves the hostname from the client machine
 - Check `klist` on a client machine to see if a ticket was obtained
-- Try the test page: `https://auth.corp.local:8080/auth/test-negotiate`
+- Try the test page: `https://auth.corp.local:8080/test-negotiate`
 - Check SimpleAuth logs for "negotiate_failed" audit entries
 
 ### Multiple people with the same username across domains
