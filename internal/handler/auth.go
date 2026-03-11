@@ -322,13 +322,21 @@ func (h *Handler) assignDefaultRoles(userGUID string) {
 	}
 }
 
-// resolvePreferredUsername finds the local username for a user from identity mappings.
+// resolvePreferredUsername finds the username for a user from identity mappings.
+// Priority: local mapping > ldap mapping > email > display name.
 func (h *Handler) resolvePreferredUsername(user *store.User) string {
 	mappings, _ := h.store.GetMappingsForUser(user.GUID)
+	var ldapUsername string
 	for _, m := range mappings {
 		if m.Provider == "local" {
 			return m.ExternalID
 		}
+		if m.Provider == "ldap" && ldapUsername == "" {
+			ldapUsername = m.ExternalID
+		}
+	}
+	if ldapUsername != "" {
+		return ldapUsername
 	}
 	// Fallback: email or display name
 	if user.Email != "" {
