@@ -11,90 +11,81 @@ import (
 	"simpleauth/internal/store"
 )
 
-func (h *Handler) handleListLDAP(w http.ResponseWriter, r *http.Request) {
-	providers, err := h.store.ListLDAPProviders()
+// handleGetLDAPConfig returns the current LDAP configuration (or null if not configured).
+// GET /api/admin/ldap
+func (h *Handler) handleGetLDAPConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "failed to list ldap providers", http.StatusInternalServerError)
+		jsonResp(w, nil, http.StatusOK)
 		return
 	}
-	if providers == nil {
-		providers = []*store.LDAPProvider{}
+	// Mask password in response
+	resp := *cfg
+	if resp.BindPassword != "" {
+		resp.BindPassword = "••••••••"
 	}
-	jsonResp(w, providers, http.StatusOK)
+	jsonResp(w, resp, http.StatusOK)
 }
 
-func (h *Handler) handleCreateLDAP(w http.ResponseWriter, r *http.Request) {
-	var p store.LDAPProvider
-	if err := readJSON(r, &p); err != nil {
+// handleSaveLDAPConfig saves or updates the LDAP configuration.
+// PUT /api/admin/ldap
+func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg store.LDAPConfig
+	if err := readJSON(r, &cfg); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if p.ProviderID == "" {
-		jsonError(w, "provider_id required", http.StatusBadRequest)
-		return
-	}
-	if err := h.store.CreateLDAPProvider(&p); err != nil {
-		jsonError(w, "failed to create ldap provider", http.StatusInternalServerError)
+	if cfg.URL == "" || cfg.BaseDN == "" {
+		jsonError(w, "url and base_dn are required", http.StatusBadRequest)
 		return
 	}
 
-	h.audit("ldap_provider_added", "admin", getClientIP(r), map[string]interface{}{"provider_id": p.ProviderID})
+	// If password is masked, preserve existing password
+	if cfg.BindPassword == "••••••••" {
+		existing, err := h.store.GetLDAPConfig()
+		if err == nil {
+			cfg.BindPassword = existing.BindPassword
+		}
+	}
 
-	jsonResp(w, p, http.StatusCreated)
+	// Preserve configured_at if updating
+	existing, err := h.store.GetLDAPConfig()
+	if err == nil {
+		cfg.ConfiguredAt = existing.ConfiguredAt
+	}
+
+	if err := h.store.SaveLDAPConfig(&cfg); err != nil {
+		jsonError(w, "failed to save ldap config", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("ldap_config_saved", "admin", getClientIP(r), map[string]interface{}{"url": cfg.URL})
+
+	jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
 }
 
-func (h *Handler) handleGetLDAP(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
-	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+// handleDeleteLDAPConfig removes the LDAP configuration.
+// DELETE /api/admin/ldap
+func (h *Handler) handleDeleteLDAPConfig(w http.ResponseWriter, r *http.Request) {
+	if err := h.store.DeleteLDAPConfig(); err != nil {
+		jsonError(w, "failed to delete ldap config", http.StatusInternalServerError)
 		return
 	}
-	jsonResp(w, p, http.StatusOK)
-}
-
-func (h *Handler) handleUpdateLDAP(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	existing, err := h.store.GetLDAPProvider(providerID)
-	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
-		return
-	}
-
-	var p store.LDAPProvider
-	if err := readJSON(r, &p); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	p.ProviderID = providerID
-	p.CreatedAt = existing.CreatedAt
-
-	if err := h.store.UpdateLDAPProvider(&p); err != nil {
-		jsonError(w, "failed to update ldap provider", http.StatusInternalServerError)
-		return
-	}
-	jsonResp(w, p, http.StatusOK)
-}
-
-func (h *Handler) handleDeleteLDAP(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	if err := h.store.DeleteLDAPProvider(providerID); err != nil {
-		jsonError(w, "failed to delete ldap provider", http.StatusInternalServerError)
-		return
-	}
+	h.audit("ldap_config_removed", "admin", getClientIP(r), nil)
 	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
 }
 
-func (h *Handler) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
+// handleTestLDAPConfig tests connection to the configured LDAP server.
+// POST /api/admin/ldap/test
+func (h *Handler) handleTestLDAPConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
 
-	cfg := ldapConfigFromProvider(p)
-	if err := auth.LDAPTestConnection(cfg); err != nil {
+	authCfg := ldapConfigFromStore(cfg)
+	if err := auth.LDAPTestConnection(authCfg); err != nil {
 		jsonResp(w, map[string]interface{}{
 			"status": "error",
 			"error":  err.Error(),
@@ -104,52 +95,131 @@ func (h *Handler) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
 }
 
-func (h *Handler) handleExportLDAP(w http.ResponseWriter, r *http.Request) {
-	providers, err := h.store.ListLDAPProviders()
+// handleTestLDAPUser searches for a user in LDAP and returns the mapped attributes.
+// POST /api/admin/ldap/test-user
+// Body: {"username": "alice"}
+func (h *Handler) handleTestLDAPUser(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "failed to export", http.StatusInternalServerError)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
-	jsonResp(w, map[string]interface{}{"ldap_providers": providers}, http.StatusOK)
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" {
+		jsonError(w, "username required", http.StatusBadRequest)
+		return
+	}
+
+	authCfg := ldapConfigFromStore(cfg)
+	result, err := auth.LDAPSearchUser(authCfg, "sAMAccountName", req.Username)
+	if err != nil {
+		jsonResp(w, map[string]interface{}{
+			"status": "error",
+			"error":  err.Error(),
+		}, http.StatusOK)
+		return
+	}
+
+	jsonResp(w, map[string]interface{}{
+		"status":       "ok",
+		"display_name": result.DisplayName,
+		"email":        result.Email,
+		"department":   result.Department,
+		"company":      result.Company,
+		"job_title":    result.JobTitle,
+		"groups":       result.Groups,
+		"dn":           result.DN,
+		"username":     result.Username,
+	}, http.StatusOK)
 }
 
+// handleImportLDAP imports LDAP config from the PowerShell-generated JSON.
+// POST /api/admin/ldap/import
 func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		LDAPProviders   []store.LDAPProvider `json:"ldap_providers"`
-		ServiceHostname string               `json:"service_hostname"`
-		SPN             string               `json:"spn"`
+		Server          string `json:"server"`
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		Domain          string `json:"domain"`
+		BaseDN          string `json:"base_dn"`
+		ServiceHostname string `json:"service_hostname"`
+		SPN             string `json:"spn"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	imported := 0
-	var lastProviderID string
-	for _, p := range req.LDAPProviders {
-		if p.ProviderID == "" {
-			continue
-		}
-		// Upsert
-		existing, err := h.store.GetLDAPProvider(p.ProviderID)
-		if err != nil {
-			h.store.CreateLDAPProvider(&p)
-		} else {
-			p.CreatedAt = existing.CreatedAt
-			h.store.UpdateLDAPProvider(&p)
-		}
-		lastProviderID = p.ProviderID
-		imported++
+	if req.Server == "" || req.Username == "" || req.Password == "" {
+		jsonError(w, "server, username, and password required", http.StatusBadRequest)
+		return
 	}
+
+	// Normalize server URL
+	serverURL := req.Server
+	if !strings.Contains(serverURL, "://") {
+		serverURL = "ldap://" + serverURL
+	}
+	afterScheme := serverURL[strings.Index(serverURL, "://")+3:]
+	if !strings.Contains(afterScheme, ":") {
+		if strings.HasPrefix(serverURL, "ldaps://") {
+			serverURL += ":636"
+		} else {
+			serverURL += ":389"
+		}
+	}
+
+	// Build bind DN
+	bindDN := req.Username
+	if !strings.Contains(bindDN, "=") && !strings.Contains(bindDN, "@") && !strings.Contains(bindDN, "\\") {
+		if req.Domain != "" {
+			bindDN = req.Username + "@" + req.Domain
+		}
+	}
+
+	// Derive base DN from domain if not provided
+	baseDN := req.BaseDN
+	if baseDN == "" && req.Domain != "" {
+		var parts []string
+		for _, p := range strings.Split(req.Domain, ".") {
+			parts = append(parts, "DC="+p)
+		}
+		baseDN = strings.Join(parts, ",")
+	}
+
+	cfg := &store.LDAPConfig{
+		URL:             serverURL,
+		BaseDN:          baseDN,
+		BindDN:          bindDN,
+		BindPassword:    req.Password,
+		UserFilter:      "(sAMAccountName={{username}})",
+		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
+		DisplayNameAttr: "displayName",
+		EmailAttr:       "mail",
+		DepartmentAttr:  "department",
+		CompanyAttr:     "company",
+		JobTitleAttr:    "title",
+		GroupsAttr:      "memberOf",
+		Domain:          req.Domain,
+	}
+
+	if err := h.store.SaveLDAPConfig(cfg); err != nil {
+		jsonError(w, "failed to save ldap config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("ldap_config_imported", "admin", getClientIP(r), map[string]interface{}{"url": cfg.URL})
 
 	resp := map[string]interface{}{
-		"status":   "ok",
-		"imported": imported,
+		"status": "ok",
 	}
 
-	// Auto-trigger Kerberos setup if the config includes SPN/service_hostname
-	if req.ServiceHostname != "" && lastProviderID != "" {
-		krbResult, krbErr := h.autoSetupKerberos(lastProviderID, req.ServiceHostname, r)
+	// Auto-trigger Kerberos setup if service_hostname provided
+	if req.ServiceHostname != "" {
+		krbResult, krbErr := h.autoSetupKerberos(req.ServiceHostname, r)
 		if krbErr != nil {
 			resp["kerberos_error"] = krbErr.Error()
 		} else {
@@ -160,6 +230,8 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, resp, http.StatusOK)
 }
 
+// handleAutoDiscoverLDAP connects to a server, discovers config, and saves it.
+// POST /api/admin/ldap/auto-discover
 func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Server   string `json:"server"`
@@ -180,7 +252,6 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	if !strings.Contains(serverURL, "://") {
 		serverURL = "ldap://" + serverURL
 	}
-	// Add default port if missing
 	afterScheme := serverURL[strings.Index(serverURL, "://")+3:]
 	if !strings.Contains(afterScheme, ":") {
 		if strings.HasPrefix(serverURL, "ldaps://") {
@@ -198,7 +269,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	}
 	defer conn.Close()
 
-	// Step 2: Query RootDSE (anonymous) to get base DN and domain info
+	// Step 2: Query RootDSE to get base DN
 	sr, err := conn.Search(ldaplib.NewSearchRequest(
 		"", ldaplib.ScopeBaseObject, ldaplib.NeverDerefAliases, 0, 10, false,
 		"(objectClass=*)", []string{"defaultNamingContext", "rootDomainNamingContext", "dnsHostName"}, nil,
@@ -213,7 +284,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		baseDN = sr.Entries[0].GetAttributeValue("defaultNamingContext")
 	}
 
-	// Derive domain from baseDN (DC=corp,DC=local -> corp.local)
+	// Derive domain from baseDN
 	domain := ""
 	if baseDN != "" {
 		var domainParts []string
@@ -226,10 +297,9 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		domain = strings.Join(domainParts, ".")
 	}
 
-	// Build bind DN from username - support multiple formats
+	// Build bind DN
 	bindDN := req.Username
 	if !strings.Contains(bindDN, "=") && !strings.Contains(bindDN, "@") && !strings.Contains(bindDN, "\\") {
-		// Plain username like "admin" - try UPN format first if we know the domain
 		if domain != "" {
 			bindDN = req.Username + "@" + domain
 		}
@@ -241,7 +311,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// If we still don't have baseDN, try RootDSE again after bind
+	// If we still don't have baseDN, try again after bind
 	if baseDN == "" {
 		sr2, err := conn.Search(ldaplib.NewSearchRequest(
 			"", ldaplib.ScopeBaseObject, ldaplib.NeverDerefAliases, 0, 10, false,
@@ -253,13 +323,12 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	}
 
 	if baseDN == "" {
-		jsonError(w, "connected and authenticated, but could not determine base DN — use manual setup", http.StatusUnprocessableEntity)
+		jsonError(w, "connected but could not determine base DN — use manual setup", http.StatusUnprocessableEntity)
 		return
 	}
 
-	// Detect user filter: check if this is Active Directory or standard LDAP
+	// Detect user filter
 	userFilter := "(uid={{username}})"
-	// Try to detect AD by directly searching for any object with sAMAccountName
 	adTest, _ := conn.Search(ldaplib.NewSearchRequest(
 		baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
 		"(&(objectClass=person)(sAMAccountName=*))", []string{"sAMAccountName"}, nil,
@@ -268,27 +337,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		userFilter = "(sAMAccountName={{username}})"
 	}
 
-	// Generate provider ID from domain or server
-	providerID := "ldap"
-	if domain != "" {
-		providerID = strings.ReplaceAll(domain, ".", "-")
-	} else {
-		// Use server hostname
-		host := afterScheme
-		if idx := strings.Index(host, ":"); idx >= 0 {
-			host = host[:idx]
-		}
-		providerID = strings.ReplaceAll(host, ".", "-")
-	}
-
-	providerName := serverURL + " (auto-discovered)"
-	if domain != "" {
-		providerName = domain + " (auto-discovered)"
-	}
-
-	provider := &store.LDAPProvider{
-		ProviderID:      providerID,
-		Name:            providerName,
+	cfg := &store.LDAPConfig{
 		URL:             serverURL,
 		BaseDN:          baseDN,
 		BindDN:          bindDN,
@@ -301,15 +350,20 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		CompanyAttr:     "company",
 		JobTitleAttr:    "title",
 		GroupsAttr:      "memberOf",
+		Domain:          domain,
 	}
 
-	if err := h.store.CreateLDAPProvider(provider); err != nil {
+	if err := h.store.SaveLDAPConfig(cfg); err != nil {
 		jsonError(w, "auto-discover succeeded but save failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.audit("ldap_provider_added", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": provider.ProviderID, "auto_discovered": true,
+
+	h.audit("ldap_config_saved", "admin", getClientIP(r), map[string]interface{}{
+		"url": cfg.URL, "auto_discovered": true,
 	})
 
-	jsonResp(w, provider, http.StatusOK)
+	// Mask password in response
+	resp := *cfg
+	resp.BindPassword = "••••••••"
+	jsonResp(w, resp, http.StatusOK)
 }

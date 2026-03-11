@@ -111,6 +111,11 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /test-negotiate", h.handleNegotiateTest)
 	h.mux.HandleFunc("POST /test-negotiate", h.handleNegotiateTestForm)
 
+	// Root redirect
+	h.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, h.url("/login"), http.StatusFound)
+	})
+
 	// Hosted login page
 	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)
 	h.mux.HandleFunc("POST /login", h.handleHostedLoginSubmit)
@@ -135,21 +140,19 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 		}, http.StatusOK)
 	}))
 
-	// Admin: LDAP Providers
-	h.mux.HandleFunc("GET /api/admin/ldap", h.requireMasterAdmin(h.handleListLDAP))
-	h.mux.HandleFunc("POST /api/admin/ldap", h.requireMasterAdmin(h.handleCreateLDAP))
-	h.mux.HandleFunc("GET /api/admin/ldap/export", h.requireMasterAdmin(h.handleExportLDAP))
-	h.mux.HandleFunc("POST /api/admin/ldap/import", h.requireMasterAdmin(h.handleImportLDAP))
+	// Admin: LDAP Config (single)
+	h.mux.HandleFunc("GET /api/admin/ldap", h.requireMasterAdmin(h.handleGetLDAPConfig))
+	h.mux.HandleFunc("PUT /api/admin/ldap", h.requireMasterAdmin(h.handleSaveLDAPConfig))
+	h.mux.HandleFunc("DELETE /api/admin/ldap", h.requireMasterAdmin(h.handleDeleteLDAPConfig))
+	h.mux.HandleFunc("POST /api/admin/ldap/test", h.requireMasterAdmin(h.handleTestLDAPConfig))
+	h.mux.HandleFunc("POST /api/admin/ldap/test-user", h.requireMasterAdmin(h.handleTestLDAPUser))
 	h.mux.HandleFunc("POST /api/admin/ldap/auto-discover", h.requireMasterAdmin(h.handleAutoDiscoverLDAP))
-	h.mux.HandleFunc("GET /api/admin/ldap/{provider_id}", h.requireMasterAdmin(h.handleGetLDAP))
-	h.mux.HandleFunc("PUT /api/admin/ldap/{provider_id}", h.requireMasterAdmin(h.handleUpdateLDAP))
-	h.mux.HandleFunc("DELETE /api/admin/ldap/{provider_id}", h.requireMasterAdmin(h.handleDeleteLDAP))
-	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/test", h.requireMasterAdmin(h.handleTestLDAP))
-	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/setup-kerberos", h.requireMasterAdmin(h.handleSetupKerberos))
-	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/cleanup-kerberos", h.requireMasterAdmin(h.handleCleanupKerberos))
+	h.mux.HandleFunc("POST /api/admin/ldap/import", h.requireMasterAdmin(h.handleImportLDAP))
+	h.mux.HandleFunc("POST /api/admin/ldap/setup-kerberos", h.requireMasterAdmin(h.handleSetupKerberos))
+	h.mux.HandleFunc("POST /api/admin/ldap/cleanup-kerberos", h.requireMasterAdmin(h.handleCleanupKerberos))
+	h.mux.HandleFunc("POST /api/admin/ldap/sync-user", h.requireMasterAdmin(h.handleSyncUser))
+	h.mux.HandleFunc("POST /api/admin/ldap/sync-all", h.requireMasterAdmin(h.handleSyncAll))
 	h.mux.HandleFunc("GET /api/admin/setup-script", h.requireMasterAdmin(h.handleSetupScript))
-	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/sync-user", h.requireMasterAdmin(h.handleSyncUser))
-	h.mux.HandleFunc("POST /api/admin/ldap/{provider_id}/sync-all", h.requireMasterAdmin(h.handleSyncAll))
 	h.mux.HandleFunc("GET /api/admin/kerberos/status", h.requireMasterAdmin(h.handleKerberosStatus))
 
 	// Admin: Users
@@ -195,7 +198,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	// OIDC / Keycloak-compatible endpoints
 	h.registerOIDCRoutes()
 
-	// Hosted login page + UI
+	// Admin UI at /admin
 	if uiFS != nil {
 		// Pre-process index.html to inject __BASE_PATH__ and rewrite asset paths
 		indexData, _ := fs.ReadFile(uiFS, "index.html")
@@ -204,22 +207,39 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 			bp := h.cfg.BasePath
 			injection := fmt.Sprintf("<script>window.__BASE_PATH__=%q;</script>", bp)
 			content = strings.Replace(content, "<head>", "<head>\n  "+injection, 1)
-			if bp != "" {
-				content = strings.ReplaceAll(content, `href="/`, `href="`+bp+`/`)
-				content = strings.ReplaceAll(content, `src="/`, `src="`+bp+`/`)
-				content = strings.ReplaceAll(content, `"/vendor/`, `"`+bp+`/vendor/`)
-			}
+			// Always rewrite asset paths to include /admin prefix
+			adminPrefix := bp + "/admin"
+			content = strings.ReplaceAll(content, `href="/`, `href="`+adminPrefix+`/`)
+			content = strings.ReplaceAll(content, `src="/`, `src="`+adminPrefix+`/`)
+			content = strings.ReplaceAll(content, `"/vendor/`, `"`+adminPrefix+`/vendor/`)
 			indexData = []byte(content)
 		}
 
 		fileServer := http.FileServerFS(uiFS)
-		h.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			if indexData != nil && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
+		h.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+			if indexData != nil {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.Write(indexData)
 				return
 			}
-			fileServer.ServeHTTP(w, r)
+			http.Redirect(w, r, h.url("/admin/"), http.StatusMovedPermanently)
+		})
+		h.mux.HandleFunc("GET /admin/{path...}", func(w http.ResponseWriter, r *http.Request) {
+			p := r.PathValue("path")
+			if p == "" || p == "index.html" {
+				if indexData != nil {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Write(indexData)
+					return
+				}
+			}
+			// Strip /admin/ prefix so the file server finds the file in the embedded FS
+			r2 := new(http.Request)
+			*r2 = *r
+			r2.URL = new(url.URL)
+			*r2.URL = *r.URL
+			r2.URL.Path = "/" + p
+			fileServer.ServeHTTP(w, r2)
 		})
 	}
 }
@@ -277,7 +297,7 @@ func (h *Handler) audit(event, actor, ip string, data map[string]interface{}) {
 	}
 }
 
-func ldapConfigFromProvider(p *store.LDAPProvider) *auth.LDAPConfig {
+func ldapConfigFromStore(p *store.LDAPConfig) *auth.LDAPConfig {
 	return &auth.LDAPConfig{
 		URL:             p.URL,
 		BaseDN:          p.BaseDN,

@@ -595,18 +595,25 @@ function UsersPage() {
   `;
 }
 
-// === LDAP Providers Page ===
+// === LDAP Settings Page ===
 function LDAPPage() {
-  const [providers, setProviders] = useState([]);
-  const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({});
-  const [testResult, setTestResult] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [ldapConfig, setLdapConfig] = useState(null); // null = loading, false = not configured
   const [krbStatus, setKrbStatus] = useState(null);
   const [serverInfo, setServerInfo] = useState({});
+  const [toast, setToast] = useState(null);
+  const [wizardStep, setWizardStep] = useState(0); // 0=connect, 1=verify, 2=sso, 3=done
+  const [form, setForm] = useState({});
+  const [modal, setModal] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState(null); // null, 'ok', 'error'
+  const [testUserResult, setTestUserResult] = useState(null);
+  const [editing, setEditing] = useState(null); // which section is being edited
 
   const load = () => {
-    api('GET', '/api/admin/ldap').then(setProviders).catch(() => {});
+    api('GET', '/api/admin/ldap').then(cfg => {
+      setLdapConfig(cfg || false);
+      if (cfg && cfg.url) setConnectionStatus('ok');
+    }).catch(() => setLdapConfig(false));
     api('GET', '/api/admin/kerberos/status').then(setKrbStatus).catch(() => {});
     api('GET', '/api/admin/server-info').then(setServerInfo).catch(() => {});
   };
@@ -618,439 +625,134 @@ function LDAPPage() {
     toastTimeout = setTimeout(() => setToast(null), 3000);
   };
 
-  const saveProvider = async () => {
-    const payload = {
-      ...form,
-      use_tls: form.use_tls === true || form.use_tls === 'true',
-      skip_tls_verify: form.skip_tls_verify === true || form.skip_tls_verify === 'true',
-      priority: parseInt(form.priority) || 0,
-    };
+  // --- Wizard Actions ---
+  const autoDiscover = async () => {
     try {
-      if (form._editing) {
-        await api('PUT', `/api/admin/ldap/${form.provider_id}`, payload);
-      } else {
-        await api('POST', '/api/admin/ldap', payload);
-      }
-      setModal(null);
-      setForm({});
-      load();
-      showToast(form._editing ? 'Provider updated' : 'Provider added');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const createProvider = async () => {
-    try {
-      await api('POST', '/api/admin/ldap', {
-        ...form,
-        use_tls: form.use_tls === 'true',
-        skip_tls_verify: form.skip_tls_verify === 'true',
-        priority: parseInt(form.priority) || 0,
+      const result = await api('POST', '/api/admin/ldap/auto-discover', {
+        server: form.server, username: form.username, password: form.password
       });
-      setModal(null);
-      setForm({});
-      load();
-      showToast('LDAP provider added');
+      setLdapConfig(result);
+      setConnectionStatus('ok');
+      setWizardStep(1);
+      showToast('Connected and configured');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  const testConnection = async (providerId) => {
+  const saveManualConfig = async () => {
     try {
-      const result = await api('POST', `/api/admin/ldap/${providerId}/test`);
-      showToast(result.status === 'ok' ? 'Connection successful' : `Error: ${result.error}`, result.status === 'ok' ? 'success' : 'error');
+      await api('PUT', '/api/admin/ldap', form);
+      const result = await api('POST', '/api/admin/ldap/test');
+      if (result.status === 'ok') {
+        setConnectionStatus('ok');
+        setWizardStep(1);
+        showToast('Connected');
+      } else {
+        setConnectionStatus('error');
+        showToast('Saved but connection failed: ' + (result.error || ''), 'error');
+      }
+      load();
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  const generateScript = () => {
-    const acct = form.script_account || 'svc-sauth-simpleauth';
-    const pw = form.script_password || '';
-    if (!pw) { showToast('Password is required', 'error'); return; }
-    // Escape for PowerShell single-quoted strings: ' becomes ''
-    const psEscSingle = (s) => s.replace(/'/g, "''");
-    const safeAcct = psEscSingle(acct);
-    const safePw = psEscSingle(pw);
-    // Build script as array of lines to avoid template literal issues
-    const lines = [
-      '#Requires -Modules ActiveDirectory',
-      '<#',
-      '.SYNOPSIS',
-      '    SimpleAuth AD Setup / Cleanup Script',
-      '.DESCRIPTION',
-      '    Interactive script to set up or remove a SimpleAuth service account in AD.',
-      '    Run on a Domain Controller or a machine with RSAT AD tools.',
-      '    Requires Domain Admin or Account Operator privileges.',
-      '#>',
-      '',
-      '$ErrorActionPreference = "Stop"',
-      "$AccountName = '" + safeAcct + "'",
-      "$AccountPassword = '" + safePw + "'",
-      '',
-      '# -- Check admin privileges ----------------------------------------',
-      '$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()',
-      '$adminRole = [Security.Principal.WindowsBuiltInRole]::Administrator',
-      '$isAdmin = (New-Object Security.Principal.WindowsPrincipal($currentUser)).IsInRole($adminRole)',
-      '',
-      '# -- Header -------------------------------------------------------',
-      'Write-Host ""',
-      'Write-Host "  ========================================" -ForegroundColor Cyan',
-      'Write-Host "       SimpleAuth  AD  Manager" -ForegroundColor Cyan',
-      'Write-Host "  ========================================" -ForegroundColor Cyan',
-      'Write-Host ""',
-      'if (-not $isAdmin) {',
-      '    Write-Host "  WARNING: Not running as Administrator." -ForegroundColor Yellow',
-      '    Write-Host "  You may get Access Denied errors. Right-click PowerShell" -ForegroundColor Yellow',
-      '    Write-Host "  and select Run as Administrator if this fails." -ForegroundColor Yellow',
-      '    Write-Host ""',
-      '}',
-      '',
-      '# -- Detect domain ------------------------------------------------',
-      '$domain = Get-ADDomain',
-      '$domainDNS = $domain.DNSRoot',
-      '$domainDN = $domain.DistinguishedName',
-      '$dc = (Get-ADDomainController -Discover -DomainName $domainDNS).HostName[0]',
-      '',
-      'Write-Host "  Domain:    $domainDNS" -ForegroundColor White',
-      'Write-Host "  Base DN:   $domainDN" -ForegroundColor White',
-      'Write-Host "  DC:        $dc" -ForegroundColor White',
-      'Write-Host ""',
-      '',
-      '# -- Check if account already exists --------------------------------',
-      '$adFilter = "sAMAccountName -eq \'$AccountName\'"',
-      '$existingUser = Get-ADUser -Filter $adFilter -Properties servicePrincipalName -ErrorAction SilentlyContinue',
-      '',
-      'if ($existingUser) {',
-      '    $existingSPNs = $existingUser.servicePrincipalName',
-      '    Write-Host "  Account \'$AccountName\' already exists in AD." -ForegroundColor Yellow',
-      '    if ($existingSPNs) {',
-      '        Write-Host "  SPNs registered: $($existingSPNs -join \', \')" -ForegroundColor Yellow',
-      '    }',
-      '    Write-Host ""',
-      '    Write-Host "  What would you like to do?" -ForegroundColor White',
-      '    Write-Host "    1) Re-run setup (update password, re-export config)" -ForegroundColor White',
-      '    Write-Host "    2) Remove everything (delete SPNs, disable/delete account)" -ForegroundColor White',
-      '    Write-Host "    3) Exit" -ForegroundColor White',
-      '    Write-Host ""',
-      '    $choice = Read-Host "Enter choice [1]"',
-      '    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }',
-      '    Write-Host ""',
-      '',
-      '    if ($choice -eq "3") {',
-      '        Write-Host "  Exiting." -ForegroundColor White',
-      '        exit 0',
-      '    }',
-      '',
-      '    if ($choice -eq "2") {',
-      '        # ---- CLEANUP MODE ----',
-      '        Write-Host "  ---- Cleanup Mode ----" -ForegroundColor Red',
-      '        Write-Host ""',
-      '',
-      '        # Remove SPNs',
-      '        if ($existingSPNs) {',
-      '            foreach ($s in $existingSPNs) {',
-      '                Write-Host "  Removing SPN: $s" -ForegroundColor White',
-      '                try {',
-      '                    $null = & setspn -D $s $AccountName 2>&1',
-      '                    Write-Host "    Removed." -ForegroundColor Green',
-      '                } catch {',
-      '                    Write-Host "    Failed to remove: $_" -ForegroundColor Yellow',
-      '                }',
-      '            }',
-      '        } else {',
-      '            Write-Host "  No SPNs to remove." -ForegroundColor White',
-      '        }',
-      '        Write-Host ""',
-      '',
-      '        # Delete or disable account',
-      '        Write-Host "  Delete the account entirely, or just disable it?" -ForegroundColor White',
-      '        Write-Host "    1) Delete account" -ForegroundColor White',
-      '        Write-Host "    2) Disable account (keep for reference)" -ForegroundColor White',
-      '        Write-Host ""',
-      '        $delChoice = Read-Host "Enter choice [1]"',
-      '        if ([string]::IsNullOrWhiteSpace($delChoice)) { $delChoice = "1" }',
-      '',
-      '        if ($delChoice -eq "2") {',
-      '            Disable-ADAccount -Identity $existingUser',
-      '            Write-Host "  Account \'$AccountName\' disabled." -ForegroundColor Green',
-      '        } else {',
-      '            $confirm = Read-Host "  Type YES to permanently delete \'$AccountName\'"',
-      '            if ($confirm -eq "YES") {',
-      '                Remove-ADUser -Identity $existingUser -Confirm:$false',
-      '                Write-Host "  Account \'$AccountName\' deleted." -ForegroundColor Green',
-      '            } else {',
-      '                Write-Host "  Aborted. Account not deleted." -ForegroundColor Yellow',
-      '            }',
-      '        }',
-      '',
-      '        # Clean up config file if present',
-      '        $outFile = Join-Path (Get-Location) "simpleauth-config.json"',
-      '        if (Test-Path $outFile) {',
-      '            $delCfg = Read-Host "  Delete simpleauth-config.json too? [y/N]"',
-      '            if ($delCfg -eq "y" -or $delCfg -eq "Y") {',
-      '                Remove-Item $outFile',
-      '                Write-Host "  Config file deleted." -ForegroundColor Green',
-      '            }',
-      '        }',
-      '',
-      '        Write-Host ""',
-      '        Write-Host "  ========================================" -ForegroundColor Green',
-      '        Write-Host "           Cleanup Complete" -ForegroundColor Green',
-      '        Write-Host "  ========================================" -ForegroundColor Green',
-      '        Write-Host ""',
-      '        Write-Host "  Remember to also remove the LDAP provider" -ForegroundColor Yellow',
-      '        Write-Host "  and Kerberos config in the SimpleAuth admin UI." -ForegroundColor Yellow',
-      '        Write-Host ""',
-      '        Read-Host "Press Enter to exit"',
-      '        exit 0',
-      '    }',
-      '',
-      '    # choice "1" falls through to setup below',
-      '}',
-      '',
-      '# ==================================================================',
-      '# SETUP MODE',
-      '# ==================================================================',
-      '',
-      '# -- Select OU -----------------------------------------------------',
-      'Write-Host "[1/4] Select where to create the service account" -ForegroundColor Yellow',
-      'Write-Host ""',
-      '',
-      '$ous = @()',
-      '$ous += [PSCustomObject]@{ Index = 0; Name = "(Default Users container)"; DN = $domain.UsersContainer }',
-      '$ouList = Get-ADOrganizationalUnit -Filter * -Properties CanonicalName | Sort-Object CanonicalName',
-      '$i = 1',
-      'foreach ($ou in $ouList) {',
-      '    $ous += [PSCustomObject]@{ Index = $i; Name = $ou.CanonicalName; DN = $ou.DistinguishedName }',
-      '    $i++',
-      '}',
-      '',
-      'if ($existingUser) {',
-      '    Write-Host "  (Account already exists, OU selection skipped)" -ForegroundColor White',
-      '    $targetOU = ($existingUser.DistinguishedName -replace "^CN=[^,]+,", "")',
-      '} else {',
-      '    foreach ($entry in $ous) {',
-      '        $idx = $entry.Index.ToString().PadLeft(3)',
-      '        if ($entry.Index -eq 0) {',
-      '            Write-Host "  $idx) $($entry.Name)" -ForegroundColor Green',
-      '        } else {',
-      '            Write-Host "  $idx) $($entry.Name)" -ForegroundColor White',
-      '        }',
-      '    }',
-      '    Write-Host ""',
-      '    $selection = Read-Host "Enter number [0]"',
-      '    if ([string]::IsNullOrWhiteSpace($selection)) { $selection = "0" }',
-      '    $selectedIdx = [int]$selection',
-      '    if ($selectedIdx -lt 0 -or $selectedIdx -ge $ous.Count) {',
-      '        Write-Host "  Invalid selection, using default" -ForegroundColor Yellow',
-      '        $selectedIdx = 0',
-      '    }',
-      '    $targetOU = $ous[$selectedIdx].DN',
-      '    Write-Host "  Selected: $($ous[$selectedIdx].Name)" -ForegroundColor Cyan',
-      '}',
-      'Write-Host ""',
-      '',
-      '# -- Create or update account --------------------------------------',
-      'Write-Host "[2/4] Setting up service account..." -ForegroundColor Yellow',
-      '$securePw = ConvertTo-SecureString $AccountPassword -AsPlainText -Force',
-      '',
-      'if ($existingUser) {',
-      '    try {',
-      '        Set-ADAccountPassword -Identity $existingUser -NewPassword $securePw -Reset',
-      '        Enable-ADAccount -Identity $existingUser',
-      '        Write-Host "  Password updated, account enabled." -ForegroundColor Green',
-      '    } catch {',
-      '        Write-Host "  ERROR: Failed to update account: $_" -ForegroundColor Red',
-      '        Read-Host "Press Enter to exit"',
-      '        exit 1',
-      '    }',
-      '} else {',
-      '    $newUserParams = @{',
-      '        Name                 = $AccountName',
-      '        SamAccountName       = $AccountName',
-      '        UserPrincipalName    = "$AccountName@$domainDNS"',
-      '        Path                 = $targetOU',
-      '        AccountPassword      = $securePw',
-      '        Enabled              = $true',
-      '        PasswordNeverExpires = $true',
-      '        CannotChangePassword = $true',
-      '        Description          = "SimpleAuth LDAP bind account (do not delete)"',
-      '    }',
-      '    try {',
-      '        New-ADUser @newUserParams',
-      '        Write-Host "  Account created in: $targetOU" -ForegroundColor Green',
-      '    } catch {',
-      '        Write-Host "  ERROR: Failed to create account: $_" -ForegroundColor Red',
-      '        Write-Host ""',
-      '        Write-Host "  Possible causes:" -ForegroundColor Yellow',
-      '        Write-Host "    - Access denied: run as Domain Admin or Account Operator" -ForegroundColor White',
-      '        Write-Host "    - No permission on OU: try the default Users container" -ForegroundColor White',
-      '        Write-Host "    - Password does not meet complexity requirements" -ForegroundColor White',
-      '        Write-Host ""',
-      '        Read-Host "Press Enter to exit"',
-      '        exit 1',
-      '    }',
-      '}',
-      'Write-Host ""',
-      '',
-      '# -- Kerberos SPN (optional) ---------------------------------------',
-      'Write-Host "[3/4] Kerberos / SPNEGO setup (optional)" -ForegroundColor Yellow',
-      '',
-      '# Check for existing SPNs and offer to manage them',
-      '$currentSPNs = (Get-ADUser -Filter $adFilter -Properties servicePrincipalName).servicePrincipalName',
-      'if ($currentSPNs) {',
-      '    Write-Host "  Existing SPNs on ${AccountName}:" -ForegroundColor White',
-      '    foreach ($s in $currentSPNs) { Write-Host "    - $s" -ForegroundColor White }',
-      '    Write-Host ""',
-      '    Write-Host "  Options:" -ForegroundColor White',
-      '    Write-Host "    1) Keep existing SPNs" -ForegroundColor White',
-      '    Write-Host "    2) Remove all SPNs and set a new one" -ForegroundColor White',
-      '    Write-Host "    3) Add an additional SPN" -ForegroundColor White',
-      '    Write-Host ""',
-      '    $spnChoice = Read-Host "Enter choice [1]"',
-      '    if ([string]::IsNullOrWhiteSpace($spnChoice)) { $spnChoice = "1" }',
-      '',
-      '    $spnResult = $null',
-      '    if ($spnChoice -eq "2") {',
-      '        foreach ($s in $currentSPNs) {',
-      '            Write-Host "  Removing SPN: $s" -ForegroundColor White',
-      '            try { $null = & setspn -D $s $AccountName 2>&1 } catch {}',
-      '        }',
-      '        Write-Host "  All SPNs removed." -ForegroundColor Green',
-      '        Write-Host ""',
-      '        Write-Host "  Enter the FQDN clients use to reach SimpleAuth" -ForegroundColor White',
-      '        Write-Host "  (e.g. simpleauth.corp.local) or press Enter to skip." -ForegroundColor White',
-      '        $spnAnswer = Read-Host "SimpleAuth hostname"',
-      '        if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
-      '            $spn = "HTTP/$spnAnswer"',
-      '            try {',
-      '                $null = & setspn -A $spn $AccountName 2>&1',
-      '                Write-Host "  SPN registered: $spn" -ForegroundColor Green',
-      '                $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
-      '            } catch {',
-      '                Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
-      '                $spnResult = @{ service_hostname = $spnAnswer }',
-      '            }',
-      '        }',
-      '    } elseif ($spnChoice -eq "3") {',
-      '        Write-Host "  Enter additional FQDN for SPN:" -ForegroundColor White',
-      '        $spnAnswer = Read-Host "SimpleAuth hostname"',
-      '        if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
-      '            $spn = "HTTP/$spnAnswer"',
-      '            try {',
-      '                $null = & setspn -A $spn $AccountName 2>&1',
-      '                Write-Host "  SPN registered: $spn" -ForegroundColor Green',
-      '                $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
-      '            } catch {',
-      '                Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
-      '                $spnResult = @{ service_hostname = $spnAnswer }',
-      '            }',
-      '        }',
-      '    } else {',
-      '        # Keep existing - use first HTTP SPN if any',
-      '        foreach ($s in $currentSPNs) {',
-      '            if ($s -like "HTTP/*") {',
-      '                $hostname = $s -replace "^HTTP/", ""',
-      '                $spnResult = @{ spn = $s; service_hostname = $hostname }',
-      '                break',
-      '            }',
-      '        }',
-      '    }',
-      '} else {',
-      '    Write-Host "  Enter the FQDN clients use to reach SimpleAuth" -ForegroundColor White',
-      '    Write-Host "  (e.g. simpleauth.corp.local) or press Enter to skip." -ForegroundColor White',
-      '    Write-Host ""',
-      '    $spnAnswer = Read-Host "SimpleAuth hostname"',
-      '    $spnResult = $null',
-      '    if (-not [string]::IsNullOrWhiteSpace($spnAnswer)) {',
-      '        $spn = "HTTP/$spnAnswer"',
-      '        Write-Host "  Registering SPN: $spn on $AccountName" -ForegroundColor White',
-      '        try {',
-      '            $null = & setspn -A $spn $AccountName 2>&1',
-      '            Write-Host "  SPN registered successfully" -ForegroundColor Green',
-      '            $spnResult = @{ spn = $spn; service_hostname = $spnAnswer }',
-      '        } catch {',
-      '            Write-Host "  Warning: SPN registration failed: $_" -ForegroundColor Yellow',
-      '            Write-Host "  Run manually: setspn -A $spn $AccountName" -ForegroundColor Yellow',
-      '            $spnResult = @{ service_hostname = $spnAnswer }',
-      '        }',
-      '    }',
-      '}',
-      'Write-Host ""',
-      '',
-      '# -- Export config -------------------------------------------------',
-      'Write-Host "[4/4] Exporting config..." -ForegroundColor Yellow',
-      '',
-      '$config = [ordered]@{',
-      '    server   = $dc',
-      '    username = "$AccountName@$domainDNS"',
-      '    password = $AccountPassword',
-      '    domain   = $domainDNS',
-      '    base_dn  = $domainDN',
-      '}',
-      'if ($spnResult) {',
-      '    foreach ($key in $spnResult.Keys) { $config[$key] = $spnResult[$key] }',
-      '}',
-      '',
-      '$outFile = Join-Path (Get-Location) "simpleauth-config.json"',
-      '$config | ConvertTo-Json | Set-Content -Path $outFile -Encoding UTF8',
-      '',
-      'Write-Host ""',
-      'Write-Host "  ========================================" -ForegroundColor Green',
-      'Write-Host "           Setup Complete!" -ForegroundColor Green',
-      'Write-Host "  ========================================" -ForegroundColor Green',
-      'Write-Host ""',
-      'Write-Host "  Config file: $outFile" -ForegroundColor White',
-      'Write-Host ""',
-      'Write-Host "  Next steps:" -ForegroundColor Yellow',
-      'Write-Host "    1. Copy simpleauth-config.json to your workstation" -ForegroundColor White',
-      'Write-Host "    2. Open SimpleAuth admin UI -> LDAP Providers" -ForegroundColor White',
-      'Write-Host "    3. Click Import Config and upload the file" -ForegroundColor White',
-      'Write-Host ""',
-      'Read-Host "Press Enter to exit"',
-    ];
-    const script = lines.join('\r\n');
-    // UTF-8 BOM so Windows PowerShell reads encoding correctly
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const blob = new Blob([bom, script], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'Setup-SimpleAuth.ps1'; a.click();
-    URL.revokeObjectURL(url);
-    showToast('Script downloaded');
+  const testUser = async (username) => {
+    if (!username) return;
+    try {
+      const result = await api('POST', '/api/admin/ldap/test-user', { username });
+      setTestUserResult(result);
+      if (result.status === 'error') showToast(result.error, 'error');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const setupKerberos = async () => {
+    try {
+      const result = await api('POST', '/api/admin/ldap/setup-kerberos', {
+        service_hostname: form.service_hostname || serverInfo.hostname
+      });
+      showToast('Kerberos configured — SPN: ' + result.spn);
+      if (result.spn_warning) showToast(result.spn_warning, 'warning');
+      setWizardStep(3);
+      load();
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const cleanupKerberos = async () => {
+    try {
+      await api('POST', '/api/admin/ldap/cleanup-kerberos', {
+        username: form.cleanup_username, password: form.cleanup_password
+      });
+      showToast('Kerberos removed');
+      setModal(null);
+      load();
+    } catch (e) { showToast(e.message, 'error'); }
   };
 
   const importConfig = async () => {
     try {
       const cfg = JSON.parse(form.import_json);
-      // First auto-discover to create the provider
-      const result = await api('POST', '/api/admin/ldap/auto-discover', {
-        server: cfg.server,
-        username: cfg.username,
-        password: cfg.password,
-      });
-      // If config has Kerberos info, auto-setup keytab via import endpoint
-      let msg = `Provider configured: ${result.provider_id}`;
-      if (cfg.service_hostname && result.provider_id) {
-        try {
-          const importResult = await api('POST', '/api/admin/ldap/import', {
-            ldap_providers: [result],
-            service_hostname: cfg.service_hostname,
-            spn: cfg.spn || ('HTTP/' + cfg.service_hostname),
-          });
-          if (importResult.kerberos) {
-            msg = `Provider + Kerberos configured: ${importResult.kerberos.spn}`;
-          } else if (importResult.kerberos_error) {
-            msg = `Provider configured. Kerberos failed: ${importResult.kerberos_error}`;
-          }
-        } catch (e) {
-          msg += ` (Kerberos setup failed: ${e.message})`;
-        }
-      }
+      const result = await api('POST', '/api/admin/ldap/import', cfg);
+      showToast('Config imported');
+      if (result.kerberos_error) showToast('Kerberos: ' + result.kerberos_error, 'warning');
       setModal(null);
-      setForm({});
       load();
-      showToast(msg);
-    } catch (e) {
-      showToast(e.message || 'Invalid config file', 'error');
-    }
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const saveConfig = async () => {
+    try {
+      await api('PUT', '/api/admin/ldap', form);
+      showToast('Settings saved');
+      setEditing(null);
+      load();
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const deleteConfig = async () => {
+    if (!confirm('Remove LDAP configuration? Users with local passwords will still be able to log in.')) return;
+    try {
+      await api('DELETE', '/api/admin/ldap');
+      showToast('LDAP configuration removed');
+      setLdapConfig(false);
+      setConnectionStatus(null);
+      setWizardStep(0);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const testConnection = async () => {
+    try {
+      const result = await api('POST', '/api/admin/ldap/test');
+      if (result.status === 'ok') { setConnectionStatus('ok'); showToast('Connection successful'); }
+      else { setConnectionStatus('error'); showToast(result.error, 'error'); }
+    } catch (e) { setConnectionStatus('error'); showToast(e.message, 'error'); }
+  };
+
+  const syncAll = async () => {
+    try {
+      const result = await api('POST', '/api/admin/ldap/sync-all');
+      showToast(`Synced ${result.synced} users` + (result.failed ? `, ${result.failed} failed` : ''));
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const syncSingleUser = async () => {
+    try {
+      const result = await api('POST', '/api/admin/ldap/sync-user', { username: form.sync_username });
+      showToast(`Synced: ${result.user.display_name || result.user.email}`);
+      setModal(null);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const downloadSetupScript = async () => {
+    try {
+      const res = await fetch(BASE_PATH + '/api/admin/setup-script', {
+        headers: { 'Authorization': `Bearer ${getApiKey()}` },
+      });
+      const text = await res.text();
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = 'simpleauth-setup.ps1'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { showToast(e.message, 'error'); }
   };
 
   const handleFileImport = (e) => {
@@ -1061,313 +763,267 @@ function LDAPPage() {
     reader.readAsText(file);
   };
 
-  const setupKerberos = async () => {
-    try {
-      const result = await api('POST', `/api/admin/ldap/${form.provider_id}/setup-kerberos`, {
-        service_hostname: form.service_hostname,
-      });
-      setModal(null);
-      setForm({});
-      load();
-      const msg = result.spn_warning
-        ? `Kerberos configured (warning: ${result.spn_warning})`
-        : `Kerberos configured: ${result.spn}`;
-      showToast(msg);
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+  // --- Loading ---
+  if (ldapConfig === null) return html`<div class="page-header"><h2>LDAP Settings</h2></div><p>Loading...</p>`;
 
-  const cleanupKerberos = async () => {
-    try {
-      await api('POST', `/api/admin/ldap/${form.provider_id}/cleanup-kerberos`, {
-        username: form.cleanup_username || undefined,
-        password: form.cleanup_password || undefined,
-      });
-      setModal(null);
-      setForm({});
-      load();
-      showToast('Kerberos configuration removed');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+  // --- State Machine: Wizard (not configured) vs Dashboard (configured) ---
+  const isConfigured = ldapConfig && ldapConfig.url;
 
-  const deleteProvider = async (id) => {
-    if (!confirm('Delete this LDAP provider?')) return;
-    try {
-      await api('DELETE', `/api/admin/ldap/${id}`);
-      load();
-      showToast('Provider deleted');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+  // ============================================================
+  // WIZARD (before configuration)
+  // ============================================================
+  if (!isConfigured) {
+    return html`
+      <div class="page-header">
+        <h2>LDAP Settings</h2>
+        <div style="display:flex;gap:var(--sp-2)">
+          <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
+          <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
+        </div>
+      </div>
 
-  const syncAllUsers = async (providerId) => {
-    try {
-      showToast('Syncing all users...', 'info');
-      const result = await api('POST', `/api/admin/ldap/${providerId}/sync-all`);
-      const msg = `Synced ${result.synced} user(s)` + (result.failed > 0 ? `, ${result.failed} failed` : '');
-      showToast(msg, result.failed > 0 ? 'warning' : 'success');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+      <div class="card" style="max-width:600px">
+        <h3 style="margin-bottom:var(--sp-3)">Connect to Active Directory / LDAP</h3>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter your domain or server address, and a service account to connect with.</p>
 
-  const syncSingleUser = async () => {
-    try {
-      const result = await api('POST', `/api/admin/ldap/${form.sync_provider_id}/sync-user`, { username: form.sync_username });
-      setModal(null);
-      setForm({});
-      showToast(`Synced: ${result.user.display_name || result.user.guid}`);
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+        <div class="form-group">
+          <label class="form-label">Domain or Server</label>
+          <input class="form-input" value=${form.server || ''} onInput=${e => setForm({ ...form, server: e.target.value })} placeholder="corp.contoso.com" />
+          <div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px">Domain name, hostname, or IP address. SimpleAuth will auto-discover the rest.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input class="form-input" value=${form.username || ''} onInput=${e => setForm({ ...form, username: e.target.value })} placeholder="svc-simpleauth@corp.contoso.com" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input class="form-input" type="password" value=${form.password || ''} onInput=${e => setForm({ ...form, password: e.target.value })} />
+        </div>
 
-  const downloadSetupScript = async () => {
-    try {
-      const res = await fetch(BASE_PATH + '/api/admin/setup-script', {
-        headers: { 'Authorization': `Bearer ${getApiKey()}` },
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
-      const text = await res.text();
-      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-      const blob = new Blob([bom, text], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'simpleauth-setup.ps1'; a.click();
-      URL.revokeObjectURL(url);
-      showToast('Setup script downloaded');
-    } catch (e) { showToast(e.message, 'error'); }
-  };
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-4)">
+          <button class="btn btn-primary" disabled=${!form.server || !form.username || !form.password} onClick=${autoDiscover}>Connect</button>
+          <button class="btn btn-secondary" onClick=${() => {
+            setForm({ url: '', base_dn: '', bind_dn: '', bind_password: '', user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', department_attr: 'department', company_attr: 'company', job_title_attr: 'title', groups_attr: 'memberOf' });
+            setModal('manual-setup');
+          }}>Manual Setup</button>
+        </div>
+      </div>
 
+      ${modal === 'manual-setup' && html`
+        <${Modal} title="Manual LDAP Setup" onClose=${() => setModal(null)}>
+          <div class="form-group"><label class="form-label">URL</label><input class="form-input" value=${form.url || ''} onInput=${e => setForm({ ...form, url: e.target.value })} placeholder="ldap://dc01.corp.local:389" /></div>
+          <div class="form-group"><label class="form-label">Base DN</label><input class="form-input" value=${form.base_dn || ''} onInput=${e => setForm({ ...form, base_dn: e.target.value })} placeholder="DC=corp,DC=local" /></div>
+          <div class="form-group"><label class="form-label">Bind DN</label><input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} placeholder="CN=svc-simpleauth,CN=Users,DC=corp,DC=local" /></div>
+          <div class="form-group"><label class="form-label">Bind Password</label><input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">User Filter</label><input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} /></div>
+          <details style="margin-top:var(--sp-3)">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">Attribute Mapping</summary>
+            <div style="margin-top:var(--sp-2)">
+              <div class="form-group"><label class="form-label">Display Name</label><input class="form-input" value=${form.display_name_attr || ''} onInput=${e => setForm({ ...form, display_name_attr: e.target.value })} /></div>
+              <div class="form-group"><label class="form-label">Email</label><input class="form-input" value=${form.email_attr || ''} onInput=${e => setForm({ ...form, email_attr: e.target.value })} /></div>
+              <div class="form-group"><label class="form-label">Department</label><input class="form-input" value=${form.department_attr || ''} onInput=${e => setForm({ ...form, department_attr: e.target.value })} /></div>
+              <div class="form-group"><label class="form-label">Company</label><input class="form-input" value=${form.company_attr || ''} onInput=${e => setForm({ ...form, company_attr: e.target.value })} /></div>
+              <div class="form-group"><label class="form-label">Job Title</label><input class="form-input" value=${form.job_title_attr || ''} onInput=${e => setForm({ ...form, job_title_attr: e.target.value })} /></div>
+              <div class="form-group"><label class="form-label">Groups</label><input class="form-input" value=${form.groups_attr || ''} onInput=${e => setForm({ ...form, groups_attr: e.target.value })} /></div>
+            </div>
+          </details>
+          <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
+            <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+            <button class="btn btn-primary" disabled=${!form.url || !form.base_dn} onClick=${() => { setModal(null); saveManualConfig(); }}>Save & Test</button>
+          </div>
+        <//>
+      `}
+
+      ${modal === 'import-config' && html`
+        <${Modal} title="Import Config" onClose=${() => setModal(null)}>
+          <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the AD setup script.</p>
+          <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-3)" />
+          ${form.import_json && html`<pre style="font-size:0.75rem;background:var(--bg-secondary);padding:var(--sp-2);border-radius:var(--radius);max-height:200px;overflow:auto">${form.import_json.replace(/"password":\s*"[^"]*"/, '"password": "••••••••"')}</pre>`}
+          <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
+            <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+            <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import</button>
+          </div>
+        <//>
+      `}
+      ${toast && html`<${Toast} ...${toast} />`}
+    `;
+  }
+
+  // ============================================================
+  // DASHBOARD (after configuration)
+  // ============================================================
   return html`
     <div class="page-header">
-      <h2>LDAP Providers</h2>
-      <div class="page-header-actions">
-        <button class="btn btn-secondary" onClick=${() => { setForm({ script_account: 'svc-sauth-' + (serverInfo.deployment_name || 'sauth') }); setModal('generate-script'); }}>Generate AD Script</button>
-        <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('import-config'); }}>Import Config</button>
-        <button class="btn btn-primary" onClick=${() => { setForm({ user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', groups_attr: 'memberOf' }); setModal('create'); }}>${icons.plus} Manual Setup</button>
+      <h2>LDAP Settings</h2>
+      <div style="display:flex;gap:var(--sp-2)">
+        <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
+        <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
+        <button class="btn btn-secondary" onClick=${syncAll}>Sync All Users</button>
+        <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('sync-user'); }}>Sync User</button>
       </div>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>ID</th><th>Name</th><th>URL</th><th>Base DN</th><th>Priority</th><th>Actions</th></tr></thead>
-        <tbody>
-          ${providers.length === 0
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>No LDAP providers configured</p></div></td></tr>`
-            : providers.map(p => html`
-              <tr>
-                <td><span class="guid">${p.provider_id}</span></td>
-                <td style="font-weight:600">${p.name}</td>
-                <td style="color:var(--text-secondary);font-size:0.875rem">${p.url}</td>
-                <td style="font-size:0.75rem;color:var(--text-muted)">${p.base_dn}</td>
-                <td>${p.priority}</td>
-                <td style="white-space:nowrap">
-                  <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({ ...p, _editing: true }); setModal('create'); }}>Edit</button>
-                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => testConnection(p.provider_id)}>Test</button>
-                  ${krbStatus?.configured && krbStatus?.provider_id === p.provider_id
-                    ? html`<button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id }); setModal('krb-cleanup'); }}>Remove Kerberos</button>`
-                    : html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ provider_id: p.provider_id, service_hostname: serverInfo.hostname || '' }); setModal('krb-setup'); }}>Setup Kerberos</button>`
-                  }
-                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => syncAllUsers(p.provider_id)}>Sync All</button>
-                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => { setForm({ sync_provider_id: p.provider_id }); setModal('sync-user'); }}>Sync User</button>
-                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => downloadSetupScript()}>AD Script</button>
-                  <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteProvider(p.provider_id)}>Delete</button>
-                </td>
-              </tr>
-            `)
-          }
-        </tbody>
-      </table>
+
+    <!-- Connection -->
+    <div class="card" style="margin-bottom:var(--sp-4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-3)">
+        <h3 style="margin:0;display:flex;align-items:center;gap:var(--sp-2)">
+          Connection
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${connectionStatus === 'ok' ? 'var(--color-success,#22c55e)' : connectionStatus === 'error' ? 'var(--color-danger,#ef4444)' : 'var(--text-muted)'}"></span>
+        </h3>
+        <div style="display:flex;gap:var(--sp-2)">
+          <button class="btn btn-secondary btn-sm" onClick=${testConnection}>Test</button>
+          <button class="btn btn-secondary btn-sm" onClick=${() => { setEditing('connection'); setForm({...ldapConfig}); }}>Edit</button>
+        </div>
+      </div>
+      ${editing !== 'connection' ? html`
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:var(--sp-1) var(--sp-3);font-size:0.875rem">
+          <span style="color:var(--text-muted)">URL</span><span>${ldapConfig.url}</span>
+          <span style="color:var(--text-muted)">Base DN</span><span>${ldapConfig.base_dn}</span>
+          <span style="color:var(--text-muted)">Bind DN</span><span>${ldapConfig.bind_dn}</span>
+          ${ldapConfig.domain && html`<span style="color:var(--text-muted)">Domain</span><span>${ldapConfig.domain}</span>`}
+        </div>
+      ` : html`
+        <div class="form-group"><label class="form-label">URL</label><input class="form-input" value=${form.url || ''} onInput=${e => setForm({ ...form, url: e.target.value })} /></div>
+        <div class="form-group"><label class="form-label">Base DN</label><input class="form-input" value=${form.base_dn || ''} onInput=${e => setForm({ ...form, base_dn: e.target.value })} /></div>
+        <div class="form-group"><label class="form-label">Bind DN</label><input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} /></div>
+        <div class="form-group"><label class="form-label">Bind Password</label><input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} /></div>
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-3)">
+          <button class="btn btn-primary" onClick=${saveConfig}>Save</button>
+          <button class="btn btn-secondary" onClick=${() => setEditing(null)}>Cancel</button>
+        </div>
+      `}
     </div>
 
-    ${modal === 'create' && html`
-      <${Modal} title=${form._editing ? 'Edit LDAP Provider' : 'Add LDAP Provider'} onClose=${() => setModal(null)}>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Provider ID</label>
-            <input class="form-input" value=${form.provider_id || ''} onInput=${e => setForm({ ...form, provider_id: e.target.value })} placeholder="corp" disabled=${form._editing} />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Name</label>
-            <input class="form-input" value=${form.name || ''} onInput=${e => setForm({ ...form, name: e.target.value })} placeholder="Corporate AD" />
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">URL</label>
-          <input class="form-input" value=${form.url || ''} onInput=${e => setForm({ ...form, url: e.target.value })} placeholder="ldap://dc1.corp.local:389" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Base DN</label>
-          <input class="form-input" value=${form.base_dn || ''} onInput=${e => setForm({ ...form, base_dn: e.target.value })} placeholder="DC=corp,DC=local" />
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Bind DN</label>
-            <input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Bind Password</label>
-            <input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} />
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">User Filter</label>
-          <input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} />
-          <div class="form-help">Use ${'{{username}}'} as placeholder. E.g. (sAMAccountName=${'{{username}}'}) for AD, (uid=${'{{username}}'}) for LDAP</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Priority</label>
-          <input class="form-input" type="number" value=${form.priority || '0'} onInput=${e => setForm({ ...form, priority: e.target.value })} />
-          <div class="form-help">Lower = tried first</div>
-        </div>
-        <details style="margin-top:var(--sp-2)">
-          <summary style="cursor:pointer;font-weight:600;margin-bottom:var(--sp-2)">Attribute Mapping</summary>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Display Name Attr</label>
-              <input class="form-input" value=${form.display_name_attr || ''} onInput=${e => setForm({ ...form, display_name_attr: e.target.value })} placeholder="displayName" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Email Attr</label>
-              <input class="form-input" value=${form.email_attr || ''} onInput=${e => setForm({ ...form, email_attr: e.target.value })} placeholder="mail" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Department Attr</label>
-              <input class="form-input" value=${form.department_attr || ''} onInput=${e => setForm({ ...form, department_attr: e.target.value })} placeholder="department" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Company Attr</label>
-              <input class="form-input" value=${form.company_attr || ''} onInput=${e => setForm({ ...form, company_attr: e.target.value })} placeholder="company" />
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Job Title Attr</label>
-              <input class="form-input" value=${form.job_title_attr || ''} onInput=${e => setForm({ ...form, job_title_attr: e.target.value })} placeholder="title" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Groups Attr</label>
-              <input class="form-input" value=${form.groups_attr || ''} onInput=${e => setForm({ ...form, groups_attr: e.target.value })} placeholder="memberOf" />
-            </div>
-          </div>
-        </details>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${saveProvider}>${form._editing ? 'Save Changes' : 'Add Provider'}</button>
-        </div>
-      <//>
-    `}
-
-    ${krbStatus?.configured && html`
-      <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-3);margin-bottom:var(--sp-4);display:flex;align-items:center;gap:var(--sp-3)">
-        <span style="color:var(--success);font-size:1.25rem">&#9679;</span>
-        <div style="flex:1">
-          <strong>Kerberos Active</strong>
-          <span style="color:var(--text-secondary);margin-left:var(--sp-2);font-size:0.875rem">
-            ${krbStatus.spn || ''} ${krbStatus.realm ? `@ ${krbStatus.realm}` : ''} (${krbStatus.source})
-          </span>
-          <div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px">SPNEGO test will authenticate via Kerberos and look up user data across all LDAP providers</div>
-        </div>
-        <a href="${BASE_PATH}/test-negotiate" target="_blank" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 12px;text-decoration:none">Test SPNEGO</a>
+    <!-- User Search & Attribute Mapping -->
+    <div class="card" style="margin-bottom:var(--sp-4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-3)">
+        <h3 style="margin:0">User Search & Attributes</h3>
+        <button class="btn btn-secondary btn-sm" onClick=${() => { setEditing('attributes'); setForm({...ldapConfig}); }}>Edit</button>
       </div>
-    `}
+      ${editing !== 'attributes' ? html`
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:var(--sp-1) var(--sp-3);font-size:0.875rem;margin-bottom:var(--sp-4)">
+          <span style="color:var(--text-muted)">User Filter</span><span style="font-family:var(--font-mono)">${ldapConfig.user_filter}</span>
+          <span style="color:var(--text-muted)">Display Name</span><span>${ldapConfig.display_name_attr || '—'}</span>
+          <span style="color:var(--text-muted)">Email</span><span>${ldapConfig.email_attr || '—'}</span>
+          <span style="color:var(--text-muted)">Department</span><span>${ldapConfig.department_attr || '—'}</span>
+          <span style="color:var(--text-muted)">Company</span><span>${ldapConfig.company_attr || '—'}</span>
+          <span style="color:var(--text-muted)">Job Title</span><span>${ldapConfig.job_title_attr || '—'}</span>
+          <span style="color:var(--text-muted)">Groups</span><span>${ldapConfig.groups_attr || '—'}</span>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:var(--sp-3)">
+          <div style="display:flex;gap:var(--sp-2);align-items:center">
+            <input class="form-input" style="max-width:240px" value=${form.test_username || ''} onInput=${e => setForm({ ...form, test_username: e.target.value })} onKeyDown=${e => e.key === 'Enter' && testUser(form.test_username)} placeholder="Test username (sAMAccountName)" />
+            <button class="btn btn-secondary btn-sm" disabled=${!form.test_username} onClick=${() => testUser(form.test_username)}>Look Up</button>
+          </div>
+          ${testUserResult && testUserResult.status === 'ok' && html`
+            <div style="margin-top:var(--sp-3);display:grid;grid-template-columns:120px 1fr auto;gap:var(--sp-1) var(--sp-3);font-size:0.875rem;background:var(--bg-secondary);padding:var(--sp-3);border-radius:var(--radius)">
+              <span style="color:var(--text-muted)">Display Name</span><span style="font-weight:500">${testUserResult.display_name || '—'}</span><span style="color:var(--text-muted);font-size:0.75rem">${ldapConfig.display_name_attr}</span>
+              <span style="color:var(--text-muted)">Email</span><span>${testUserResult.email || '—'}</span><span style="color:var(--text-muted);font-size:0.75rem">${ldapConfig.email_attr}</span>
+              <span style="color:var(--text-muted)">Department</span><span>${testUserResult.department || '—'}</span><span style="color:var(--text-muted);font-size:0.75rem">${ldapConfig.department_attr}</span>
+              <span style="color:var(--text-muted)">Company</span><span>${testUserResult.company || '—'}</span><span style="color:var(--text-muted);font-size:0.75rem">${ldapConfig.company_attr}</span>
+              <span style="color:var(--text-muted)">Job Title</span><span>${testUserResult.job_title || '—'}</span><span style="color:var(--text-muted);font-size:0.75rem">${ldapConfig.job_title_attr}</span>
+              <span style="color:var(--text-muted)">Groups</span><span style="grid-column:span 2">${(testUserResult.groups || []).join(', ') || '—'}</span>
+            </div>
+          `}
+        </div>
+      ` : html`
+        <div class="form-group"><label class="form-label">User Filter</label><input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} /></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-2)">
+          <div class="form-group"><label class="form-label">Display Name Attr</label><input class="form-input" value=${form.display_name_attr || ''} onInput=${e => setForm({ ...form, display_name_attr: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Email Attr</label><input class="form-input" value=${form.email_attr || ''} onInput=${e => setForm({ ...form, email_attr: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Department Attr</label><input class="form-input" value=${form.department_attr || ''} onInput=${e => setForm({ ...form, department_attr: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Company Attr</label><input class="form-input" value=${form.company_attr || ''} onInput=${e => setForm({ ...form, company_attr: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Job Title Attr</label><input class="form-input" value=${form.job_title_attr || ''} onInput=${e => setForm({ ...form, job_title_attr: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Groups Attr</label><input class="form-input" value=${form.groups_attr || ''} onInput=${e => setForm({ ...form, groups_attr: e.target.value })} /></div>
+        </div>
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-3)">
+          <button class="btn btn-primary" onClick=${saveConfig}>Save</button>
+          <button class="btn btn-secondary" onClick=${() => setEditing(null)}>Cancel</button>
+        </div>
+      `}
+    </div>
 
+    <!-- Kerberos SSO -->
+    <div class="card" style="margin-bottom:var(--sp-4)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-3)">
+        <h3 style="margin:0">Kerberos SSO</h3>
+        ${krbStatus && krbStatus.configured ? html`
+          <button class="btn btn-secondary btn-sm" style="color:var(--color-danger,#ef4444)" onClick=${() => { setForm({}); setModal('krb-cleanup'); }}>Remove Kerberos</button>
+        ` : html`
+          <button class="btn btn-primary btn-sm" onClick=${() => { setForm({ service_hostname: serverInfo.hostname }); setModal('krb-setup'); }}>Setup Kerberos</button>
+        `}
+      </div>
+      ${krbStatus && krbStatus.configured ? html`
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:var(--sp-1) var(--sp-3);font-size:0.875rem">
+          <span style="color:var(--text-muted)">Status</span><span style="color:var(--color-success,#22c55e);font-weight:500">Active</span>
+          <span style="color:var(--text-muted)">SPN</span><span style="font-family:var(--font-mono)">${krbStatus.spn}</span>
+          <span style="color:var(--text-muted)">Realm</span><span>${krbStatus.realm}</span>
+          <span style="color:var(--text-muted)">Source</span><span>${krbStatus.source}</span>
+        </div>
+      ` : html`
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin:0">Not configured. Set up Kerberos to enable single sign-on (SSO) for domain-joined browsers.</p>
+      `}
+    </div>
+
+    <!-- Danger Zone -->
+    <div class="card" style="border-color:var(--color-danger,#ef4444)">
+      <h3 style="margin:0 0 var(--sp-2) 0;color:var(--color-danger,#ef4444)">Danger Zone</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin:0">Remove LDAP configuration. Users with local passwords will still work.</p>
+        <button class="btn btn-secondary btn-sm" style="color:var(--color-danger,#ef4444)" onClick=${deleteConfig}>Remove LDAP</button>
+      </div>
+    </div>
+
+    <!-- Modals -->
     ${modal === 'krb-setup' && html`
-      <${Modal} title="Setup Kerberos / SPNEGO" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter the hostname that clients use to reach SimpleAuth. A keytab will be generated and the SPN registered in AD.</p>
+      <${Modal} title="Setup Kerberos/SPNEGO" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">SimpleAuth will use the LDAP bind account to generate a Kerberos keytab and register the SPN.</p>
         <div class="form-group">
           <label class="form-label">Service Hostname</label>
-          <input class="form-input" value=${form.service_hostname || ''} onInput=${e => setForm({ ...form, service_hostname: e.target.value })} placeholder="simpleauth.corp.local" />
-          <div class="form-help">The FQDN clients use to access SimpleAuth (becomes HTTP/hostname SPN)</div>
+          <input class="form-input" value=${form.service_hostname || ''} onInput=${e => setForm({ ...form, service_hostname: e.target.value })} placeholder="${serverInfo.hostname || 'simpleauth.corp.local'}" />
+          <div style="color:var(--text-muted);font-size:0.75rem;margin-top:2px">The hostname users access SimpleAuth at. SPN will be HTTP/hostname.</div>
         </div>
-        <div class="modal-footer">
+        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${setupKerberos}>Setup Kerberos</button>
+          <button class="btn btn-primary" onClick=${() => { setModal(null); setupKerberos(); }}>Setup</button>
         </div>
       <//>
     `}
 
     ${modal === 'krb-cleanup' && html`
       <${Modal} title="Remove Kerberos" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">This will delete the local keytab and disable Kerberos. Optionally provide AD admin credentials to also remove the SPN from Active Directory.</p>
-        <div class="form-group">
-          <label class="form-label">AD Admin Username (optional)</label>
-          <input class="form-input" value=${form.cleanup_username || ''} onInput=${e => setForm({ ...form, cleanup_username: e.target.value })} placeholder="admin@corp.local" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">AD Admin Password (optional)</label>
-          <input class="form-input" type="password" value=${form.cleanup_password || ''} onInput=${e => setForm({ ...form, cleanup_password: e.target.value })} />
-        </div>
-        <div class="form-help" style="margin-bottom:var(--sp-3)">Leave empty to only remove local config without touching AD.</div>
-        <div class="modal-footer">
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">This will delete the local keytab. Optionally provide admin credentials to also remove the SPN from AD.</p>
+        <div class="form-group"><label class="form-label">AD Admin Username (optional)</label><input class="form-input" value=${form.cleanup_username || ''} onInput=${e => setForm({ ...form, cleanup_username: e.target.value })} placeholder="admin@corp.local" /></div>
+        <div class="form-group"><label class="form-label">AD Admin Password (optional)</label><input class="form-input" type="password" value=${form.cleanup_password || ''} onInput=${e => setForm({ ...form, cleanup_password: e.target.value })} /></div>
+        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-danger" onClick=${cleanupKerberos}>Remove Kerberos</button>
-        </div>
-      <//>
-    `}
-
-    ${modal === 'generate-script' && html`
-      <${Modal} title="Generate AD Setup Script" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Generate a PowerShell script to run on a Domain Controller. The script will interactively guide the AD admin through creating a service account, selecting an OU, and optionally setting up Kerberos.</p>
-        <div class="form-group">
-          <label class="form-label">Service Account Name</label>
-          <input class="form-input" value=${form.script_account || ''} onInput=${e => setForm({ ...form, script_account: e.target.value })} placeholder="svc-sauth-simpleauth" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Password</label>
-          <div style="display:flex;gap:var(--sp-2)">
-            <input class="form-input" style="flex:1" value=${form.script_password || ''} onInput=${e => setForm({ ...form, script_password: e.target.value })} placeholder="Strong password for the service account" />
-            <button class="btn btn-secondary" style="white-space:nowrap" onClick=${() => {
-              const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%&*';
-              let pw = ''; for (let i = 0; i < 24; i++) pw += chars[Math.floor(Math.random() * chars.length)];
-              setForm({ ...form, script_password: pw });
-            }}>Generate</button>
-          </div>
-        </div>
-        <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-3);margin-top:var(--sp-3);font-size:0.8rem;color:var(--text-secondary)">
-          <strong style="color:var(--text-primary)">The script will interactively:</strong>
-          <ul style="margin:var(--sp-1) 0 0 var(--sp-3);padding:0">
-            <li>Auto-detect domain, base DN, and domain controller</li>
-            <li>List OUs and let the admin pick where to create the account</li>
-            <li>Ask if Kerberos SSO should be enabled</li>
-            <li>Export <code>simpleauth-config.json</code> to bring back here</li>
-          </ul>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${generateScript}>Download Script</button>
+          <button class="btn btn-primary" style="background:var(--color-danger,#ef4444)" onClick=${cleanupKerberos}>Remove</button>
         </div>
       <//>
     `}
 
     ${modal === 'import-config' && html`
-      <${Modal} title="Import AD Config" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the setup script. SimpleAuth will connect and configure everything automatically.</p>
-        <div class="form-group">
-          <label class="form-label">Config File</label>
-          <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-2)" />
-        </div>
-        ${form.import_json && html`
-          <div class="form-group">
-            <label class="form-label">Preview</label>
-            <pre style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:var(--sp-2);font-size:0.8rem;overflow-x:auto;max-height:200px">${(() => {
-              try { const c = JSON.parse(form.import_json); return JSON.stringify({...c, password: '***'}, null, 2); }
-              catch { return 'Invalid JSON'; }
-            })()}</pre>
-          </div>
-        `}
-        <div class="modal-footer">
+      <${Modal} title="Import Config" onClose=${() => setModal(null)}>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the AD setup script.</p>
+        <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-3)" />
+        ${form.import_json && html`<pre style="font-size:0.75rem;background:var(--bg-secondary);padding:var(--sp-2);border-radius:var(--radius);max-height:200px;overflow:auto">${form.import_json.replace(/"password":\s*"[^"]*"/, '"password": "••••••••"')}</pre>`}
+        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import & Configure</button>
+          <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import</button>
         </div>
       <//>
     `}
+
     ${modal === 'sync-user' && html`
       <${Modal} title="Sync User from AD" onClose=${() => setModal(null)}>
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter the sAMAccountName of a user to sync their profile (display name, email, department, company, job title) from Active Directory.</p>
+        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Enter the sAMAccountName of a user to sync their profile from Active Directory.</p>
         <div class="form-group">
           <label class="form-label">Username (sAMAccountName)</label>
           <input class="form-input" value=${form.sync_username || ''} onInput=${e => setForm({ ...form, sync_username: e.target.value })} placeholder="alice" />
         </div>
-        <div class="modal-footer">
+        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" disabled=${!form.sync_username} onClick=${syncSingleUser}>Sync User</button>
+          <button class="btn btn-primary" disabled=${!form.sync_username} onClick=${syncSingleUser}>Sync</button>
         </div>
       <//>
     `}
@@ -1678,7 +1334,7 @@ function App() {
     { id: 'dashboard', label: 'Dashboard', icon: icons.dashboard },
     { id: 'users', label: 'Users', icon: icons.users },
     { id: 'roles', label: 'Roles', icon: icons.roles },
-    { id: 'ldap', label: 'LDAP Providers', icon: icons.ldap },
+    { id: 'ldap', label: 'LDAP Settings', icon: icons.ldap },
     { id: 'mappings', label: 'Mappings', icon: icons.mappings },
     { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
     { id: 'audit', label: 'Audit Log', icon: icons.audit },

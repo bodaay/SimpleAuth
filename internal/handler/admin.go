@@ -589,14 +589,13 @@ func (h *Handler) handleQueryAudit(w http.ResponseWriter, r *http.Request) {
 
 // --- AD/LDAP Sync ---
 
-// handleSyncUser syncs a single user's profile from the LDAP provider.
-// POST /api/admin/ldap/{provider_id}/sync-user
+// handleSyncUser syncs a single user's profile from LDAP.
+// POST /api/admin/ldap/sync-user
 // Body: {"username": "alice"}
 func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
+	p, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
 
@@ -608,7 +607,7 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := ldapConfigFromProvider(p)
+	cfg := ldapConfigFromStore(p)
 	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", req.Username)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("LDAP search failed: %v", err), http.StatusBadGateway)
@@ -616,9 +615,9 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find user by LDAP mapping
-	userGUID, err := h.store.ResolveMapping("ldap:"+providerID, req.Username)
+	userGUID, err := h.store.ResolveMapping("ldap", req.Username)
 	if err != nil {
-		jsonError(w, "no local user mapped to ldap:"+providerID+":"+req.Username, http.StatusNotFound)
+		jsonError(w, "no local user mapped to ldap:"+req.Username, http.StatusNotFound)
 		return
 	}
 
@@ -631,7 +630,7 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 	h.syncUserFromLDAP(user, result)
 
 	h.audit("ldap_sync_user", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": providerID, "username": req.Username, "user_guid": user.GUID,
+		"username": req.Username, "user_guid": user.GUID,
 	})
 
 	user.PasswordHash = ""
@@ -641,20 +640,17 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
-// handleSyncAll syncs all users that have mappings to this LDAP provider.
-// POST /api/admin/ldap/{provider_id}/sync-all
+// handleSyncAll syncs all users that have LDAP mappings.
+// POST /api/admin/ldap/sync-all
 func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
+	p, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
 
-	cfg := ldapConfigFromProvider(p)
-	ldapProvider := "ldap:" + providerID
+	cfg := ldapConfigFromStore(p)
 
-	// Iterate all users to find those with mappings to this provider
 	users, err := h.store.ListUsers()
 	if err != nil {
 		jsonError(w, "failed to list users", http.StatusInternalServerError)
@@ -663,7 +659,7 @@ func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 
 	synced := 0
 	failed := 0
-	var errors []string
+	var syncErrors []string
 
 	for _, u := range users {
 		if u.MergedInto != "" {
@@ -671,24 +667,23 @@ func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 		}
 		mappings, _ := h.store.GetMappingsForUser(u.GUID)
 		for _, m := range mappings {
-			if m.Provider != ldapProvider {
+			if m.Provider != "ldap" {
 				continue
 			}
-			// Search LDAP for this user
 			result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", m.ExternalID)
 			if err != nil {
 				failed++
-				errors = append(errors, fmt.Sprintf("%s: %v", m.ExternalID, err))
+				syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", m.ExternalID, err))
 				continue
 			}
 			h.syncUserFromLDAP(u, result)
 			synced++
-			break // one sync per user per provider
+			break
 		}
 	}
 
 	h.audit("ldap_sync_all", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": providerID, "synced": synced, "failed": failed,
+		"synced": synced, "failed": failed,
 	})
 
 	resp := map[string]interface{}{
@@ -696,8 +691,8 @@ func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 		"synced": synced,
 		"failed": failed,
 	}
-	if len(errors) > 0 {
-		resp["errors"] = errors
+	if len(syncErrors) > 0 {
+		resp["errors"] = syncErrors
 	}
 	jsonResp(w, resp, http.StatusOK)
 }

@@ -90,6 +90,7 @@ func main() {
 	log.Printf("SimpleAuth %s starting", Version)
 	log.Printf("Hostname: %s", cfg.Hostname)
 	log.Printf("Data directory: %s", cfg.DataDir)
+	log.Printf("Admin UI: %s/admin", cfg.BasePath)
 
 	// Print access URLs
 	if cfg.TLSDisabled {

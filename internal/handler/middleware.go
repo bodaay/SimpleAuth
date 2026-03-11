@@ -16,7 +16,7 @@ const (
 	ctxIsAdmin contextKey = "is_admin"
 )
 
-func (h *Handler) adminAuth(next http.HandlerFunc) http.HandlerFunc {
+func (h *Handler) requireMasterAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
@@ -25,39 +25,14 @@ func (h *Handler) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 
-		// Check master admin key
-		if token == h.cfg.AdminKey {
-			r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "true"))
-			next(w, r)
+		if token != h.cfg.AdminKey {
+			jsonError(w, "invalid admin key", http.StatusUnauthorized)
 			return
 		}
 
-		// Check JWT with SimpleAuthAdmin role
-		claims, err := h.jwt.ValidateToken(token)
-		if err == nil {
-			for _, role := range claims.Roles {
-				if role == "SimpleAuthAdmin" {
-					r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "true"))
-					next(w, r)
-					return
-				}
-			}
-			jsonError(w, "insufficient privileges — SimpleAuthAdmin role required", http.StatusForbidden)
-			return
-		}
-
-		jsonError(w, "invalid credentials", http.StatusUnauthorized)
-	}
-}
-
-func (h *Handler) requireMasterAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return h.adminAuth(func(w http.ResponseWriter, r *http.Request) {
-		if getContext(r.Context(), ctxIsAdmin) != "true" {
-			jsonError(w, "master admin key required", http.StatusForbidden)
-			return
-		}
+		r = r.WithContext(setContext(r.Context(), ctxIsAdmin, "true"))
 		next(w, r)
-	})
+	}
 }
 
 // --- Rate Limiter ---

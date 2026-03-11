@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -67,7 +66,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
-// Simplified flow: try `local` mapping -> try LDAP providers -> authenticate.
+// Flow: try LDAP (single config) -> try local password.
 // On successful LDAP auth, user profile is synced from the LDAP result.
 func (h *Handler) authenticateUser(username, password string) (string, []string, error) {
 	var userGUID string
@@ -75,98 +74,69 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 	var ldapResult *auth.LDAPResult
 	var authenticated bool
 
-	// Step 1: Try existing local identity mapping
-	guid, err := h.store.ResolveMapping("local", username)
-	if err == nil {
-		userGUID = guid
+	// Step 1: Try LDAP authentication (if configured)
+	ldapCfg, ldapErr := h.store.GetLDAPConfig()
+	if ldapErr == nil {
+		cfg := ldapConfigFromStore(ldapCfg)
+		result, err := auth.LDAPAuthenticate(cfg, username, password)
+		if err == nil {
+			ldapGroups = result.Groups
+			ldapResult = result
+			authenticated = true
+
+			// Resolve or JIT-provision user
+			guid, mapErr := h.store.ResolveMapping("ldap", username)
+			if mapErr == nil {
+				userGUID = guid
+			} else {
+				// JIT provisioning
+				newUser := &store.User{
+					DisplayName: result.DisplayName,
+					Email:       result.Email,
+					Department:  result.Department,
+					Company:     result.Company,
+					JobTitle:    result.JobTitle,
+				}
+				h.store.CreateUser(newUser)
+				userGUID = newUser.GUID
+				h.store.SetIdentityMapping("ldap", username, userGUID)
+				h.store.SetIdentityMapping("local", username, userGUID)
+			}
+		}
 	}
 
-	if userGUID != "" {
-		user, err := h.store.ResolveUser(userGUID)
-		if err != nil {
-			return "", nil, fmt.Errorf("user resolution failed")
-		}
-		userGUID = user.GUID
-		if user.Disabled {
-			return "", nil, fmt.Errorf("account disabled")
-		}
-
-		// Try LDAP auth via mapped LDAP providers
-		mappings, _ := h.store.GetMappingsForUser(userGUID)
-		for _, m := range mappings {
-			if len(m.Provider) > 5 && m.Provider[:5] == "ldap:" {
-				providerID := m.Provider[5:]
-				provider, err := h.store.GetLDAPProvider(providerID)
-				if err != nil {
-					continue
-				}
-				cfg := ldapConfigFromProvider(provider)
-				result, err := auth.LDAPAuthenticate(cfg, m.ExternalID, password)
-				if err == nil {
-					ldapGroups = result.Groups
-					ldapResult = result
-					authenticated = true
-					break
-				}
-			}
-		}
-
-		// Fallback: local password
-		if !authenticated && user.PasswordHash != "" {
-			if auth.CheckPassword(user.PasswordHash, password) {
-				authenticated = true
-			}
-		}
-	} else {
-		// Step 2: Try LDAP providers directly
-		providers, _ := h.store.ListLDAPProviders()
-		sort.Slice(providers, func(i, j int) bool {
-			return providers[i].Priority < providers[j].Priority
-		})
-		for _, p := range providers {
-			cfg := ldapConfigFromProvider(p)
-			result, err := auth.LDAPAuthenticate(cfg, username, password)
+	// Step 2: Fallback — try local identity mapping + password
+	if !authenticated {
+		guid, err := h.store.ResolveMapping("local", username)
+		if err == nil {
+			user, err := h.store.ResolveUser(guid)
 			if err == nil {
-				ldapGroups = result.Groups
-				ldapResult = result
-				authenticated = true
-				guid, mapErr := h.store.ResolveMapping("ldap:"+p.ProviderID, username)
-				if mapErr == nil {
-					userGUID = guid
-				} else {
-					// JIT provisioning
-					newUser := &store.User{
-						DisplayName: result.DisplayName,
-						Email:       result.Email,
-						Department:  result.Department,
-						Company:     result.Company,
-						JobTitle:    result.JobTitle,
-					}
-					h.store.CreateUser(newUser)
-					userGUID = newUser.GUID
-					h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, userGUID)
-					h.store.SetIdentityMapping("local", username, userGUID)
+				if user.Disabled {
+					return "", nil, fmt.Errorf("account disabled")
 				}
-				break
+				if user.PasswordHash != "" && auth.CheckPassword(user.PasswordHash, password) {
+					userGUID = user.GUID
+					authenticated = true
+				}
 			}
 		}
+	}
 
-		// Step 3: Fallback — try local users
-		if !authenticated {
-			users, _ := h.store.ListUsers()
-			for _, u := range users {
-				if u.PasswordHash != "" {
-					mappings, _ := h.store.GetMappingsForUser(u.GUID)
-					for _, m := range mappings {
-						if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
-							userGUID = u.GUID
-							authenticated = true
-							break
-						}
-					}
-					if authenticated {
+	// Step 3: Fallback — scan all local users
+	if !authenticated {
+		users, _ := h.store.ListUsers()
+		for _, u := range users {
+			if u.PasswordHash != "" {
+				mappings, _ := h.store.GetMappingsForUser(u.GUID)
+				for _, m := range mappings {
+					if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
+						userGUID = u.GUID
+						authenticated = true
 						break
 					}
+				}
+				if authenticated {
+					break
 				}
 			}
 		}
@@ -176,10 +146,13 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 		return "", nil, fmt.Errorf("invalid credentials")
 	}
 
-	// Resolve final user (follow merges)
+	// Check disabled
 	finalUser, err := h.store.ResolveUser(userGUID)
 	if err != nil {
 		return "", nil, fmt.Errorf("user resolution failed")
+	}
+	if finalUser.Disabled {
+		return "", nil, fmt.Errorf("account disabled")
 	}
 
 	// Sync profile from LDAP on every successful LDAP login
@@ -1037,49 +1010,43 @@ func (h *Handler) extractKerberosUsername(tokenBytes []byte, kt *keytab.Keytab) 
 // resolveKerberosUser looks up a Kerberos-authenticated user by sAMAccountName,
 // creates via JIT provisioning if needed, and returns the user GUID and LDAP groups.
 func (h *Handler) resolveKerberosUser(username string) (string, []string, error) {
+	ldapCfg, ldapErr := h.store.GetLDAPConfig()
+	if ldapErr != nil {
+		return "", nil, fmt.Errorf("ldap not configured")
+	}
+	cfg := ldapConfigFromStore(ldapCfg)
+
 	// Check existing identity mapping
 	if guid, err := h.store.ResolveMapping("local", username); err == nil {
 		user, err := h.store.ResolveUser(guid)
 		if err == nil {
-			// Fetch LDAP groups
 			var groups []string
-			providers, _ := h.store.ListLDAPProviders()
-			for _, p := range providers {
-				cfg := ldapConfigFromProvider(p)
-				result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
-				if err == nil {
-					groups = result.Groups
-					h.syncUserFromLDAP(user, result)
-					break
-				}
+			result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+			if err == nil {
+				groups = result.Groups
+				h.syncUserFromLDAP(user, result)
 			}
 			return user.GUID, groups, nil
 		}
 	}
 
 	// JIT provisioning: search LDAP, create user, set mappings
-	providers, _ := h.store.ListLDAPProviders()
-	for _, p := range providers {
-		cfg := ldapConfigFromProvider(p)
-		result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
-		if err != nil {
-			continue
-		}
-		newUser := &store.User{
-			DisplayName: result.DisplayName,
-			Email:       result.Email,
-			Department:  result.Department,
-			Company:     result.Company,
-			JobTitle:    result.JobTitle,
-		}
-		h.store.CreateUser(newUser)
-		h.store.SetIdentityMapping("ldap:"+p.ProviderID, username, newUser.GUID)
-		h.store.SetIdentityMapping("local", username, newUser.GUID)
-		log.Printf("[sso] JIT provisioned user %q (GUID=%s) from LDAP provider %q", username, newUser.GUID, p.Name)
-		return newUser.GUID, result.Groups, nil
+	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+	if err != nil {
+		return "", nil, fmt.Errorf("user %q not found in LDAP: %v", username, err)
 	}
-
-	return "", nil, fmt.Errorf("user %q not found in any LDAP provider", username)
+	newUser := &store.User{
+		DisplayName: result.DisplayName,
+		Email:       result.Email,
+		Department:  result.Department,
+		Company:     result.Company,
+		JobTitle:    result.JobTitle,
+	}
+	h.store.CreateUser(newUser)
+	h.store.SetIdentityMapping("ldap", username, newUser.GUID)
+	h.store.SetIdentityMapping("local", username, newUser.GUID)
+	log.Printf("[sso] JIT provisioned user %q (GUID=%s) from LDAP", username, newUser.GUID)
+	return newUser.GUID, result.Groups, nil
 }
 
 // handleNegotiateTestForm handles the fallback login form (POST).
@@ -1097,44 +1064,37 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Try LDAP authentication against all providers
-	providers, _ := h.store.ListLDAPProviders()
-	var authResult *auth.LDAPResult
-	var matchedProvider *store.LDAPProvider
-	var lastErr error
-	log.Printf("[test-negotiate] Form login attempt for user=%q against %d provider(s)", username, len(providers))
-	for _, p := range providers {
-		cfg := ldapConfigFromProvider(p)
-		log.Printf("[test-negotiate] Trying provider %q (URL=%s, BaseDN=%s, Filter=%s)", p.Name, p.URL, p.BaseDN, p.UserFilter)
-		result, err := auth.LDAPAuthenticate(cfg, username, password)
-		if err == nil {
-			authResult = result
-			matchedProvider = p
-			log.Printf("[test-negotiate] Auth succeeded via provider %q", p.Name)
-			break
-		}
-		lastErr = err
-		log.Printf("[test-negotiate] Auth failed via provider %q: %v", p.Name, err)
+	// Try LDAP authentication
+	ldapCfg, ldapErr := h.store.GetLDAPConfig()
+	if ldapErr != nil {
+		log.Printf("[test-negotiate] No LDAP configured")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, h.bp(negotiateTestLoginFailedHTML), "LDAP not configured")
+		return
 	}
 
-	if authResult == nil || matchedProvider == nil {
-		errMsg := "no LDAP providers configured"
-		if lastErr != nil {
-			errMsg = lastErr.Error()
+	cfg := ldapConfigFromStore(ldapCfg)
+	log.Printf("[test-negotiate] Form login attempt for user=%q (URL=%s, BaseDN=%s)", username, ldapCfg.URL, ldapCfg.BaseDN)
+	authResult, authErr := auth.LDAPAuthenticate(cfg, username, password)
+
+	if authResult == nil {
+		errMsg := "LDAP authentication failed"
+		if authErr != nil {
+			errMsg = authErr.Error()
 		}
-		log.Printf("[test-negotiate] All providers failed for user=%q: %s", username, errMsg)
+		log.Printf("[test-negotiate] Auth failed for user=%q: %s", username, errMsg)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, h.bp(negotiateTestLoginFailedHTML), html.EscapeString(errMsg))
 		return
 	}
 
 	userInfo := map[string]string{
-		"auth_method":   "LDAP Bind",
-		"principal":     username,
-		"realm":         matchedProvider.Name,
-		"username":      authResult.Username,
-		"provider_id":   matchedProvider.ProviderID,
-		"provider_name": matchedProvider.Name,
+		"auth_method": "LDAP Bind",
+		"principal":   username,
+		"username":    authResult.Username,
+	}
+	if ldapCfg.Domain != "" {
+		userInfo["domain"] = ldapCfg.Domain
 	}
 	if authResult.DisplayName != "" {
 		userInfo["display_name"] = authResult.DisplayName
@@ -1185,35 +1145,34 @@ func patchKeytabKVNO(kt *keytab.Keytab, ticketKVNO int) {
 	}
 }
 
-// enrichUserInfoFromLDAP looks up a username across all LDAP providers.
+// enrichUserInfoFromLDAP looks up a username in the LDAP config.
 func (h *Handler) enrichUserInfoFromLDAP(userInfo map[string]string, username string) {
-	providers, _ := h.store.ListLDAPProviders()
-	for _, p := range providers {
-		cfg := ldapConfigFromProvider(p)
-		result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
-		if err == nil {
-			userInfo["provider_id"] = p.ProviderID
-			userInfo["provider_name"] = p.Name
-			if result.DisplayName != "" {
-				userInfo["display_name"] = result.DisplayName
-			}
-			if result.Email != "" {
-				userInfo["email"] = result.Email
-			}
-			if result.Department != "" {
-				userInfo["department"] = result.Department
-			}
-			if result.Company != "" {
-				userInfo["company"] = result.Company
-			}
-			if result.JobTitle != "" {
-				userInfo["job_title"] = result.JobTitle
-			}
-			if len(result.Groups) > 0 {
-				userInfo["groups"] = strings.Join(result.Groups, ", ")
-			}
-			break
-		}
+	ldapCfg, err := h.store.GetLDAPConfig()
+	if err != nil {
+		return
+	}
+	cfg := ldapConfigFromStore(ldapCfg)
+	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+	if err != nil {
+		return
+	}
+	if result.DisplayName != "" {
+		userInfo["display_name"] = result.DisplayName
+	}
+	if result.Email != "" {
+		userInfo["email"] = result.Email
+	}
+	if result.Department != "" {
+		userInfo["department"] = result.Department
+	}
+	if result.Company != "" {
+		userInfo["company"] = result.Company
+	}
+	if result.JobTitle != "" {
+		userInfo["job_title"] = result.JobTitle
+	}
+	if len(result.Groups) > 0 {
+		userInfo["groups"] = strings.Join(result.Groups, ", ")
 	}
 }
 
