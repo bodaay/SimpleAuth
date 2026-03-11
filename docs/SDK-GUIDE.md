@@ -612,6 +612,8 @@ Token verification is **local** -- no network call to SimpleAuth per request. Th
 
 Assign roles to users. Check them in your handlers.
 
+> **Note:** Roles must be defined in SimpleAuth before they can be assigned to users. Define the available roles first via the admin UI or `PUT /api/admin/defaults/roles`, then assign them to individual users.
+
 ```
 Admin: PUT /api/admin/users/guid/roles ["admin", "editor"]
 Login: roles appear in the JWT
@@ -621,6 +623,8 @@ App:   user.hasRole("editor") ? allow : deny
 ### Pattern 3: Permission-Based Access Control
 
 More granular than roles. Use for specific operations.
+
+> **Note:** Permissions must be defined in SimpleAuth before they can be assigned to users. Define the available permissions first via the admin UI or `PUT /api/admin/permissions`, then assign them to individual users.
 
 ```
 Admin: PUT /api/admin/users/guid/permissions ["read:posts", "write:posts", "delete:own-posts"]
@@ -643,7 +647,7 @@ Never disable TLS verification in production. Use a proper certificate (Let's En
 
 ### Pattern 5: Admin Operations via SDK
 
-Use the admin key to manage roles and permissions:
+Use the admin key to manage roles and permissions. SimpleAuth acts as the authority for roles and permissions -- they must be defined in SimpleAuth before they can be assigned to users.
 
 ```typescript
 const adminAuth = createSimpleAuth({
@@ -651,7 +655,10 @@ const adminAuth = createSimpleAuth({
   adminKey: 'YOUR_ADMIN_KEY',
 });
 
-// These work with the admin key (global operations)
+// Step 1: Define available permissions (PUT /api/admin/permissions)
+// This is done via the admin UI or API before assigning to users.
+
+// Step 2: Assign roles and permissions to users
 await adminAuth.setUserRoles('user-guid', ['editor']);
 await adminAuth.setUserPermissions('user-guid', ['write:posts']);
 ```

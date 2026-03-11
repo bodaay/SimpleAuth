@@ -184,7 +184,7 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Rich profiles** -- name, email, department, company, job title, groups synced from AD on every login
 
 ### Authorization
-- **Global roles and permissions** -- define roles and permissions at the instance level, assigned to users
+- **Global roles and permissions** -- define roles and permissions at the instance level, assigned to users. SimpleAuth is the authority: roles and permissions must be defined before they can be assigned.
 - **Default roles** -- auto-assigned to new users on first login
 - **Role-permission mapping** -- associate permissions with roles for structured access control
 - **RS256 JWTs** -- auto-generated RSA-2048 keys, JWKS endpoint, all claims in the token
@@ -390,7 +390,7 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 | **Roles** | `GET/PUT /api/admin/users/{guid}/roles`, `GET/PUT /api/admin/users/{guid}/permissions` |
 | **Default Roles** | `GET/PUT /api/admin/defaults/roles` |
 | **Role-Permissions** | `GET/PUT /api/admin/role-permissions` |
-| **All Roles/Perms** | `GET /api/admin/roles`, `GET /api/admin/permissions` |
+| **All Roles/Perms** | `GET /api/admin/roles`, `GET /api/admin/permissions`, `PUT /api/admin/permissions` (define available permissions) |
 | **LDAP** | CRUD `/api/admin/ldap`, auto-discover, import/export, test connection |
 | **AD Sync** | `POST /api/admin/ldap/:id/sync-user`, `POST /api/admin/ldap/:id/sync-all` |
 | **AD Setup Script** | `GET /api/admin/setup-script` (interactive PowerShell with hostname pre-injected) |

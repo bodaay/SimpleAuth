@@ -165,6 +165,8 @@ var perms = await client.GetUserPermissionsAsync(userGuid);
 await client.SetUserPermissionsAsync(userGuid, new List<string> { "reports:read", "reports:write" });
 ```
 
+> **Note:** Roles and permissions must be defined in SimpleAuth before they can be assigned to users. Use the admin API to define roles (`PUT /api/admin/role-permissions`) and permissions (`PUT /api/admin/permissions`) first, or define them in the Admin UI under Roles & Permissions.
+
 ## Authorization Attributes
 
 Use `[SimpleAuthRole]` and `[SimpleAuthPermission]` on controllers or actions:
