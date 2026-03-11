@@ -414,6 +414,15 @@ func (h *Handler) handleSetRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate all roles exist in the registry
+	if invalid, err := h.store.ValidateRolesExist(roles); err != nil {
+		jsonError(w, "failed to validate roles", http.StatusInternalServerError)
+		return
+	} else if invalid != "" {
+		jsonError(w, fmt.Sprintf("role %q is not defined — create it first", invalid), http.StatusBadRequest)
+		return
+	}
+
 	oldRoles, _ := h.store.GetUserRoles(guid)
 	if err := h.store.SetUserRoles(guid, roles); err != nil {
 		jsonError(w, "failed to set roles", http.StatusInternalServerError)
@@ -450,6 +459,15 @@ func (h *Handler) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate all permissions exist in the registry
+	if invalid, err := h.store.ValidatePermissionsExist(perms); err != nil {
+		jsonError(w, "failed to validate permissions", http.StatusInternalServerError)
+		return
+	} else if invalid != "" {
+		jsonError(w, fmt.Sprintf("permission %q is not defined — create it first", invalid), http.StatusBadRequest)
+		return
+	}
+
 	oldPerms, _ := h.store.GetUserPermissions(guid)
 	if err := h.store.SetUserPermissions(guid, perms); err != nil {
 		jsonError(w, "failed to set permissions", http.StatusInternalServerError)
@@ -478,6 +496,16 @@ func (h *Handler) handleSetDefaultRoles(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// Validate all default roles exist in the registry
+	if invalid, err := h.store.ValidateRolesExist(roles); err != nil {
+		jsonError(w, "failed to validate roles", http.StatusInternalServerError)
+		return
+	} else if invalid != "" {
+		jsonError(w, fmt.Sprintf("role %q is not defined — create it first", invalid), http.StatusBadRequest)
+		return
+	}
+
 	if err := h.store.SetDefaultRoles(roles); err != nil {
 		jsonError(w, "failed to set default roles", http.StatusInternalServerError)
 		return
@@ -506,6 +534,18 @@ func (h *Handler) handleSetRolePermissions(w http.ResponseWriter, r *http.Reques
 		jsonError(w, "invalid request body — expected {\"role\": [\"perm1\", \"perm2\"]}", http.StatusBadRequest)
 		return
 	}
+
+	// Validate all permissions in the mapping exist in the permissions registry
+	for role, perms := range mapping {
+		if invalid, err := h.store.ValidatePermissionsExist(perms); err != nil {
+			jsonError(w, "failed to validate permissions", http.StatusInternalServerError)
+			return
+		} else if invalid != "" {
+			jsonError(w, fmt.Sprintf("permission %q (in role %q) is not defined — create it first", invalid, role), http.StatusBadRequest)
+			return
+		}
+	}
+
 	if err := h.store.SetRolePermissions(mapping); err != nil {
 		jsonError(w, "failed to set role permissions", http.StatusInternalServerError)
 		return
@@ -533,7 +573,7 @@ func (h *Handler) handleListAllRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleListAllPermissions(w http.ResponseWriter, r *http.Request) {
-	perms, err := h.store.ListAllPermissions()
+	perms, err := h.store.GetDefinedPermissions()
 	if err != nil {
 		jsonError(w, "failed to list permissions", http.StatusInternalServerError)
 		return
@@ -541,6 +581,24 @@ func (h *Handler) handleListAllPermissions(w http.ResponseWriter, r *http.Reques
 	if perms == nil {
 		perms = []string{}
 	}
+	jsonResp(w, perms, http.StatusOK)
+}
+
+func (h *Handler) handleSetDefinedPermissions(w http.ResponseWriter, r *http.Request) {
+	var perms []string
+	if err := readJSON(r, &perms); err != nil {
+		jsonError(w, "invalid request body, expected array of strings", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.SetDefinedPermissions(perms); err != nil {
+		jsonError(w, "failed to set permissions", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit("permissions_registry_changed", "admin", getClientIP(r), map[string]interface{}{
+		"permissions": perms,
+	})
+
 	jsonResp(w, perms, http.StatusOK)
 }
 

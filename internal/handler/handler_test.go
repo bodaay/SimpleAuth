@@ -312,13 +312,27 @@ func TestRolesAndPermissions(t *testing.T) {
 	h, _ := testSetup(t)
 	adm := adminHeaders()
 
+	// Define roles first (role registry)
+	w := doJSON(h, "PUT", "/api/admin/role-permissions",
+		map[string][]string{"admin": {}, "editor": {}}, adm)
+	if w.Code != 200 {
+		t.Fatalf("define roles: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Define permissions first (permissions registry)
+	w = doJSON(h, "PUT", "/api/admin/permissions",
+		[]string{"read", "write", "delete"}, adm)
+	if w.Code != 200 {
+		t.Fatalf("define permissions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
 	// Create user
-	w := doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "RoleUser"}, adm)
+	w = doJSON(h, "POST", "/api/admin/users", map[string]interface{}{"display_name": "RoleUser"}, adm)
 	var user map[string]interface{}
 	parseJSON(t, w, &user)
 	guid := user["guid"].(string)
 
-	// Set roles
+	// Set roles (should succeed since roles are defined)
 	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/roles",
 		[]string{"admin", "editor"}, adm)
 	if w.Code != 200 {
@@ -336,7 +350,7 @@ func TestRolesAndPermissions(t *testing.T) {
 		t.Fatalf("expected 2 roles, got %d", len(roles))
 	}
 
-	// Set permissions
+	// Set permissions (should succeed since permissions are defined)
 	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/permissions",
 		[]string{"read", "write", "delete"}, adm)
 	if w.Code != 200 {
@@ -347,6 +361,20 @@ func TestRolesAndPermissions(t *testing.T) {
 	w = doJSON(h, "GET", "/api/admin/users/"+guid+"/permissions", nil, adm)
 	if w.Code != 200 {
 		t.Fatalf("get permissions: expected 200, got %d", w.Code)
+	}
+
+	// Assigning undefined role should fail
+	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/roles",
+		[]string{"nonexistent"}, adm)
+	if w.Code != 400 {
+		t.Fatalf("assign undefined role: expected 400, got %d", w.Code)
+	}
+
+	// Assigning undefined permission should fail
+	w = doJSON(h, "PUT", "/api/admin/users/"+guid+"/permissions",
+		[]string{"nonexistent"}, adm)
+	if w.Code != 400 {
+		t.Fatalf("assign undefined permission: expected 400, got %d", w.Code)
 	}
 }
 
