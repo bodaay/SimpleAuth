@@ -519,16 +519,17 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	adminActor := "admin"
 
 	claims := auth.Claims{
-		GUID:           target.GUID,
-		Name:           target.DisplayName,
-		Email:          target.Email,
-		Department:     target.Department,
-		Company:        target.Company,
-		JobTitle:       target.JobTitle,
-		Roles:          roles,
-		Permissions:    perms,
-		Impersonated:   true,
-		ImpersonatedBy: adminActor,
+		GUID:              target.GUID,
+		Name:              target.DisplayName,
+		Email:             target.Email,
+		PreferredUsername:  h.resolvePreferredUsername(target),
+		Department:        target.Department,
+		Company:           target.Company,
+		JobTitle:          target.JobTitle,
+		Roles:             roles,
+		Permissions:       perms,
+		Impersonated:      true,
+		ImpersonatedBy:    adminActor,
 	}
 	claims.Subject = target.GUID
 
