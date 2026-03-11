@@ -37,12 +37,13 @@ type Options struct {
 
 // TokenResponse is the OAuth2 token endpoint response.
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	IDToken      string `json:"id_token,omitempty"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	Scope        string `json:"scope,omitempty"`
+	AccessToken         string `json:"access_token"`
+	RefreshToken        string `json:"refresh_token,omitempty"`
+	IDToken             string `json:"id_token,omitempty"`
+	TokenType           string `json:"token_type"`
+	ExpiresIn           int    `json:"expires_in"`
+	Scope               string `json:"scope,omitempty"`
+	ForcePasswordChange bool   `json:"force_password_change,omitempty"`
 }
 
 // User represents the claims extracted from a verified JWT.
@@ -264,7 +265,7 @@ func (c *Client) adminRequest(ctx context.Context, method, path string, payload 
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Basic "+c.basicAuth())
+	req.Header.Set("Authorization", "Bearer "+c.clientSecret)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -284,7 +285,7 @@ func (c *Client) adminRequest(ctx context.Context, method, path string, payload 
 
 // GetUserRoles returns the roles assigned to a user.
 func (c *Client) GetUserRoles(ctx context.Context, guid string) ([]string, error) {
-	body, err := c.adminRequest(ctx, http.MethodGet, fmt.Sprintf("/admin/users/%s/roles", guid), nil)
+	body, err := c.adminRequest(ctx, http.MethodGet, fmt.Sprintf("/api/admin/users/%s/roles", guid), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -297,13 +298,13 @@ func (c *Client) GetUserRoles(ctx context.Context, guid string) ([]string, error
 
 // SetUserRoles replaces the roles for a user.
 func (c *Client) SetUserRoles(ctx context.Context, guid string, roles []string) error {
-	_, err := c.adminRequest(ctx, http.MethodPut, fmt.Sprintf("/admin/users/%s/roles", guid), roles)
+	_, err := c.adminRequest(ctx, http.MethodPut, fmt.Sprintf("/api/admin/users/%s/roles", guid), roles)
 	return err
 }
 
 // GetUserPermissions returns the permissions assigned to a user.
 func (c *Client) GetUserPermissions(ctx context.Context, guid string) ([]string, error) {
-	body, err := c.adminRequest(ctx, http.MethodGet, fmt.Sprintf("/admin/users/%s/permissions", guid), nil)
+	body, err := c.adminRequest(ctx, http.MethodGet, fmt.Sprintf("/api/admin/users/%s/permissions", guid), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +317,7 @@ func (c *Client) GetUserPermissions(ctx context.Context, guid string) ([]string,
 
 // SetUserPermissions replaces the permissions for a user.
 func (c *Client) SetUserPermissions(ctx context.Context, guid string, perms []string) error {
-	_, err := c.adminRequest(ctx, http.MethodPut, fmt.Sprintf("/admin/users/%s/permissions", guid), perms)
+	_, err := c.adminRequest(ctx, http.MethodPut, fmt.Sprintf("/api/admin/users/%s/permissions", guid), perms)
 	return err
 }
 

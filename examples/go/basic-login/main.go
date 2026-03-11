@@ -64,6 +64,10 @@ func main() {
 	fmt.Printf("  Token type: %s\n", tokens.TokenType)
 	fmt.Printf("  Refresh token present: %v\n", tokens.RefreshToken != "")
 
+	if tokens.ForcePasswordChange {
+		fmt.Println("\n  *** Password change required — the user must change their password before continuing. ***")
+	}
+
 	// -----------------------------------------------------------------
 	// Step 2: Verify the access token
 	// -----------------------------------------------------------------

@@ -58,6 +58,9 @@ def main() -> None:
     print(f"  Expires in:    {tokens.expires_in} seconds")
     print(f"  Refresh token: {tokens.refresh_token[:40] if tokens.refresh_token else 'N/A'}...")
 
+    if getattr(tokens, "force_password_change", False):
+        print("\n  ** You must change your password before continuing. **")
+
     # ------------------------------------------------------------------
     # Step 2: Verify the access token and inspect user claims
     # ------------------------------------------------------------------

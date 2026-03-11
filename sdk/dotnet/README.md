@@ -118,6 +118,18 @@ var authUrl = client.GetAuthorizationUrl(
 var tokens = await client.ExchangeCodeAsync(code, "https://myapp.com/callback");
 ```
 
+### Handling Force Password Change
+
+The login response may indicate that the user must change their password before proceeding:
+
+```csharp
+var tokens = await client.LoginAsync("alice", "password123");
+if (tokens.ForcePasswordChange)
+{
+    // Redirect user to change their password
+}
+```
+
 ### Refresh Token
 
 ```csharp
@@ -140,6 +152,8 @@ var info = await client.UserInfoAsync(tokens.AccessToken);
 ```
 
 ## Admin Operations
+
+Admin operations require `ClientSecret`. The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
 
 ```csharp
 // Roles

@@ -509,6 +509,151 @@ tr:hover td { background: var(--bg-hover); }
 }
 .theme-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
 
+/* === Roles Split Panel === */
+.roles-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  min-height: 480px;
+  overflow: hidden;
+}
+.roles-sidebar {
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+}
+.roles-sidebar-header {
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-bottom: 1px solid var(--border-default);
+}
+.roles-sidebar-header h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-2);
+}
+.roles-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-2);
+}
+.role-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 120ms ease;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+.role-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.role-item.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.role-item .role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-item .role-default-star {
+  font-size: 1rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  line-height: 1;
+  transition: color 120ms ease;
+  flex-shrink: 0;
+}
+.role-item .role-default-star:hover { color: var(--brand-copper); }
+.role-item .role-default-star.is-default { color: var(--brand-copper); }
+.role-item .role-perm-count {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+.roles-add-form {
+  padding: var(--sp-3) var(--sp-3);
+  border-top: 1px solid var(--border-default);
+  display: flex;
+  gap: var(--sp-2);
+}
+.roles-add-form input {
+  flex: 1;
+  min-width: 0;
+}
+.roles-detail {
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+}
+.roles-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--sp-2);
+}
+.roles-detail-header h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+.roles-detail-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-5);
+}
+.roles-perms-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-4);
+}
+.perm-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  transition: background 120ms ease;
+}
+.perm-tag:hover { background: var(--bg-active); }
+.perm-tag button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 0;
+  line-height: 1;
+}
+.perm-tag button:hover { color: var(--status-error-text); }
+.roles-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
 /* === Responsive === */
 @media (max-width: 768px) {
   .sidebar { width: 60px; }
@@ -517,4 +662,6 @@ tr:hover td { background: var(--bg-hover); }
   .main-content { margin-left: 60px; padding: var(--sp-4); }
   .form-row { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: 1fr 1fr; }
+  .roles-layout { grid-template-columns: 1fr; min-height: auto; }
+  .roles-sidebar { border-right: none; border-bottom: 1px solid var(--border-default); }
 }

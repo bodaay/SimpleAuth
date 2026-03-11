@@ -11,7 +11,7 @@
 
 **SimpleAuth** is a single-instance identity server that replaces Keycloak, ADFS, and custom LDAP code with a single Go binary. It connects to your Active Directory, handles Kerberos/SPNEGO for transparent Windows SSO, provides a clean REST API, and issues RS256 JWTs -- all with zero external dependencies and an embedded admin UI.
 
-Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. OIDC client configuration (client ID, client secret, redirect URIs) is set at the instance level via environment variables.
+Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. OIDC client configuration (client ID, client secret, redirect URI) is set at the instance level via environment variables.
 
 Every user gets a stable GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
 
@@ -36,7 +36,7 @@ docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_HOSTNAME=auth.corp.local \
   -e AUTH_CLIENT_ID=my-app \
   -e AUTH_CLIENT_SECRET=changeme \
-  -e AUTH_REDIRECT_URIS=https://myapp.corp.local/callback \
+  -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
 ```
@@ -55,14 +55,11 @@ On first run, SimpleAuth will:
 3. Auto-generate an admin key if none configured (printed to stdout)
 4. Start HTTPS on port 9090 and HTTP redirect on port 80
 
-Open `https://<hostname>:9090` and sign in with your admin key.
+The root URL `/` redirects to `/login`. The admin UI is at `/admin` -- open `https://<hostname>:9090/admin` and sign in with your admin key.
 
 ### Admin Access
 
-SimpleAuth uses a two-tier admin model:
-
-1. **ADMIN_KEY** -- a bootstrap secret set via config or environment variable. Use it to perform initial setup (create the first admin user, configure LDAP, etc.).
-2. **`SimpleAuthAdmin` role** -- any user assigned this role gets full admin access to the instance. Once you have at least one admin user, you can stop using the ADMIN_KEY for day-to-day operations.
+Admin access is controlled exclusively by the **ADMIN_KEY** -- a secret set via config or environment variable. Include it as `Authorization: Bearer <admin-key>` in API requests or enter it in the admin UI at `/admin`.
 
 ## The AD Setup That Changes Everything
 
@@ -171,6 +168,10 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Kerberos/SPNEGO** -- transparent Windows SSO, auto-configured keytab
 - **LDAP bind** -- form-based login with fallback user filter detection (sAMAccountName, userPrincipalName, uid)
 - **Local passwords** -- bcrypt-hashed, for non-AD users
+- **Password policy** -- configurable minimum length and complexity requirements (uppercase, lowercase, digit, special)
+- **Password history** -- prevent reuse of recent passwords
+- **Account lockout** -- automatic lockout after repeated failed login attempts, with configurable threshold and duration
+- **Force password change** -- admin can require a user to change their password on next login
 - **Hosted login page** -- redirect-based flow, apps don't need their own login form
 - **OIDC / Keycloak compatible** -- authorization_code, client_credentials, password grant, refresh_token, token introspection
 - **Impersonation** -- admins generate tokens as any user, fully audited
@@ -194,7 +195,7 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Embedded admin UI** -- Preact SPA with dark mode, no build step
 - **HTTPS or reverse proxy** -- auto-generates self-signed certs, or HTTP-only mode behind nginx/Traefik
 - **User self-service** -- `/account` page for profile view and password change
-- **Multi-LDAP/AD** -- connect multiple directories with priority-based failover
+- **LDAP/AD integration** -- connect to Active Directory or LDAP with auto-discovery
 - **Auto-discovery** -- point at a domain, SimpleAuth figures out DCs, base DN, and filters
 - **Backup/restore** -- live BoltDB snapshots via API
 - **Audit logging** -- every action logged with configurable retention
@@ -260,7 +261,7 @@ docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_HOSTNAME=auth.corp.local \
   -e AUTH_CLIENT_ID=my-app \
   -e AUTH_CLIENT_SECRET=supersecret \
-  -e AUTH_REDIRECT_URIS=https://myapp.corp.local/callback \
+  -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
 ```
@@ -294,7 +295,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_ADMIN_KEY` | auto-generated | Bootstrap admin API key |
 | `AUTH_CLIENT_ID` | | OIDC client ID for this instance |
 | `AUTH_CLIENT_SECRET` | | OIDC client secret for this instance |
-| `AUTH_REDIRECT_URIS` | | Allowed OIDC redirect URIs (comma-separated) |
+| `AUTH_REDIRECT_URI` | | Allowed OIDC redirect URI (comma-separated) |
 | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only; for service account naming) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |
 | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime |
@@ -312,6 +313,14 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_RATE_LIMIT_WINDOW` | `1m` | Rate limit window |
 | `AUTH_CORS_ORIGINS` | | CORS origins (comma-separated or `*`) |
 | `AUTH_DEFAULT_ROLES` | | Default roles for new users on first login (comma-separated) |
+| `AUTH_PASSWORD_MIN_LENGTH` | `8` | Minimum password length |
+| `AUTH_PASSWORD_REQUIRE_UPPERCASE` | `false` | Require at least one uppercase letter |
+| `AUTH_PASSWORD_REQUIRE_LOWERCASE` | `false` | Require at least one lowercase letter |
+| `AUTH_PASSWORD_REQUIRE_DIGIT` | `false` | Require at least one digit |
+| `AUTH_PASSWORD_REQUIRE_SPECIAL` | `false` | Require at least one special character |
+| `AUTH_PASSWORD_HISTORY_COUNT` | `0` | Number of previous passwords to remember (0 = disabled) |
+| `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Failed login attempts before lockout (0 = disabled) |
+| `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | Duration of account lockout |
 
 ### Reverse Proxy (nginx / Traefik / Caddy)
 
@@ -373,7 +382,7 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 
 ### Admin
 
-All admin endpoints require either `Authorization: Bearer <admin-key>` or a valid JWT from a user with the `SimpleAuthAdmin` role.
+All admin endpoints require `Authorization: Bearer <admin-key>`.
 
 | Category | Endpoints |
 |----------|-----------|
@@ -387,6 +396,8 @@ All admin endpoints require either `Authorization: Bearer <admin-key>` or a vali
 | **AD Setup Script** | `GET /api/admin/setup-script` (interactive PowerShell with hostname pre-injected) |
 | **Kerberos** | Setup, cleanup, status via `/api/admin/ldap/:id/setup-kerberos` |
 | **Mappings** | Identity mappings CRUD, resolve |
+| **Password Policy** | `GET /api/admin/password-policy` |
+| **Account Unlock** | `PUT /api/admin/users/{guid}/unlock` |
 | **Operations** | Backup, restore, audit log, server info |
 
 See [docs/API.md](docs/API.md) for the complete API reference with request/response examples.
@@ -400,10 +411,12 @@ User types "jsmith" + password into your app
   POST /api/auth/login
   { "username": "jsmith" }
         |
-        +-- Search LDAP providers for "jsmith"
-        |     +-- Found in AD -> create GUID + mapping (if first login)
+        +-- Check local users first
+        |     +-- Found locally -> authenticate with bcrypt password
         |
-        +-- Authenticate: LDAP bind with password
+        +-- If no local match, search LDAP for "jsmith"
+        |     +-- Found in AD -> create GUID + mapping (if first login)
+        |     +-- Authenticate: LDAP bind with password
         |
         +-- Sync profile: name, email, dept, company, title, groups
         |
@@ -422,6 +435,8 @@ User types "jsmith" + password into your app
 ```
 
 Users are auto-created on first login. No import, no sync, no migration.
+
+**Authentication order:** Local users are always checked first. If no local match is found, LDAP is tried next.
 
 ## Architecture
 

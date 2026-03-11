@@ -59,7 +59,7 @@ Every request follows this path:
 1. **TLS termination** -- SimpleAuth handles its own TLS. Always HTTPS.
 2. **CORS** -- If `cors_origins` is configured, CORS headers are added. `OPTIONS` requests are handled automatically.
 3. **Routing** -- Go 1.22+ `ServeMux` with method-based routing (`POST /api/auth/login`, etc.)
-4. **Authentication middleware** -- Admin endpoints check for a valid admin key or a bearer token from a user with the `SimpleAuthAdmin` role.
+4. **Authentication middleware** -- Admin endpoints require a valid admin API key (`Authorization: Bearer <admin_key>`).
 5. **Handler** -- Business logic executes.
 6. **JSON response** -- All responses are JSON with appropriate status codes.
 
@@ -98,7 +98,7 @@ Client                    SimpleAuth                 Active Directory
   |<-------------------------|                              |
 ```
 
-**How provider ordering works:** LDAP providers have a `priority` field. Providers are tried in priority order (lowest first). The first successful authentication wins. If a user has an existing identity mapping, that specific provider is tried first.
+**LDAP configuration:** SimpleAuth supports a single LDAP provider configuration. If a user has an existing identity mapping, LDAP authentication is attempted using the stored mapping.
 
 ### 2. Kerberos/SPNEGO Authentication
 
@@ -153,8 +153,8 @@ Client                    SimpleAuth
 
 When a login request comes in:
 
-1. Try all LDAP providers in priority order
-2. Try local password authentication (`local:{username}` mapping)
+1. Try local password authentication (`local:{username}` mapping) -- local users always take priority
+2. Try LDAP authentication if configured
 
 ---
 
@@ -305,7 +305,7 @@ SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, emb
 |---|---|---|---|
 | `config` | arbitrary string | arbitrary bytes | Generic config store (default roles, role-permissions, etc.) |
 | `users` | GUID (UUID) | JSON `User` | User records |
-| `ldap_providers` | Provider ID | JSON `LDAPProvider` | LDAP/AD configurations |
+| `ldap_providers` | Provider ID | JSON `LDAPProvider` | LDAP/AD configuration (single provider) |
 | `identity_mappings` | `provider:external_id` | GUID string | Maps external IDs to users |
 | `idx_mappings_by_guid` | GUID | JSON `[]IdentityMapping` | Reverse index: user -> all mappings |
 | `user_roles` | `guid` | JSON `[]string` | Roles for users (global per instance) |
@@ -334,10 +334,10 @@ SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, emb
 
 **Identity Mapping Pattern:**
 
-The identity mapping system is the heart of SimpleAuth's multi-provider support. Mappings use a `provider:external_id` format:
+The identity mapping system is the heart of SimpleAuth's authentication support. Mappings use a `provider:external_id` format:
 
 - `local:jsmith` -- Local user "jsmith"
-- `ldap:corp-ad:S-1-5-21-...` -- AD user by objectGUID
+- `ldap:S-1-5-21-...` -- AD user by objectGUID
 - `kerberos:jsmith@CORP.LOCAL` -- Kerberos principal
 
 When a user authenticates, SimpleAuth resolves their identity mapping to find (or create) their user record. This means the same person can authenticate via LDAP, Kerberos, or a local password and end up as the same user.
@@ -356,10 +356,18 @@ When a user authenticates, SimpleAuth resolves their identity mapping to find (o
 
 ### Authorization
 
-Two levels of admin access:
+Admin access is controlled exclusively by the admin API key:
 
-1. **Admin Key** -- Full access to everything. Used for initial bootstrap.
-2. **SimpleAuthAdmin role** -- Users with this role get full admin access. Assign this role after bootstrap to enable user-based admin access.
+- **Admin Key** -- All admin endpoints require `Authorization: Bearer <admin_key>`. The key is set via the `AUTH_ADMIN_KEY` environment variable or `admin_key` config field. There is no role-based admin access; only the admin key grants administrative privileges.
+
+### Password Security
+
+SimpleAuth includes several configurable password security features:
+
+- **Password policy** -- Configurable minimum length and complexity requirements. Complexity checks include: uppercase letter, lowercase letter, digit, and special character. Each requirement can be enabled independently.
+- **Password history** -- Prevents users from reusing recent passwords. The number of remembered passwords is configurable via `AUTH_PASSWORD_HISTORY_COUNT`. When a user changes their password, it is checked against their last N password hashes.
+- **Account lockout** -- Accounts are locked after a configurable number of consecutive failed login attempts (`AUTH_ACCOUNT_LOCKOUT_THRESHOLD`). Locked accounts are automatically unlocked after a configurable duration (`AUTH_ACCOUNT_LOCKOUT_DURATION`). Admins can also manually unlock accounts.
+- **Force password change** -- An admin can set a flag on a user requiring them to change their password on next login. When this flag is set, the login response includes `force_password_change: true`, signaling the client to prompt the user for a new password before proceeding.
 
 ### Token Security
 

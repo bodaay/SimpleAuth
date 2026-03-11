@@ -81,6 +81,9 @@ public class TokenResponse
 
     [JsonPropertyName("scope")]
     public string? Scope { get; set; }
+
+    [JsonPropertyName("force_password_change")]
+    public bool ForcePasswordChange { get; set; }
 }
 
 public class UserInfo

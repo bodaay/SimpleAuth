@@ -195,7 +195,7 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		BaseDN:          baseDN,
 		BindDN:          bindDN,
 		BindPassword:    req.Password,
-		UserFilter:      "(sAMAccountName={{username}})",
+		UsernameAttr:    "sAMAccountName",
 		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
 		DisplayNameAttr: "displayName",
 		EmailAttr:       "mail",
@@ -327,14 +327,14 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Detect user filter
-	userFilter := "(uid={{username}})"
+	// Detect username attribute
+	usernameAttr := "uid"
 	adTest, _ := conn.Search(ldaplib.NewSearchRequest(
 		baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
 		"(&(objectClass=person)(sAMAccountName=*))", []string{"sAMAccountName"}, nil,
 	))
 	if adTest != nil && len(adTest.Entries) > 0 {
-		userFilter = "(sAMAccountName={{username}})"
+		usernameAttr = "sAMAccountName"
 	}
 
 	cfg := &store.LDAPConfig{
@@ -342,7 +342,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		BaseDN:          baseDN,
 		BindDN:          bindDN,
 		BindPassword:    req.Password,
-		UserFilter:      userFilter,
+		UsernameAttr:    usernameAttr,
 		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
 		DisplayNameAttr: "displayName",
 		EmailAttr:       "mail",
@@ -366,4 +366,143 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	resp := *cfg
 	resp.BindPassword = "••••••••"
 	jsonResp(w, resp, http.StatusOK)
+}
+
+// handleSearchLDAPUsers searches the LDAP directory and returns matching users.
+// POST /api/admin/ldap/search-users
+// Body: {"query": "john", "limit": 50}
+func (h *Handler) handleSearchLDAPUsers(w http.ResponseWriter, r *http.Request) {
+	p, err := h.store.GetLDAPConfig()
+	if err != nil {
+		jsonError(w, "ldap not configured", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Query == "" {
+		jsonError(w, "query required", http.StatusBadRequest)
+		return
+	}
+
+	cfg := ldapConfigFromStore(p)
+	results, err := auth.LDAPSearchUsers(cfg, req.Query, req.Limit)
+	if err != nil {
+		jsonError(w, fmt.Sprintf("LDAP search failed: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	// Check which users are already imported
+	type searchResult struct {
+		Username    string   `json:"username"`
+		DisplayName string   `json:"display_name"`
+		Email       string   `json:"email"`
+		Department  string   `json:"department"`
+		Company     string   `json:"company"`
+		JobTitle    string   `json:"job_title"`
+		Groups      []string `json:"groups"`
+		DN          string   `json:"dn"`
+		Imported    bool     `json:"imported"`
+		UserGUID    string   `json:"user_guid,omitempty"`
+	}
+
+	out := make([]searchResult, 0, len(results))
+	for _, r := range results {
+		sr := searchResult{
+			Username:    r.Username,
+			DisplayName: r.DisplayName,
+			Email:       r.Email,
+			Department:  r.Department,
+			Company:     r.Company,
+			JobTitle:    r.JobTitle,
+			Groups:      r.Groups,
+			DN:          r.DN,
+		}
+		// Check if already mapped
+		if guid, err := h.store.ResolveMapping("ldap", r.Username); err == nil {
+			sr.Imported = true
+			sr.UserGUID = guid
+		}
+		out = append(out, sr)
+	}
+
+	jsonResp(w, out, http.StatusOK)
+}
+
+// handleImportLDAPUsers imports one or more LDAP users into SimpleAuth.
+// POST /api/admin/ldap/import-users
+// Body: {"usernames": ["alice", "bob"]}
+func (h *Handler) handleImportLDAPUsers(w http.ResponseWriter, r *http.Request) {
+	p, err := h.store.GetLDAPConfig()
+	if err != nil {
+		jsonError(w, "ldap not configured", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Usernames []string `json:"usernames"`
+	}
+	if err := readJSON(r, &req); err != nil || len(req.Usernames) == 0 {
+		jsonError(w, "usernames required", http.StatusBadRequest)
+		return
+	}
+
+	cfg := ldapConfigFromStore(p)
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "sAMAccountName"
+	}
+
+	type importResult struct {
+		Username string `json:"username"`
+		Status   string `json:"status"`
+		UserGUID string `json:"user_guid,omitempty"`
+		Error    string `json:"error,omitempty"`
+	}
+
+	results := make([]importResult, 0, len(req.Usernames))
+
+	for _, username := range req.Usernames {
+		// Check if already imported
+		if guid, err := h.store.ResolveMapping("ldap", username); err == nil {
+			results = append(results, importResult{Username: username, Status: "exists", UserGUID: guid})
+			continue
+		}
+
+		// Look up user in LDAP
+		ldapUser, err := auth.LDAPSearchUser(cfg, usernameAttr, username)
+		if err != nil {
+			results = append(results, importResult{Username: username, Status: "error", Error: err.Error()})
+			continue
+		}
+
+		// Create SimpleAuth user
+		user := &store.User{
+			DisplayName: ldapUser.DisplayName,
+			Email:       ldapUser.Email,
+			Department:  ldapUser.Department,
+			Company:     ldapUser.Company,
+			JobTitle:    ldapUser.JobTitle,
+		}
+		if err := h.store.CreateUser(user); err != nil {
+			results = append(results, importResult{Username: username, Status: "error", Error: "failed to create user"})
+			continue
+		}
+
+		// Create LDAP identity mapping
+		h.store.SetIdentityMapping("ldap", username, user.GUID)
+
+		// Assign default roles
+		h.assignDefaultRoles(user.GUID)
+
+		h.audit("ldap_user_imported", user.GUID, getClientIP(r), map[string]interface{}{
+			"username": username, "display_name": ldapUser.DisplayName,
+		})
+
+		results = append(results, importResult{Username: username, Status: "imported", UserGUID: user.GUID})
+	}
+
+	jsonResp(w, results, http.StatusOK)
 }

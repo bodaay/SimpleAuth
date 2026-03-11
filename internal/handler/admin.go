@@ -21,9 +21,10 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if users == nil {
 		users = []*store.User{}
 	}
-	// Strip password hashes
+	// Strip password hashes and history
 	for _, u := range users {
 		u.PasswordHash = ""
+		u.PasswordHistory = nil
 	}
 	jsonResp(w, users, http.StatusOK)
 }
@@ -52,6 +53,10 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Password != "" {
+		if err := auth.ValidatePassword(req.Password, h.passwordPolicy()); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			jsonError(w, "failed to hash password", http.StatusInternalServerError)
@@ -87,6 +92,7 @@ func (h *Handler) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.PasswordHash = ""
+	user.PasswordHistory = nil
 	jsonResp(w, user, http.StatusOK)
 }
 
@@ -131,6 +137,7 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.PasswordHash = ""
+	user.PasswordHistory = nil
 	jsonResp(w, user, http.StatusOK)
 }
 
@@ -152,10 +159,23 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Password string `json:"password"`
+		Password    string `json:"password"`
+		ForceChange *bool  `json:"force_change"`
 	}
 	if err := readJSON(r, &req); err != nil || req.Password == "" {
 		jsonError(w, "password required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate password against policy
+	if err := auth.ValidatePassword(req.Password, h.passwordPolicy()); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check password history
+	if h.cfg.PasswordHistoryCount > 0 && auth.CheckPasswordHistory(req.Password, user.PasswordHistory) {
+		jsonError(w, fmt.Sprintf("password was recently used (last %d passwords are remembered)", h.cfg.PasswordHistoryCount), http.StatusBadRequest)
 		return
 	}
 
@@ -164,12 +184,33 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to hash password", http.StatusInternalServerError)
 		return
 	}
+
+	// Update password history
+	if h.cfg.PasswordHistoryCount > 0 && user.PasswordHash != "" {
+		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.cfg.PasswordHistoryCount)
+	}
+
 	user.PasswordHash = hash
+
+	// Set force_change flag (defaults to false if not provided)
+	if req.ForceChange != nil {
+		user.ForcePasswordChange = *req.ForceChange
+	}
+
 	if err := h.store.UpdateUser(user); err != nil {
 		jsonError(w, "failed to update password", http.StatusInternalServerError)
 		return
 	}
-	jsonResp(w, map[string]string{"status": "password updated"}, http.StatusOK)
+
+	h.audit("password_set", "admin", getClientIP(r), map[string]interface{}{
+		"target_guid":  guid,
+		"force_change": user.ForcePasswordChange,
+	})
+
+	jsonResp(w, map[string]interface{}{
+		"status":       "password updated",
+		"force_change": user.ForcePasswordChange,
+	}, http.StatusOK)
 }
 
 func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +234,38 @@ func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, map[string]interface{}{"guid": guid, "disabled": user.Disabled}, http.StatusOK)
+}
+
+// --- Password Policy ---
+
+func (h *Handler) handleGetPasswordPolicy(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, map[string]interface{}{
+		"min_length":         h.cfg.PasswordMinLength,
+		"require_uppercase":  h.cfg.PasswordRequireUppercase,
+		"require_lowercase":  h.cfg.PasswordRequireLowercase,
+		"require_digit":      h.cfg.PasswordRequireDigit,
+		"require_special":    h.cfg.PasswordRequireSpecial,
+		"history_count":      h.cfg.PasswordHistoryCount,
+		"lockout_threshold":  h.cfg.AccountLockoutThreshold,
+		"lockout_duration":   h.cfg.AccountLockoutDuration.String(),
+	}, http.StatusOK)
+}
+
+func (h *Handler) handleUnlockAccount(w http.ResponseWriter, r *http.Request) {
+	guid := pathParam(r, "guid")
+	user, err := h.store.GetUser(guid)
+	if err != nil {
+		jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	user.FailedLoginAttempts = 0
+	user.LockedUntil = nil
+	if err := h.store.UpdateUser(user); err != nil {
+		jsonError(w, "failed to unlock account", http.StatusInternalServerError)
+		return
+	}
+	h.audit("account_unlocked", "admin", getClientIP(r), map[string]interface{}{"target_guid": guid})
+	jsonResp(w, map[string]string{"status": "account unlocked"}, http.StatusOK)
 }
 
 // --- Sessions ---
@@ -608,7 +681,11 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := ldapConfigFromStore(p)
-	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", req.Username)
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "sAMAccountName"
+	}
+	result, err := auth.LDAPSearchUser(cfg, usernameAttr, req.Username)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("LDAP search failed: %v", err), http.StatusBadGateway)
 		return
@@ -634,6 +711,7 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 	})
 
 	user.PasswordHash = ""
+	user.PasswordHistory = nil
 	jsonResp(w, map[string]interface{}{
 		"status": "synced",
 		"user":   user,

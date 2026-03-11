@@ -13,7 +13,8 @@ type LDAPConfig struct {
 	BaseDN          string
 	BindDN          string
 	BindPassword    string
-	UserFilter      string
+	UsernameAttr    string
+	CustomFilter    string
 	UseTLS          bool
 	SkipTLSVerify   bool
 	DisplayNameAttr string
@@ -85,6 +86,63 @@ func LDAPSearchUser(cfg *LDAPConfig, field, value string) (*LDAPResult, error) {
 	return entryToResult(entry, cfg), nil
 }
 
+// LDAPSearchUsers searches the directory for users matching a query string.
+// Searches across common attributes: username, display name, email.
+func LDAPSearchUsers(cfg *LDAPConfig, query string, limit int) ([]*LDAPResult, error) {
+	conn, err := LDAPConnect(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if err := conn.Bind(cfg.BindDN, cfg.BindPassword); err != nil {
+		return nil, fmt.Errorf("service account bind failed: %w", err)
+	}
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	escapedQuery := ldap.EscapeFilter(query)
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "sAMAccountName"
+	}
+
+	// Build a filter that searches across multiple fields
+	filter := fmt.Sprintf("(&(objectClass=person)(|(%s=%s*)(%s=*%s*)",
+		usernameAttr, escapedQuery,
+		usernameAttr, escapedQuery,
+	)
+	if cfg.DisplayNameAttr != "" {
+		filter += fmt.Sprintf("(%s=*%s*)", cfg.DisplayNameAttr, escapedQuery)
+	}
+	if cfg.EmailAttr != "" {
+		filter += fmt.Sprintf("(%s=*%s*)", cfg.EmailAttr, escapedQuery)
+	}
+	filter += "))"
+
+	attrs := ldapAttrs(cfg)
+
+	sr, err := conn.Search(ldap.NewSearchRequest(
+		cfg.BaseDN,
+		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, limit, 30, false,
+		filter, attrs, nil,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("ldap search: %w", err)
+	}
+
+	var results []*LDAPResult
+	for _, entry := range sr.Entries {
+		r := entryToResult(entry, cfg)
+		if r.Username != "" {
+			results = append(results, r)
+		}
+	}
+	return results, nil
+}
+
 // LDAPAuthenticate performs user search and bind authentication.
 func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, error) {
 	conn, err := LDAPConnect(cfg)
@@ -98,9 +156,18 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 		return nil, fmt.Errorf("service account bind failed: %w", err)
 	}
 
-	// Search for user
+	// Search for user — use custom filter if set, otherwise build from username_attr
 	escapedUser := ldap.EscapeFilter(username)
-	filter := strings.Replace(cfg.UserFilter, "{{username}}", escapedUser, -1)
+	var filter string
+	if cfg.CustomFilter != "" {
+		filter = strings.Replace(cfg.CustomFilter, "{{username}}", escapedUser, -1)
+	} else {
+		attr := cfg.UsernameAttr
+		if attr == "" {
+			attr = "sAMAccountName"
+		}
+		filter = fmt.Sprintf("(%s=%s)", attr, escapedUser)
+	}
 	attrs := ldapAttrs(cfg)
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
@@ -110,27 +177,6 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 	))
 	if err != nil {
 		return nil, fmt.Errorf("ldap search: %w", err)
-	}
-	// If primary filter found nothing, try common AD/LDAP alternatives
-	if len(sr.Entries) == 0 {
-		fallbackFilters := []string{
-			fmt.Sprintf("(sAMAccountName=%s)", escapedUser),
-			fmt.Sprintf("(userPrincipalName=%s)", escapedUser),
-			fmt.Sprintf("(uid=%s)", escapedUser),
-		}
-		for _, fb := range fallbackFilters {
-			if fb == filter {
-				continue // skip if same as primary
-			}
-			sr, err = conn.Search(ldap.NewSearchRequest(
-				cfg.BaseDN,
-				ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1, 30, false,
-				fb, attrs, nil,
-			))
-			if err == nil && len(sr.Entries) > 0 {
-				break
-			}
-		}
 	}
 	if len(sr.Entries) == 0 {
 		return nil, fmt.Errorf("user not found: %s", username)
@@ -161,7 +207,11 @@ func LDAPTestConnection(cfg *LDAPConfig) error {
 }
 
 func ldapAttrs(cfg *LDAPConfig) []string {
-	attrs := []string{"dn", "sAMAccountName"}
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "sAMAccountName"
+	}
+	attrs := []string{"dn", usernameAttr}
 	for _, a := range []string{cfg.DisplayNameAttr, cfg.EmailAttr, cfg.DepartmentAttr, cfg.CompanyAttr, cfg.JobTitleAttr, cfg.GroupsAttr} {
 		if a != "" {
 			attrs = append(attrs, a)
@@ -171,9 +221,13 @@ func ldapAttrs(cfg *LDAPConfig) []string {
 }
 
 func entryToResult(entry *ldap.Entry, cfg *LDAPConfig) *LDAPResult {
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "sAMAccountName"
+	}
 	result := &LDAPResult{
 		DN:       entry.DN,
-		Username: entry.GetAttributeValue("sAMAccountName"),
+		Username: entry.GetAttributeValue(usernameAttr),
 	}
 	if cfg.DisplayNameAttr != "" {
 		result.DisplayName = entry.GetAttributeValue(cfg.DisplayNameAttr)

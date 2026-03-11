@@ -75,12 +75,17 @@ def login():
             "detail": exc.detail,
         }), exc.status_code or 401
 
-    return jsonify({
+    response = {
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
         "token_type": tokens.token_type,
         "expires_in": tokens.expires_in,
-    })
+    }
+
+    if getattr(tokens, "force_password_change", False):
+        response["force_password_change"] = True
+
+    return jsonify(response)
 
 
 @app.route("/auth/refresh", methods=["POST"])

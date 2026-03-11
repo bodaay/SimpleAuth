@@ -5,11 +5,11 @@ Complete reference for every endpoint. All endpoints return JSON. All request bo
 **Base URL:** `https://your-simpleauth-server:port` (if `AUTH_BASE_PATH` is set, e.g., `/auth`, prefix all paths: `https://your-simpleauth-server:port/auth/api/...`)
 
 **Authentication types:**
-- **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config, or a token from a user with the `SimpleAuthAdmin` role)
+- **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config)
 - **Bearer Token** -- `Authorization: Bearer ACCESS_TOKEN` (a JWT access token from login)
 - **None** -- No authentication required
 
-**Admin access:** Use the `ADMIN_KEY` for initial bootstrap. After that, any user with the `SimpleAuthAdmin` role gets full admin access.
+**Admin access:** All admin endpoints require the master `ADMIN_KEY`. There is no admin role — admin access is controlled exclusively by the admin key.
 
 ---
 
@@ -31,7 +31,7 @@ curl -k https://localhost:8080/health
 
 ### `GET /api/admin/server-info`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Returns server configuration details.
 
@@ -45,7 +45,8 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
   "hostname": "auth.corp.local",
   "deployment_name": "sauth",
   "jwt_issuer": "simpleauth",
-  "version": "dev"
+  "version": "dev",
+  "redirect_uri": "https://myapp.example.com/callback"
 }
 ```
 
@@ -57,7 +58,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 **Auth:** None
 
-Authenticate a user with username/password. Tries LDAP providers first, falls back to local password.
+Authenticate a user with username/password. Tries local password first, falls back to LDAP (if configured). Local users always take priority — SimpleAuth owns those credentials.
 
 **Request:**
 
@@ -83,14 +84,28 @@ Authenticate a user with username/password. Tries LDAP providers first, falls ba
     "job_title": "Senior Engineer",
     "roles": ["admin", "user"],
     "permissions": ["read:reports", "write:config"],
-    "groups": ["CN=Engineering,OU=Groups,DC=corp,DC=local"]
+    "groups": ["Engineering", "IT"]
   }
 }
 ```
 
+When the user has a forced password change pending, the response includes an additional field:
+
+```json
+{
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
+  "force_password_change": true,
+  "user": { ... }
+}
+```
+
+Clients should check for `force_password_change: true` and redirect the user to a password change flow before allowing normal access.
+
 **Error responses:**
 - `400` -- `{"error": "username and password required"}`
 - `401` -- `{"error": "invalid credentials"}`
+- `403` -- `{"error": "account disabled"}`
 - `429` -- `{"error": "too many login attempts"}` (with `Retry-After` header)
 
 ---
@@ -150,7 +165,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
   "job_title": "Software Engineer",
   "roles": ["admin"],
   "permissions": ["read:reports"],
-  "groups": ["CN=Engineering,..."],
+  "groups": ["Engineering"],
   "auth_source": "ldap"
 }
 ```
@@ -164,7 +179,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 
 ### `POST /api/auth/impersonate`
 
-**Auth:** Admin
+**Auth:** Admin Key (master admin key only)
 
 Generate an access token for any user. Useful for testing and support scenarios.
 
@@ -172,7 +187,7 @@ Generate an access token for any user. Useful for testing and support scenarios.
 
 ```json
 {
-  "guid": "550e8400-..."
+  "target_guid": "550e8400-..."
 }
 ```
 
@@ -180,7 +195,10 @@ Generate an access token for any user. Useful for testing and support scenarios.
 
 ```json
 {
-  "access_token": "eyJ..."
+  "access_token": "eyJ...",
+  "expires_in": 3600,
+  "token_type": "Bearer",
+  "impersonated": true
 }
 ```
 
@@ -211,15 +229,16 @@ Kerberos/SPNEGO authentication endpoint. The client sends an `Authorization: Neg
 
 ### `POST /api/auth/reset-password`
 
-**Auth:** None
+**Auth:** Bearer Token
 
-Reset a local user's password. Requires the current password.
+Change the authenticated user's password. Requires a valid access token. If the user already has a password set, the current password must be provided -- unless `force_password_change` is set on the user, in which case `current_password` is not required.
+
+Enforces the configured password policy (minimum length, complexity requirements). Rejects passwords that appear in the user's password history (based on `history_count` setting). On success, clears the `force_password_change` flag.
 
 **Request:**
 
 ```json
 {
-  "username": "jsmith",
   "current_password": "oldpass",
   "new_password": "newpass"
 }
@@ -231,15 +250,41 @@ Reset a local user's password. Requires the current password.
 {"status": "password updated"}
 ```
 
+**Error responses:**
+- `401` -- `{"error": "authorization required"}` or `{"error": "invalid token"}`
+- `400` -- `{"error": "new_password required"}` or `{"error": "new_password must be at least 6 characters"}`
+- `400` -- `{"error": "password does not meet policy requirements: ..."}` (policy violation details)
+- `400` -- `{"error": "password was recently used"}` (password history check)
+- `403` -- `{"error": "current password is incorrect"}`
+
+---
+
+### `GET /` (Root)
+
+**Auth:** None
+
+Redirects to `/login`.
+
 ---
 
 ### `GET /login` / `POST /login`
 
 **Auth:** None
 
-Hosted login page. Renders a branded login form and handles form submission. Primarily used for the OIDC authorization code flow.
+Hosted login page. Renders a branded login form and handles form submission. If Kerberos is configured, shows an "Sign in with SSO" button.
 
 On successful login without a `redirect_uri`, the user is redirected to `/account` with tokens in the URL fragment.
+
+---
+
+### `GET /login/sso`
+
+**Auth:** None (Kerberos SPNEGO)
+
+SSO login endpoint for the hosted login flow. Attempts Kerberos/SPNEGO authentication. On success, redirects to `redirect_uri` (or `/account`) with tokens in the URL fragment. On failure, redirects back to `/login` with an error message instead of hanging.
+
+**Query parameters:**
+- `redirect_uri` -- Where to redirect after successful SSO login
 
 ---
 
@@ -257,13 +302,21 @@ The page reads the access token from the URL fragment (after login redirect) or 
 
 ---
 
+### `GET /test-negotiate` / `POST /test-negotiate`
+
+**Auth:** None
+
+Diagnostic page for testing Kerberos/SPNEGO authentication. Shows the raw negotiation flow and results. Useful for troubleshooting SSO configuration.
+
+---
+
 ## OIDC / Keycloak-Compatible Endpoints
 
 All OIDC endpoints follow the Keycloak URL pattern: `/realms/{realm}/protocol/openid-connect/...`
 
 The realm defaults to your `jwt_issuer` config value (default: `simpleauth`).
 
-OIDC client settings (client ID, client secret, redirect URIs) are configured at the instance level using environment variables: `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URIS`.
+OIDC client settings are configured at the instance level using environment variables: `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URI`.
 
 ### `GET /.well-known/openid-configuration`
 
@@ -339,7 +392,7 @@ OAuth2 Authorization endpoint. Renders the hosted login page for the authorizati
 
 **Query parameters:**
 - `client_id` (required) -- Must match the configured `AUTH_CLIENT_ID`
-- `redirect_uri` -- Where to redirect after login (must be in `AUTH_REDIRECT_URIS`)
+- `redirect_uri` -- Where to redirect after login (must match `AUTH_REDIRECT_URI`; supports wildcard prefix matching)
 - `response_type` -- Must be `code`
 - `state` -- CSRF protection value (passed through)
 - `nonce` -- Replay protection for ID tokens
@@ -450,7 +503,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
   "company": "Acme Corp",
   "job_title": "Senior Engineer",
   "roles": ["admin"],
-  "groups": ["CN=Engineering,..."],
+  "groups": ["Engineering"],
   "realm_access": {"roles": ["admin"]}
 }
 ```
@@ -518,7 +571,7 @@ curl -k -X POST \
 
 ### `GET /api/admin/users`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 List all users. Password hashes are stripped from the response.
 
@@ -531,7 +584,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `POST /api/admin/users`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Create a local user.
 
@@ -549,6 +602,8 @@ Create a local user.
 }
 ```
 
+The `username` field creates a `local` identity mapping (e.g., `local:jsmith`). The `password` field is optional — if omitted, the user can only authenticate via LDAP. If a password is provided, it must satisfy the configured password policy (minimum length, complexity requirements).
+
 **Response (201):**
 
 ```json
@@ -563,15 +618,30 @@ Create a local user.
 
 ### `GET /api/admin/users/{guid}`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Get a single user by GUID.
+
+**User object fields include:**
+
+| Field | Type | Description |
+|---|---|---|
+| `guid` | string | Unique user identifier |
+| `display_name` | string | User's display name |
+| `email` | string | User's email address |
+| `department` | string | Department |
+| `company` | string | Company |
+| `job_title` | string | Job title |
+| `disabled` | boolean | Whether the account is disabled |
+| `force_password_change` | boolean | Whether the user must change password on next login |
+| `failed_login_attempts` | integer | Number of consecutive failed login attempts |
+| `locked_until` | datetime, nullable | Timestamp until which the account is locked (null if not locked) |
 
 ---
 
 ### `PUT /api/admin/users/{guid}`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Update user fields. Only provided fields are updated.
 
@@ -591,7 +661,7 @@ Update user fields. Only provided fields are updated.
 
 ### `DELETE /api/admin/users/{guid}`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Delete a user.
 
@@ -599,21 +669,43 @@ Delete a user.
 
 ### `PUT /api/admin/users/{guid}/password`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Set a user's password (admin override, no current password required).
 
 **Request:**
 
 ```json
-{"password": "new-password-here"}
+{
+  "password": "new-password-here",
+  "force_change": true
+}
+```
+
+| Field | Description |
+|---|---|
+| `password` | The new password to set |
+| `force_change` | Optional boolean. If `true`, the user will be required to change their password on next login |
+
+---
+
+### `PUT /api/admin/users/{guid}/unlock`
+
+**Auth:** Admin Key
+
+Clears failed login attempts and lockout for a user. Use this to manually unlock an account that has been locked due to too many failed login attempts.
+
+**Response (200):**
+
+```json
+{"status": "ok"}
 ```
 
 ---
 
 ### `PUT /api/admin/users/{guid}/disabled`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Enable or disable a user account. Disabled users cannot log in.
 
@@ -633,9 +725,9 @@ Enable or disable a user account. Disabled users cannot log in.
 
 ### `POST /api/admin/users/merge`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-Merge multiple user records into one. This is useful when the same person has separate accounts from different LDAP providers. Identity mappings, roles, and permissions are all merged.
+Merge multiple user records into one. This is useful when the same person has separate accounts from different identity sources. Identity mappings, roles, and permissions are all merged.
 
 **Request:**
 
@@ -660,7 +752,7 @@ Merge multiple user records into one. This is useful when the same person has se
 
 ### `POST /api/admin/users/{guid}/unmerge`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Reverse a merge operation. The user record has its `merged_into` pointer cleared.
 
@@ -668,7 +760,7 @@ Reverse a merge operation. The user record has its `merged_into` pointer cleared
 
 ### `GET /api/admin/users/{guid}/sessions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 List active sessions (non-expired, non-used refresh tokens) for a user.
 
@@ -688,7 +780,7 @@ List active sessions (non-expired, non-used refresh tokens) for a user.
 
 ### `DELETE /api/admin/users/{guid}/sessions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Revoke all sessions for a user. Forces them to log in again everywhere.
 
@@ -700,7 +792,7 @@ Roles and permissions are global per SimpleAuth instance.
 
 ### `GET /api/admin/users/{guid}/roles`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Get a user's roles.
 
@@ -714,7 +806,7 @@ Get a user's roles.
 
 ### `PUT /api/admin/users/{guid}/roles`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Set a user's roles. Replaces the entire role list.
 
@@ -728,7 +820,7 @@ Set a user's roles. Replaces the entire role list.
 
 ### `GET /api/admin/users/{guid}/permissions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Get a user's permissions.
 
@@ -742,7 +834,7 @@ Get a user's permissions.
 
 ### `PUT /api/admin/users/{guid}/permissions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Set a user's permissions.
 
@@ -756,15 +848,15 @@ Set a user's permissions.
 
 ### `GET /api/admin/defaults/roles`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-Get default roles that are automatically assigned to new users when they first log in.
+Get default roles that are automatically assigned to new users when they first log in. Can also be set via the `AUTH_DEFAULT_ROLES` environment variable.
 
 ---
 
 ### `PUT /api/admin/defaults/roles`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Set default roles for new users.
 
@@ -778,7 +870,7 @@ Set default roles for new users.
 
 ### `GET /api/admin/role-permissions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Get the role-to-permissions mapping. This defines which permissions are automatically granted by each role.
 
@@ -786,7 +878,7 @@ Get the role-to-permissions mapping. This defines which permissions are automati
 
 ### `PUT /api/admin/role-permissions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Set the role-to-permissions mapping.
 
@@ -804,7 +896,7 @@ Set the role-to-permissions mapping.
 
 ### `GET /api/admin/roles`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 List all unique roles across all users.
 
@@ -821,7 +913,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `GET /api/admin/permissions`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 List all unique permissions across all users and the role-permissions mapping.
 
@@ -836,33 +928,70 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ---
 
-## Admin: LDAP Providers
+## Admin: Password Policy
 
-### `GET /api/admin/ldap`
+### `GET /api/admin/password-policy`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-List all configured LDAP providers.
+Returns the current password policy configuration.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/password-policy
+```
+
+**Response (200):**
+
+```json
+{
+  "min_length": 8,
+  "require_uppercase": false,
+  "require_lowercase": false,
+  "require_digit": false,
+  "require_special": false,
+  "history_count": 0
+}
+```
+
+| Field | Description |
+|---|---|
+| `min_length` | Minimum password length |
+| `require_uppercase` | Require at least one uppercase letter |
+| `require_lowercase` | Require at least one lowercase letter |
+| `require_digit` | Require at least one digit |
+| `require_special` | Require at least one special character |
+| `history_count` | Number of previous passwords to remember (0 = disabled) |
 
 ---
 
-### `POST /api/admin/ldap`
+## Admin: LDAP Configuration
 
-**Auth:** Admin
+SimpleAuth supports a single LDAP/Active Directory configuration. All LDAP endpoints are under `/api/admin/ldap` (no provider IDs).
 
-Create a new LDAP provider.
+### `GET /api/admin/ldap`
+
+**Auth:** Admin Key
+
+Get the current LDAP configuration. Returns `null` if not configured. The bind password is masked in the response.
+
+---
+
+### `PUT /api/admin/ldap`
+
+**Auth:** Admin Key
+
+Save or update the LDAP configuration.
 
 **Request:**
 
 ```json
 {
-  "provider_id": "corp-ad",
-  "name": "Corporate Active Directory",
   "url": "ldaps://dc01.corp.local:636",
   "base_dn": "DC=corp,DC=local",
   "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
   "bind_password": "ServiceAccountPassword",
-  "user_filter": "(sAMAccountName={0})",
+  "username_attr": "sAMAccountName",
   "use_tls": true,
   "skip_tls_verify": false,
   "display_name_attr": "displayName",
@@ -870,74 +999,263 @@ Create a new LDAP provider.
   "department_attr": "department",
   "company_attr": "company",
   "job_title_attr": "title",
-  "groups_attr": "memberOf",
-  "priority": 10
+  "groups_attr": "memberOf"
+}
+```
+
+| Field | Description |
+|---|---|
+| `username_attr` | LDAP attribute for username lookup. Common values: `sAMAccountName` (AD), `userPrincipalName` (AD), `uid` (OpenLDAP), `mail` |
+| `custom_filter` | Optional. Advanced LDAP filter with `{{username}}` placeholder. Overrides `username_attr` when set. Example: `(&(objectClass=person)(sAMAccountName={{username}}))` |
+| `domain` | Optional. AD domain name (e.g., `corp.local`). Used by auto-discover and setup scripts |
+
+If the bind password is sent as `••••••••`, the existing password is preserved (allows updating other fields without re-entering the password).
+
+---
+
+### `DELETE /api/admin/ldap`
+
+**Auth:** Admin Key
+
+Remove the LDAP configuration.
+
+---
+
+### `POST /api/admin/ldap/test`
+
+**Auth:** Admin Key
+
+Test connectivity and bind credentials for the saved LDAP configuration.
+
+**Response (200):**
+
+```json
+{"status": "ok"}
+```
+
+Or on error:
+
+```json
+{"status": "error", "error": "connection refused"}
+```
+
+---
+
+### `POST /api/admin/ldap/test-user`
+
+**Auth:** Admin Key
+
+Search for a user in LDAP and preview the mapped attributes. Useful for verifying attribute mapping before importing users.
+
+**Request:**
+
+```json
+{"username": "alice"}
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "ok",
+  "username": "alice",
+  "display_name": "Alice Johnson",
+  "email": "alice@corp.local",
+  "department": "Engineering",
+  "company": "Acme Corp",
+  "job_title": "Software Engineer",
+  "groups": ["Engineering", "IT"],
+  "dn": "CN=Alice Johnson,OU=Users,DC=corp,DC=local"
 }
 ```
 
 ---
 
-### `GET /api/admin/ldap/{provider_id}`
-
-**Auth:** Admin
-
-Get a single LDAP provider by ID.
-
----
-
-### `PUT /api/admin/ldap/{provider_id}`
-
-**Auth:** Admin
-
-Update an LDAP provider.
-
----
-
-### `DELETE /api/admin/ldap/{provider_id}`
-
-**Auth:** Admin
-
-Delete an LDAP provider.
-
----
-
-### `POST /api/admin/ldap/{provider_id}/test`
-
-**Auth:** Admin
-
-Test connectivity to an LDAP provider. Returns success or an error message.
-
----
-
 ### `POST /api/admin/ldap/auto-discover`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-Auto-discover LDAP providers using DNS SRV records.
+Auto-discover LDAP configuration by connecting to a server, querying RootDSE for the base DN, and detecting whether it's Active Directory or OpenLDAP (to choose the correct `username_attr`). Saves the configuration on success.
 
----
+**Request:**
 
-### `GET /api/admin/ldap/export`
+```json
+{
+  "server": "dc01.corp.local",
+  "username": "svc-simpleauth",
+  "password": "ServicePassword"
+}
+```
 
-**Auth:** Admin
+The server can be a hostname, `hostname:port`, or full URL (`ldap://` or `ldaps://`). Default port is 389 for ldap, 636 for ldaps.
 
-Export all LDAP provider configurations as JSON.
+**Response (200):** Returns the discovered and saved LDAP configuration (with masked password).
 
 ---
 
 ### `POST /api/admin/ldap/import`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-Import LDAP provider configurations from JSON.
+Import LDAP configuration from the PowerShell setup script JSON output.
+
+**Request:**
+
+```json
+{
+  "server": "dc01.corp.local",
+  "username": "svc-simpleauth",
+  "password": "ServicePassword",
+  "domain": "corp.local",
+  "base_dn": "DC=corp,DC=local",
+  "service_hostname": "auth.corp.local",
+  "spn": "HTTP/auth.corp.local"
+}
+```
+
+If `service_hostname` is provided, Kerberos setup is automatically triggered after the LDAP config is saved.
 
 ---
 
-### `POST /api/admin/ldap/{provider_id}/setup-kerberos`
+### `POST /api/admin/ldap/search-users`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
-Set up Kerberos/SPNEGO authentication for an LDAP provider. Creates the SPN and generates a keytab using the provider's AD credentials.
+Search the LDAP directory for users matching a query string. Searches across username, display name, and email attributes. Returns whether each user is already imported into SimpleAuth.
+
+**Request:**
+
+```json
+{
+  "query": "john",
+  "limit": 50
+}
+```
+
+**Response (200):**
+
+```json
+[
+  {
+    "username": "jsmith",
+    "display_name": "John Smith",
+    "email": "jsmith@corp.local",
+    "department": "Engineering",
+    "company": "Acme Corp",
+    "job_title": "Senior Engineer",
+    "groups": ["Engineering"],
+    "dn": "CN=John Smith,OU=Users,DC=corp,DC=local",
+    "imported": false,
+    "user_guid": ""
+  },
+  {
+    "username": "jdoe",
+    "display_name": "John Doe",
+    "email": "jdoe@corp.local",
+    "department": "Marketing",
+    "company": "Acme Corp",
+    "job_title": "Manager",
+    "groups": ["Marketing"],
+    "dn": "CN=John Doe,OU=Users,DC=corp,DC=local",
+    "imported": true,
+    "user_guid": "660e8400-..."
+  }
+]
+```
+
+---
+
+### `POST /api/admin/ldap/import-users`
+
+**Auth:** Admin Key
+
+Import one or more LDAP users into SimpleAuth. For each username, looks up the user in LDAP, creates a SimpleAuth user record, creates an `ldap` identity mapping, and assigns default roles.
+
+**Request:**
+
+```json
+{
+  "usernames": ["alice", "bob", "charlie"]
+}
+```
+
+**Response (200):**
+
+```json
+[
+  {"username": "alice", "status": "imported", "user_guid": "550e8400-..."},
+  {"username": "bob", "status": "exists", "user_guid": "660e8400-..."},
+  {"username": "charlie", "status": "error", "error": "user not found: sAMAccountName=charlie"}
+]
+```
+
+Status values: `imported` (newly created), `exists` (already imported), `error` (lookup or creation failed).
+
+---
+
+### `POST /api/admin/ldap/sync-user`
+
+**Auth:** Admin Key
+
+Sync a single user's profile from LDAP. Looks up the user by their configured username attribute in the LDAP directory, then updates their SimpleAuth profile (display name, email, department, company, job title).
+
+**Request:**
+
+```json
+{"username": "jsmith"}
+```
+
+```bash
+curl -k -X POST \
+  https://localhost:8080/api/admin/ldap/sync-user \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "jsmith"}'
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "synced",
+  "user": { ... }
+}
+```
+
+---
+
+### `POST /api/admin/ldap/sync-all`
+
+**Auth:** Admin Key
+
+Sync all users that have `ldap` identity mappings. Iterates all non-merged users with an LDAP mapping and updates their profiles from the directory.
+
+```bash
+curl -k -X POST \
+  https://localhost:8080/api/admin/ldap/sync-all \
+  -H "Authorization: Bearer ADMIN_KEY"
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "completed",
+  "synced": 42,
+  "failed": 3,
+  "errors": ["charlie: user not found"]
+}
+```
+
+The `errors` array is only present when there are failures.
+
+---
+
+### `POST /api/admin/ldap/setup-kerberos`
+
+**Auth:** Admin Key
+
+Set up Kerberos/SPNEGO authentication using the LDAP provider's AD credentials. Creates the SPN and generates a keytab.
 
 **Request:**
 
@@ -950,9 +1268,9 @@ Set up Kerberos/SPNEGO authentication for an LDAP provider. Creates the SPN and 
 
 ---
 
-### `POST /api/admin/ldap/{provider_id}/cleanup-kerberos`
+### `POST /api/admin/ldap/cleanup-kerberos`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Remove Kerberos configuration (delete SPN, clean up keytab).
 
@@ -960,7 +1278,7 @@ Remove Kerberos configuration (delete SPN, clean up keytab).
 
 ### `GET /api/admin/kerberos/status`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Check the status of Kerberos configuration (keytab exists, SPN configured, etc.).
 
@@ -968,7 +1286,7 @@ Check the status of Kerberos configuration (keytab exists, SPN configured, etc.)
 
 ### `GET /api/admin/setup-script`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Download an interactive PowerShell script for AD setup. The script has the SimpleAuth hostname pre-injected and offers:
 - Create a new service account or use an existing one
@@ -980,47 +1298,17 @@ Returns a `.ps1` file with UTF-8 BOM encoding.
 
 ---
 
-### `POST /api/admin/ldap/{provider_id}/sync-user`
-
-**Auth:** Admin
-
-Sync a single user's profile from AD. Looks up the user by sAMAccountName in the LDAP provider, then updates their SimpleAuth profile (display name, email, department, company, job title).
-
-```bash
-curl -k -X POST \
-  https://localhost:8080/api/admin/ldap/corp-ad/sync-user \
-  -H "Authorization: Bearer ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"username": "jsmith"}'
-```
-
----
-
-### `POST /api/admin/ldap/{provider_id}/sync-all`
-
-**Auth:** Admin
-
-Sync all users mapped to this LDAP provider. Iterates all non-merged users with an `ldap:{provider_id}` identity mapping and updates their profiles from AD.
-
-```bash
-curl -k -X POST \
-  https://localhost:8080/api/admin/ldap/corp-ad/sync-all \
-  -H "Authorization: Bearer ADMIN_KEY"
-```
-
-```json
-{"synced": 42, "errors": 0}
-```
-
----
-
 ## Admin: Identity Mappings
 
-Identity mappings link external identities (LDAP usernames) to SimpleAuth user GUIDs. This is how SimpleAuth tracks that "jsmith" in AD is the same person across logins.
+Identity mappings link external identities (LDAP usernames, local usernames) to SimpleAuth user GUIDs. This is how SimpleAuth tracks that "jsmith" in AD is the same person across logins.
+
+**Provider names:**
+- `local` -- Local username/password authentication
+- `ldap` -- LDAP/Active Directory authentication
 
 ### `GET /api/admin/mappings`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 List all identity mappings.
 
@@ -1029,7 +1317,7 @@ List all identity mappings.
 ```json
 [
   {
-    "provider": "ldap:corp-ad",
+    "provider": "ldap",
     "external_id": "jsmith",
     "user_guid": "550e8400-..."
   },
@@ -1045,7 +1333,7 @@ List all identity mappings.
 
 ### `GET /api/admin/users/{guid}/mappings`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Get all identity mappings for a specific user.
 
@@ -1053,7 +1341,7 @@ Get all identity mappings for a specific user.
 
 ### `PUT /api/admin/users/{guid}/mappings`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Create or update an identity mapping.
 
@@ -1061,7 +1349,7 @@ Create or update an identity mapping.
 
 ```json
 {
-  "provider": "ldap:corp-ad",
+  "provider": "ldap",
   "external_id": "jsmith"
 }
 ```
@@ -1070,7 +1358,7 @@ Create or update an identity mapping.
 
 ### `DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Delete an identity mapping.
 
@@ -1078,12 +1366,12 @@ Delete an identity mapping.
 
 ### `GET /api/admin/mappings/resolve`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Resolve an external identity to a SimpleAuth user GUID.
 
 **Query parameters:**
-- `provider` -- The identity provider (e.g., `ldap:corp-ad`, `local`)
+- `provider` -- The identity provider (e.g., `ldap`, `local`)
 - `external_id` -- The external identifier
 
 ```bash
@@ -1103,7 +1391,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `GET /api/admin/backup`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Download a complete database backup as a binary file.
 
@@ -1116,7 +1404,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `POST /api/admin/restore`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Restore from a backup file. Multipart form upload. **This replaces the entire database.**
 
@@ -1138,12 +1426,12 @@ curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
 
 ### `GET /api/admin/audit`
 
-**Auth:** Admin
+**Auth:** Admin Key
 
 Query the audit log. All authentication events, admin actions, and security events are logged.
 
 **Query parameters:**
-- `event` -- Filter by event type (e.g., `login_success`, `login_failed`, `role_changed`, `sessions_revoked`, `oidc_authorize`, `oidc_token`, `oidc_logout`)
+- `event` -- Filter by event type (e.g., `login_success`, `login_failed`)
 - `user` -- Filter by user GUID (actor)
 - `from` -- Start date (`YYYY-MM-DD`)
 - `to` -- End date (`YYYY-MM-DD`)
@@ -1185,9 +1473,21 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 | `user_unmerged` | User unmerged |
 | `role_changed` | User roles updated |
 | `permission_changed` | User permissions updated |
+| `default_roles_changed` | Default roles updated |
+| `role_permissions_changed` | Role-to-permissions mapping updated |
 | `sessions_revoked` | All sessions revoked for a user |
 | `negotiate_success` | Kerberos/SPNEGO authentication succeeded |
 | `negotiate_failed` | Kerberos/SPNEGO authentication failed |
 | `oidc_authorize` | OIDC authorization code issued |
 | `oidc_token` | OIDC token issued |
 | `oidc_logout` | OIDC logout |
+| `ldap_config_saved` | LDAP configuration saved |
+| `ldap_config_removed` | LDAP configuration deleted |
+| `ldap_config_imported` | LDAP config imported from setup script |
+| `ldap_sync_user` | Single user synced from LDAP |
+| `ldap_sync_all` | All LDAP users synced |
+| `ldap_user_imported` | User imported from LDAP directory |
+| `password_set` | User password was set (by admin or self-service) |
+| `account_locked` | Account locked due to too many failed login attempts |
+| `account_unlocked` | Account unlocked (by admin) |
+| `impersonation` | Admin impersonated a user |

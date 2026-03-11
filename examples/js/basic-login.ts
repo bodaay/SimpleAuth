@@ -47,6 +47,10 @@ async function main() {
   console.log("  Token type:", tokens.token_type);
   console.log("  Refresh token present:", !!tokens.refresh_token);
 
+  if (tokens.force_password_change) {
+    console.log("  ⚠ User must change their password before proceeding.");
+  }
+
   // -----------------------------------------------------------------------
   // Step 2: Verify the access token
   // -----------------------------------------------------------------------

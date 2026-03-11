@@ -23,6 +23,7 @@ export interface TokenResponse {
   token_type: string;
   expires_in: number;
   scope?: string;
+  force_password_change?: boolean;
 }
 
 export interface UserInfo {

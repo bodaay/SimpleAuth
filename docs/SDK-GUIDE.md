@@ -45,7 +45,7 @@ const auth = createSimpleAuth({
 
 ```typescript
 const tokens = await auth.login('jsmith', 'password');
-// tokens.access_token, tokens.refresh_token, tokens.id_token
+// tokens.access_token, tokens.refresh_token, tokens.id_token, tokens.force_password_change
 ```
 
 ### Refresh Tokens
@@ -643,7 +643,7 @@ Never disable TLS verification in production. Use a proper certificate (Let's En
 
 ### Pattern 5: Admin Operations via SDK
 
-Use the admin key or a token from a `SimpleAuthAdmin` user to manage roles and permissions:
+Use the admin key to manage roles and permissions:
 
 ```typescript
 const adminAuth = createSimpleAuth({
@@ -655,6 +655,55 @@ const adminAuth = createSimpleAuth({
 await adminAuth.setUserRoles('user-guid', ['editor']);
 await adminAuth.setUserPermissions('user-guid', ['write:posts']);
 ```
+
+### Pattern 6: Handling Force Password Change
+
+All SDKs include a `force_password_change` field in the token response. When login returns `force_password_change: true`, the user must change their password before proceeding. Your app should check this field after every login and redirect the user to a password change screen when it is set.
+
+**JavaScript/TypeScript:**
+
+```typescript
+const tokens = await auth.login('jsmith', 'password');
+if (tokens.force_password_change) {
+  // Redirect user to change password before allowing access
+  window.location.href = '/change-password';
+  return;
+}
+// Proceed normally
+```
+
+**Go:**
+
+```go
+tokens, err := client.Login(ctx, "jsmith", "password")
+if err != nil {
+    log.Fatal(err)
+}
+if tokens.ForcePasswordChange {
+    // Redirect user to change password
+}
+```
+
+**Python:**
+
+```python
+tokens = auth.login("jsmith", "password")
+if tokens.force_password_change:
+    # Redirect user to change password
+    pass
+```
+
+**.NET:**
+
+```csharp
+var tokens = await client.LoginAsync("jsmith", "password");
+if (tokens.ForcePasswordChange)
+{
+    // Redirect user to change password
+}
+```
+
+Do not allow the user to access protected resources until they have changed their password. This is typically enforced by your application's frontend routing or middleware.
 
 ---
 
