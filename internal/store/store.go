@@ -16,7 +16,6 @@ import (
 
 var (
 	bucketConfig           = []byte("config")
-	bucketLDAPProviders    = []byte("ldap_providers")
 	bucketUsers            = []byte("users")
 	bucketIdentityMappings = []byte("identity_mappings")
 	bucketUserRoles        = []byte("user_roles")
@@ -47,9 +46,7 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-type LDAPProvider struct {
-	ProviderID      string    `json:"provider_id"`
-	Name            string    `json:"name"`
+type LDAPConfig struct {
 	URL             string    `json:"url"`
 	BaseDN          string    `json:"base_dn"`
 	BindDN          string    `json:"bind_dn"`
@@ -63,8 +60,8 @@ type LDAPProvider struct {
 	CompanyAttr     string    `json:"company_attr"`
 	JobTitleAttr    string    `json:"job_title_attr"`
 	GroupsAttr      string    `json:"groups_attr"`
-	Priority        int       `json:"priority"`
-	CreatedAt       time.Time `json:"created_at"`
+	Domain          string    `json:"domain,omitempty"`
+	ConfiguredAt    time.Time `json:"configured_at"`
 }
 
 type IdentityMapping struct {
@@ -116,7 +113,7 @@ func (s *Store) Close() error {
 func (s *Store) init() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		for _, b := range [][]byte{
-			bucketConfig, bucketLDAPProviders, bucketUsers,
+			bucketConfig, bucketUsers,
 			bucketIdentityMappings, bucketUserRoles, bucketUserPermissions,
 			bucketRefreshTokens, bucketAuditLog,
 			bucketIdxMappingsByGUID,
@@ -219,65 +216,40 @@ func (s *Store) ListUsers() ([]*User, error) {
 	return users, err
 }
 
-// --- LDAP Providers ---
+// --- LDAP Config (single) ---
 
-func (s *Store) CreateLDAPProvider(p *LDAPProvider) error {
-	if p.CreatedAt.IsZero() {
-		p.CreatedAt = time.Now().UTC()
-	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		data, err := json.Marshal(p)
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(bucketLDAPProviders).Put([]byte(p.ProviderID), data)
-	})
-}
-
-func (s *Store) GetLDAPProvider(providerID string) (*LDAPProvider, error) {
-	var p LDAPProvider
+func (s *Store) GetLDAPConfig() (*LDAPConfig, error) {
+	var cfg LDAPConfig
 	err := s.db.View(func(tx *bolt.Tx) error {
-		data := tx.Bucket(bucketLDAPProviders).Get([]byte(providerID))
+		data := tx.Bucket(bucketConfig).Get([]byte("ldap:config"))
 		if data == nil {
-			return fmt.Errorf("ldap provider not found: %s", providerID)
+			return fmt.Errorf("ldap not configured")
 		}
-		return json.Unmarshal(data, &p)
+		return json.Unmarshal(data, &cfg)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &p, nil
+	return &cfg, nil
 }
 
-func (s *Store) UpdateLDAPProvider(p *LDAPProvider) error {
+func (s *Store) SaveLDAPConfig(cfg *LDAPConfig) error {
+	if cfg.ConfiguredAt.IsZero() {
+		cfg.ConfiguredAt = time.Now().UTC()
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		data, err := json.Marshal(p)
+		data, err := json.Marshal(cfg)
 		if err != nil {
 			return err
 		}
-		return tx.Bucket(bucketLDAPProviders).Put([]byte(p.ProviderID), data)
+		return tx.Bucket(bucketConfig).Put([]byte("ldap:config"), data)
 	})
 }
 
-func (s *Store) DeleteLDAPProvider(providerID string) error {
+func (s *Store) DeleteLDAPConfig() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketLDAPProviders).Delete([]byte(providerID))
+		return tx.Bucket(bucketConfig).Delete([]byte("ldap:config"))
 	})
-}
-
-func (s *Store) ListLDAPProviders() ([]*LDAPProvider, error) {
-	var providers []*LDAPProvider
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketLDAPProviders).ForEach(func(k, v []byte) error {
-			var p LDAPProvider
-			if err := json.Unmarshal(v, &p); err != nil {
-				return err
-			}
-			providers = append(providers, &p)
-			return nil
-		})
-	})
-	return providers, err
 }
 
 // --- Identity Mappings ---

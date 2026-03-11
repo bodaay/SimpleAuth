@@ -17,7 +17,6 @@ import (
 type KerberosConfig struct {
 	Realm           string `json:"realm"`
 	KeytabPath      string `json:"keytab_path"`
-	ProviderID      string `json:"provider_id"`
 	ServiceHostname string `json:"service_hostname"`
 	SPN             string `json:"spn"`
 	BindAccountDN   string `json:"bind_account_dn"`
@@ -71,21 +70,18 @@ func (h *Handler) handleKerberosStatus(w http.ResponseWriter, r *http.Request) {
 		status["realm"] = krbCfg.Realm
 		status["spn"] = krbCfg.SPN
 		status["service_hostname"] = krbCfg.ServiceHostname
-		status["provider_id"] = krbCfg.ProviderID
 		status["setup_at"] = krbCfg.SetupAt
 	}
 
 	jsonResp(w, status, http.StatusOK)
 }
 
-// handleSetupKerberos configures Kerberos/SPNEGO for an LDAP provider.
-// POST /api/admin/ldap/{provider_id}/setup-kerberos
-// Body: optional {"service_hostname": "override"} — defaults to cfg.Hostname
+// handleSetupKerberos configures Kerberos/SPNEGO using the single LDAP config.
+// POST /api/admin/ldap/setup-kerberos
 func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
+	p, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
 
@@ -135,14 +131,10 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 
 	// Generate keytab
 	kt := keytab.New()
-
-	// Add entries using sAMAccountName for correct AD salt derivation,
-	// then patch the principal to be the SPN.
-	for _, encType := range []int32{18, 17, 23} { // AES256, AES128, RC4-HMAC
+	for _, encType := range []int32{18, 17, 23} {
 		if err := kt.AddEntry(samAccountName, realm, p.BindPassword, time.Now(), 0, encType); err != nil {
 			continue
 		}
-		// Patch the last entry's principal to be the SPN
 		idx := len(kt.Entries) - 1
 		kt.Entries[idx].Principal.Components = []string{"HTTP", req.ServiceHostname}
 		kt.Entries[idx].Principal.NumComponents = 2
@@ -154,7 +146,6 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Marshal and save keytab
 	ktBytes, err := kt.Marshal()
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to marshal keytab: %v", err), http.StatusInternalServerError)
@@ -167,11 +158,9 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save config to DB
 	krbCfg := &KerberosConfig{
 		Realm:           realm,
 		KeytabPath:      keytabPath,
-		ProviderID:      providerID,
 		ServiceHostname: req.ServiceHostname,
 		SPN:             spn,
 		BindAccountDN:   p.BindDN,
@@ -184,7 +173,7 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.audit("kerberos_setup", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": providerID, "spn": spn, "realm": realm,
+		"spn": spn, "realm": realm,
 	})
 
 	resp := map[string]interface{}{
@@ -201,19 +190,17 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCleanupKerberos removes Kerberos config and optionally revokes SPN from AD.
-// POST /api/admin/ldap/{provider_id}/cleanup-kerberos
-// Body: {"username": "admin@corp.local", "password": "..."} (optional, for AD SPN removal)
+// POST /api/admin/ldap/cleanup-kerberos
 func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) {
-	providerID := pathParam(r, "provider_id")
-	p, err := h.store.GetLDAPProvider(providerID)
+	p, err := h.store.GetLDAPConfig()
 	if err != nil {
-		jsonError(w, "ldap provider not found", http.StatusNotFound)
+		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
 
 	krbCfg, _ := h.getKerberosConfig()
-	if krbCfg == nil || krbCfg.ProviderID != providerID {
-		jsonError(w, "no kerberos config found for this provider", http.StatusNotFound)
+	if krbCfg == nil {
+		jsonError(w, "no kerberos config found", http.StatusNotFound)
 		return
 	}
 
@@ -221,7 +208,6 @@ func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) 
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	// Body is optional
 	readJSON(r, &req)
 
 	adCleanup := ""
@@ -255,7 +241,7 @@ func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) 
 	h.store.DeleteConfigValue("kerberos:config")
 
 	h.audit("kerberos_cleanup", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": providerID, "spn": krbCfg.SPN, "ad_cleanup": adCleanup,
+		"spn": krbCfg.SPN, "ad_cleanup": adCleanup,
 	})
 
 	resp := map[string]interface{}{
@@ -269,8 +255,6 @@ func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) 
 
 // --- Helpers ---
 
-// realmFromBaseDN extracts a Kerberos realm from a base DN.
-// DC=corp,DC=local -> CORP.LOCAL
 func realmFromBaseDN(baseDN string) string {
 	var parts []string
 	for _, seg := range strings.Split(baseDN, ",") {
@@ -285,9 +269,7 @@ func realmFromBaseDN(baseDN string) string {
 	return strings.ToUpper(strings.Join(parts, "."))
 }
 
-// lookupSAMAccountName finds the sAMAccountName for a given DN.
 func lookupSAMAccountName(conn *ldaplib.Conn, bindDN, baseDN string) (string, error) {
-	// First try a direct read of the bind DN
 	sr, err := conn.Search(ldaplib.NewSearchRequest(
 		bindDN, ldaplib.ScopeBaseObject, ldaplib.NeverDerefAliases, 1, 5, false,
 		"(objectClass=*)", []string{"sAMAccountName"}, nil,
@@ -299,7 +281,6 @@ func lookupSAMAccountName(conn *ldaplib.Conn, bindDN, baseDN string) (string, er
 		}
 	}
 
-	// If bind DN is a UPN (user@domain), search by userPrincipalName
 	if strings.Contains(bindDN, "@") {
 		sr, err = conn.Search(ldaplib.NewSearchRequest(
 			baseDN, ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 1, 5, false,
@@ -314,7 +295,6 @@ func lookupSAMAccountName(conn *ldaplib.Conn, bindDN, baseDN string) (string, er
 		}
 	}
 
-	// If bind DN is DOMAIN\user format, extract the username part
 	if strings.Contains(bindDN, "\\") {
 		parts := strings.SplitN(bindDN, "\\", 2)
 		return parts[1], nil
@@ -323,25 +303,23 @@ func lookupSAMAccountName(conn *ldaplib.Conn, bindDN, baseDN string) (string, er
 	return "", fmt.Errorf("could not determine sAMAccountName from bind DN: %s", bindDN)
 }
 
-// registerSPN adds an SPN to the service account in AD.
 func registerSPN(conn *ldaplib.Conn, accountDN, spn string) error {
 	modify := ldaplib.NewModifyRequest(accountDN, nil)
 	modify.Add("servicePrincipalName", []string{spn})
 	return conn.Modify(modify)
 }
 
-// unregisterSPN removes an SPN from the service account in AD.
 func unregisterSPN(conn *ldaplib.Conn, accountDN, spn string) error {
 	modify := ldaplib.NewModifyRequest(accountDN, nil)
 	modify.Delete("servicePrincipalName", []string{spn})
 	return conn.Modify(modify)
 }
 
-// autoSetupKerberos generates a keytab for an LDAP provider (called during import).
-func (h *Handler) autoSetupKerberos(providerID, serviceHostname string, r *http.Request) (map[string]interface{}, error) {
-	p, err := h.store.GetLDAPProvider(providerID)
+// autoSetupKerberos generates a keytab using the single LDAP config (called during import).
+func (h *Handler) autoSetupKerberos(serviceHostname string, r *http.Request) (map[string]interface{}, error) {
+	p, err := h.store.GetLDAPConfig()
 	if err != nil {
-		return nil, fmt.Errorf("provider not found: %v", err)
+		return nil, fmt.Errorf("ldap not configured: %v", err)
 	}
 
 	realm := realmFromBaseDN(p.BaseDN)
@@ -394,7 +372,6 @@ func (h *Handler) autoSetupKerberos(providerID, serviceHostname string, r *http.
 	krbCfg := &KerberosConfig{
 		Realm:           realm,
 		KeytabPath:      keytabPath,
-		ProviderID:      providerID,
 		ServiceHostname: serviceHostname,
 		SPN:             spn,
 		BindAccountDN:   p.BindDN,
@@ -406,7 +383,7 @@ func (h *Handler) autoSetupKerberos(providerID, serviceHostname string, r *http.
 	}
 
 	h.audit("kerberos_setup", "admin", getClientIP(r), map[string]interface{}{
-		"provider_id": providerID, "spn": spn, "realm": realm, "auto": true,
+		"spn": spn, "realm": realm, "auto": true,
 	})
 
 	return map[string]interface{}{
@@ -441,10 +418,6 @@ func (h *Handler) getKRB5Realm() string {
 }
 
 // handleSetupScript returns a full interactive PowerShell script for AD setup.
-// The script auto-discovers the domain, offers to create or reuse an AD account,
-// registers the SPN, and exports a config JSON for one-click import into SimpleAuth.
-// The SimpleAuth hostname and default account name are pre-injected.
-// GET /api/admin/setup-script
 func (h *Handler) handleSetupScript(w http.ResponseWriter, r *http.Request) {
 	hostname := h.cfg.Hostname
 	defaultAccount := "svc-sauth-" + strings.ToLower(h.cfg.DeploymentName)
@@ -452,7 +425,6 @@ func (h *Handler) handleSetupScript(w http.ResponseWriter, r *http.Request) {
 	lines := setupScriptLines(hostname, defaultAccount, h.cfg.DeploymentName)
 	script := strings.Join(lines, "\r\n")
 
-	// UTF-8 BOM so Windows PowerShell reads encoding correctly
 	bom := []byte{0xEF, 0xBB, 0xBF}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Setup-SimpleAuth-%s.ps1"`, strings.ToLower(h.cfg.DeploymentName)))
@@ -461,9 +433,7 @@ func (h *Handler) handleSetupScript(w http.ResponseWriter, r *http.Request) {
 }
 
 // setupScriptLines builds the PowerShell setup script as a slice of lines.
-// This mirrors the client-side generateScript but with hostname pre-injected.
 func setupScriptLines(hostname, defaultAccount, deploymentName string) []string {
-	// psEsc escapes a string for embedding in PowerShell single-quoted strings
 	psEsc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 	return []string{
@@ -610,8 +580,8 @@ func setupScriptLines(hostname, defaultAccount, deploymentName string) []string 
 		"            Write-Host \"           Cleanup Complete\" -ForegroundColor Green",
 		"            Write-Host \"  ========================================\" -ForegroundColor Green",
 		"            Write-Host \"\"",
-		"            Write-Host \"  Remember to also remove the LDAP provider\" -ForegroundColor Yellow",
-		"            Write-Host \"  and Kerberos config in the SimpleAuth admin UI.\" -ForegroundColor Yellow",
+		"            Write-Host \"  Remember to also remove Kerberos config\" -ForegroundColor Yellow",
+		"            Write-Host \"  in the SimpleAuth admin UI.\" -ForegroundColor Yellow",
 		"            Write-Host \"\"",
 		"            Read-Host \"Press Enter to exit\"",
 		"            exit 0",
@@ -780,7 +750,7 @@ func setupScriptLines(hostname, defaultAccount, deploymentName string) []string 
 		"Write-Host \"\"",
 		"Write-Host \"  Next steps:\" -ForegroundColor Yellow",
 		"Write-Host \"    1. Copy simpleauth-config.json to your workstation\" -ForegroundColor White",
-		"Write-Host \"    2. Open SimpleAuth admin UI -> LDAP Providers\" -ForegroundColor White",
+		"Write-Host \"    2. Open SimpleAuth admin UI -> LDAP Settings\" -ForegroundColor White",
 		"Write-Host \"    3. Click Import Config and upload the file\" -ForegroundColor White",
 		"Write-Host \"\"",
 		"Read-Host \"Press Enter to exit\"",
