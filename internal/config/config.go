@@ -49,8 +49,19 @@ type Config struct {
 	HTTPPort        string        `yaml:"http_port"`
 	ClientID        string        `yaml:"client_id"`
 	ClientSecret    string        `yaml:"client_secret"`
-	RedirectURIs    []string      `yaml:"redirect_uris"`
+	RedirectURI     string        `yaml:"redirect_uri"`
+	RedirectURIs    []string      `yaml:"redirect_uris"` // deprecated, use redirect_uri
 	DefaultRoles    []string      `yaml:"default_roles"`
+
+	// Password policy
+	PasswordMinLength        int           `yaml:"password_min_length"`
+	PasswordRequireUppercase bool          `yaml:"password_require_uppercase"`
+	PasswordRequireLowercase bool          `yaml:"password_require_lowercase"`
+	PasswordRequireDigit     bool          `yaml:"password_require_digit"`
+	PasswordRequireSpecial   bool          `yaml:"password_require_special"`
+	PasswordHistoryCount     int           `yaml:"password_history_count"`
+	AccountLockoutThreshold  int           `yaml:"account_lockout_threshold"`
+	AccountLockoutDuration   time.Duration `yaml:"account_lockout_duration"`
 }
 
 // configFile is an intermediate struct for YAML parsing with string durations.
@@ -78,8 +89,18 @@ type configFile struct {
 	HTTPPort        string   `yaml:"http_port"`
 	ClientID        string   `yaml:"client_id"`
 	ClientSecret    string   `yaml:"client_secret"`
+	RedirectURI     string   `yaml:"redirect_uri"`
 	RedirectURIs    []string `yaml:"redirect_uris"`
 	DefaultRoles    []string `yaml:"default_roles"`
+
+	PasswordMinLength        int    `yaml:"password_min_length"`
+	PasswordRequireUppercase bool   `yaml:"password_require_uppercase"`
+	PasswordRequireLowercase bool   `yaml:"password_require_lowercase"`
+	PasswordRequireDigit     bool   `yaml:"password_require_digit"`
+	PasswordRequireSpecial   bool   `yaml:"password_require_special"`
+	PasswordHistoryCount     int    `yaml:"password_history_count"`
+	AccountLockoutThreshold  int    `yaml:"account_lockout_threshold"`
+	AccountLockoutDuration   string `yaml:"account_lockout_duration"`
 }
 
 // Load reads config with priority: env vars > config file > defaults.
@@ -98,6 +119,8 @@ func Load() *Config {
 		RateLimitMax:    10,
 		RateLimitWindow: 1 * time.Minute,
 		HTTPPort:        "80",
+		PasswordMinLength:      8,
+		AccountLockoutDuration: 30 * time.Minute,
 	}
 
 	// Try to load config file
@@ -177,6 +200,11 @@ func Load() *Config {
 		if cfg.BasePath != "" {
 			log.Printf("Base path: %s", cfg.BasePath)
 		}
+	}
+
+	// Resolve redirect_uri: prefer redirect_uri, fallback to redirect_uris[0]
+	if cfg.RedirectURI == "" && len(cfg.RedirectURIs) > 0 {
+		cfg.RedirectURI = cfg.RedirectURIs[0]
 	}
 
 	// Auto-generate OIDC client credentials if not configured
@@ -262,14 +290,26 @@ rate_limit_window: "1m"
 client_id: ""
 client_secret: ""
 
-# Allowed redirect URIs for this instance (list)
-# redirect_uris:
-#   - "https://app.example.com/callback"
-#   - "http://localhost:3000/callback"
+# Redirect URI — where the app receives tokens after login
+# redirect_uri: "https://app.example.com/callback"
 
 # Default roles assigned to new users on first login (comma-separated in env var)
 # default_roles:
 #   - "user"
+
+# Password policy
+password_min_length: 8
+# password_require_uppercase: false
+# password_require_lowercase: false
+# password_require_digit: false
+# password_require_special: false
+
+# Password history — prevent reusing the last N passwords (0 = disabled)
+# password_history_count: 0
+
+# Account lockout — lock account after N consecutive failed login attempts (0 = disabled)
+# account_lockout_threshold: 0
+# account_lockout_duration: "30m"
 `
 	return os.WriteFile(path, []byte(defaultYAML), 0600)
 }
@@ -390,11 +430,40 @@ func loadConfigFile(cfg *Config) {
 	if fc.ClientSecret != "" {
 		cfg.ClientSecret = fc.ClientSecret
 	}
+	if fc.RedirectURI != "" {
+		cfg.RedirectURI = fc.RedirectURI
+	}
 	if len(fc.RedirectURIs) > 0 {
 		cfg.RedirectURIs = fc.RedirectURIs
 	}
 	if len(fc.DefaultRoles) > 0 {
 		cfg.DefaultRoles = fc.DefaultRoles
+	}
+	if fc.PasswordMinLength > 0 {
+		cfg.PasswordMinLength = fc.PasswordMinLength
+	}
+	if fc.PasswordRequireUppercase {
+		cfg.PasswordRequireUppercase = true
+	}
+	if fc.PasswordRequireLowercase {
+		cfg.PasswordRequireLowercase = true
+	}
+	if fc.PasswordRequireDigit {
+		cfg.PasswordRequireDigit = true
+	}
+	if fc.PasswordRequireSpecial {
+		cfg.PasswordRequireSpecial = true
+	}
+	if fc.PasswordHistoryCount > 0 {
+		cfg.PasswordHistoryCount = fc.PasswordHistoryCount
+	}
+	if fc.AccountLockoutThreshold > 0 {
+		cfg.AccountLockoutThreshold = fc.AccountLockoutThreshold
+	}
+	if fc.AccountLockoutDuration != "" {
+		if d, err := time.ParseDuration(fc.AccountLockoutDuration); err == nil {
+			cfg.AccountLockoutDuration = d
+		}
 	}
 }
 
@@ -480,11 +549,46 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("AUTH_CLIENT_SECRET"); v != "" {
 		cfg.ClientSecret = v
 	}
+	if v := os.Getenv("AUTH_REDIRECT_URI"); v != "" {
+		cfg.RedirectURI = v
+	}
 	if v := os.Getenv("AUTH_REDIRECT_URIS"); v != "" {
 		cfg.RedirectURIs = strings.Split(v, ",")
 	}
 	if v := os.Getenv("AUTH_DEFAULT_ROLES"); v != "" {
 		cfg.DefaultRoles = strings.Split(v, ",")
+	}
+	if v := os.Getenv("AUTH_PASSWORD_MIN_LENGTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PasswordMinLength = n
+		}
+	}
+	if v := os.Getenv("AUTH_PASSWORD_REQUIRE_UPPERCASE"); v != "" {
+		cfg.PasswordRequireUppercase = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_PASSWORD_REQUIRE_LOWERCASE"); v != "" {
+		cfg.PasswordRequireLowercase = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_PASSWORD_REQUIRE_DIGIT"); v != "" {
+		cfg.PasswordRequireDigit = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_PASSWORD_REQUIRE_SPECIAL"); v != "" {
+		cfg.PasswordRequireSpecial = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_PASSWORD_HISTORY_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PasswordHistoryCount = n
+		}
+	}
+	if v := os.Getenv("AUTH_ACCOUNT_LOCKOUT_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.AccountLockoutThreshold = n
+		}
+	}
+	if v := os.Getenv("AUTH_ACCOUNT_LOCKOUT_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.AccountLockoutDuration = d
+		}
 	}
 }
 

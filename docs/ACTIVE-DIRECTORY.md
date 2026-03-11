@@ -63,13 +63,12 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "provider_id": "corp-ad",
     "name": "Corporate Active Directory",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
     "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "YourStrongPassword",
-    "user_filter": "(sAMAccountName={0})",
+    "username_attr": "sAMAccountName",
     "use_tls": true,
     "skip_tls_verify": false,
     "display_name_attr": "displayName",
@@ -84,7 +83,7 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
 
 ### Using the Admin UI
 
-Navigate to your SimpleAuth instance in a browser and use the built-in admin UI to configure LDAP providers visually.
+Navigate to `/admin` on your SimpleAuth instance in a browser and use the built-in admin UI to configure LDAP visually.
 
 ### Auto-Discovery
 
@@ -100,7 +99,7 @@ curl -k -X POST https://auth.corp.local:8080/api/admin/ldap/auto-discover \
 ## Step 3: Test the Connection
 
 ```bash
-curl -k -X POST https://auth.corp.local:8080/api/admin/ldap/corp-ad/test \
+curl -k -X POST https://auth.corp.local:8080/api/admin/ldap/test \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
 
@@ -134,13 +133,12 @@ curl -k -X POST https://auth.corp.local:8080/api/auth/login \
 
 | Field | Example | Description |
 |---|---|---|
-| `user_filter` | `(sAMAccountName={0})` | LDAP search filter. `{0}` is replaced with the username. |
+| `username_attr` | `sAMAccountName` | The LDAP attribute used to match the login username. |
 
-Common filters:
-- **By login name:** `(sAMAccountName={0})` -- most common for AD
-- **By email:** `(mail={0})` -- useful for email-based login
-- **By UPN:** `(userPrincipalName={0})` -- for `user@domain` format
-- **Combined:** `(|(sAMAccountName={0})(mail={0}))` -- accept either
+Common values:
+- **`sAMAccountName`** -- most common for AD (matches login name)
+- **`mail`** -- useful for email-based login
+- **`userPrincipalName`** -- for `user@domain` format
 
 ### Attribute Mapping
 
@@ -159,7 +157,7 @@ These map AD attributes to SimpleAuth user fields:
 
 | Field | Default | Description |
 |---|---|---|
-| `priority` | `0` | Lower numbers are tried first. Use when you have multiple LDAP providers. |
+| `priority` | `0` | Provider priority (reserved for future use). |
 
 ---
 
@@ -183,7 +181,7 @@ SimpleAuth can set up Kerberos automatically using your AD admin credentials:
 
 ```bash
 curl -k -X POST \
-  https://auth.corp.local:8080/api/admin/ldap/corp-ad/setup-kerberos \
+  https://auth.corp.local:8080/api/admin/kerberos/setup \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -265,7 +263,7 @@ To remove Kerberos configuration:
 
 ```bash
 curl -k -X POST \
-  https://auth.corp.local:8080/api/admin/ldap/corp-ad/cleanup-kerberos \
+  https://auth.corp.local:8080/api/admin/kerberos/cleanup \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
 
@@ -293,7 +291,7 @@ Attributes are refreshed on every login, so changes in AD are reflected automati
 SimpleAuth identifies AD users by their `objectGUID` (a unique, immutable identifier). This means:
 - Renaming a user in AD doesn't break their SimpleAuth identity
 - Moving a user to a different OU doesn't break anything
-- The identity mapping is `ldap:{provider_id}:{objectGUID}`
+- The identity mapping is `ldap:{objectGUID}`
 
 ### Groups
 
@@ -304,63 +302,6 @@ CN=Engineering,OU=Groups,DC=corp,DC=local
 ```
 
 These are included in JWT tokens as-is. Your app can parse the CN to get the group name, or compare full DNs for precision.
-
----
-
-## Multi-Domain / Multi-Forest Support
-
-SimpleAuth supports multiple LDAP providers, making multi-domain setups straightforward:
-
-```bash
-# Domain 1: corp.local
-curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
-  -H "Authorization: Bearer ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider_id": "corp-local",
-    "name": "corp.local",
-    "url": "ldaps://dc01.corp.local:636",
-    "base_dn": "DC=corp,DC=local",
-    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
-    "bind_password": "Password1",
-    "user_filter": "(sAMAccountName={0})",
-    "priority": 10
-  }'
-
-# Domain 2: subsidiary.com
-curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
-  -H "Authorization: Bearer ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "provider_id": "subsidiary",
-    "name": "subsidiary.com",
-    "url": "ldaps://dc01.subsidiary.com:636",
-    "base_dn": "DC=subsidiary,DC=com",
-    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=subsidiary,DC=com",
-    "bind_password": "Password2",
-    "user_filter": "(sAMAccountName={0})",
-    "priority": 20
-  }'
-```
-
-On login, SimpleAuth tries `corp.local` first (priority 10), then `subsidiary.com` (priority 20).
-
-### User Merging Across Domains
-
-If the same person has accounts in multiple domains, you can merge them:
-
-```bash
-curl -k -X POST https://auth.corp.local:8080/api/admin/users/merge \
-  -H "Authorization: Bearer ADMIN_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_guids": ["guid-from-corp", "guid-from-subsidiary"],
-    "display_name": "John Smith",
-    "email": "jsmith@corp.local"
-  }'
-```
-
-After merging, the user gets a single GUID. Both LDAP identities map to the same user. Roles and permissions from both accounts are combined.
 
 ---
 
@@ -380,9 +321,8 @@ After merging, the user gets a single GUID. Both LDAP identities map to the same
 
 ### "User not found" when logging in
 
-- Check the `user_filter` -- it must contain `{0}` which gets replaced with the username
+- Check the `username_attr` -- it must match the attribute users log in with (e.g., `sAMAccountName`)
 - Verify the `base_dn` contains the user's OU
-- Try a broader search: `"user_filter": "(|(sAMAccountName={0})(mail={0}))"`
 
 ### "TLS certificate verification failed"
 
@@ -405,6 +345,3 @@ After merging, the user gets a single GUID. Both LDAP identities map to the same
 - Try the test page: `https://auth.corp.local:8080/test-negotiate`
 - Check SimpleAuth logs for "negotiate_failed" audit entries
 
-### Multiple people with the same username across domains
-
-This works fine. SimpleAuth tracks users by their `objectGUID`, not their username. The `priority` setting determines which domain is tried first. Once a user authenticates from a specific domain, their identity mapping is cached, so future logins go directly to the right domain.

@@ -72,6 +72,18 @@ tok, err := client.ExchangeCode(ctx, code, "https://myapp.example.com/callback")
 tok, err := client.Refresh(ctx, tok.RefreshToken)
 ```
 
+## Handling Force Password Change
+
+The login response may indicate that the user must change their password before proceeding:
+
+```go
+// Handle force password change
+tok, err := client.Login(ctx, "alice", "password123")
+if tok.ForcePasswordChange {
+    // Redirect user to change their password before proceeding
+}
+```
+
 ## Token verification
 
 `Verify` decodes and cryptographically verifies a JWT using the RS256 algorithm. Public keys are fetched from the JWKS endpoint and cached for one hour. A cache miss on the `kid` header triggers an automatic re-fetch.
@@ -130,7 +142,7 @@ Unauthenticated requests receive **401 Unauthorized**. Requests that lack the re
 
 ## Admin operations
 
-Manage user roles and permissions via the SimpleAuth admin API.
+Manage user roles and permissions via the SimpleAuth admin API. Admin operations require `ClientSecret` -- it is sent as a Bearer token (not Basic auth) to authenticate with the admin API.
 
 ```go
 roles, err := client.GetUserRoles(ctx, userGUID)

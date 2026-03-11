@@ -162,7 +162,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -220,8 +220,8 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect with code
 	redirectTarget := redirectURI
-	if redirectTarget == "" && len(h.cfg.RedirectURIs) > 0 {
-		redirectTarget = h.cfg.RedirectURIs[0] // fallback to first registered URI
+	if redirectTarget == "" && h.cfg.RedirectURI != "" {
+		redirectTarget = h.cfg.RedirectURI
 	}
 	sep := "?"
 	if strings.Contains(redirectTarget, "?") {
@@ -247,7 +247,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirectURI := r.URL.Query().Get("redirect_uri")
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}

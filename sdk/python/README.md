@@ -36,6 +36,16 @@ print(tokens.access_token)
 print(tokens.refresh_token)
 ```
 
+### Handling Force Password Change
+
+The login response may indicate that the user must change their password before proceeding:
+
+```python
+tokens = auth.login(username="alice", password="secret")
+if tokens.force_password_change:
+    # Redirect user to password change page
+```
+
 ### Refresh Token
 
 ```python
@@ -100,7 +110,7 @@ info = auth.userinfo(access_token=tokens.access_token)
 
 ## Admin Operations
 
-Manage user roles and permissions (requires `client_secret`):
+Manage user roles and permissions (requires `client_secret`). The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API:
 
 ```python
 # Roles

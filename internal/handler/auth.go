@@ -43,9 +43,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	userGUID, ldapGroups, err := h.authenticateUser(req.Username, req.Password)
 	if err != nil {
 		h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "reason": err.Error()})
-		if err.Error() == "account disabled" {
+		switch err.Error() {
+		case "account disabled":
 			jsonError(w, "account disabled", http.StatusForbidden)
-		} else {
+		case "account locked":
+			jsonError(w, "account locked due to too many failed attempts", http.StatusForbidden)
+		default:
 			jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		}
 		return
@@ -61,88 +64,98 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Assign default roles if user has none
 	h.assignDefaultRoles(finalUser.GUID)
 
+	// Check force password change — still issue tokens but flag the response
+	if finalUser.ForcePasswordChange {
+		roles, _ := h.store.GetUserRoles(finalUser.GUID)
+		perms := h.resolveUserPermissions(finalUser.GUID, roles)
+		accessToken, refreshToken, expiresIn, err := h.issueTokenPair(finalUser, roles, perms, ldapGroups)
+		if err != nil {
+			jsonError(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
+		h.audit("login_success", finalUser.GUID, ip, map[string]interface{}{"force_password_change": true})
+		jsonResp(w, map[string]interface{}{
+			"access_token":          accessToken,
+			"refresh_token":         refreshToken,
+			"expires_in":            expiresIn,
+			"token_type":            "Bearer",
+			"force_password_change": true,
+		}, http.StatusOK)
+		return
+	}
+
 	// Issue tokens
 	h.issueTokenResponse(w, finalUser, ldapGroups, ip)
 }
 
 // authenticateUser performs the full auth flow and returns (userGUID, ldapGroups, error).
-// Flow: try LDAP (single config) -> try local password.
+// Flow: local first -> LDAP fallback. Local users are SimpleAuth's own — they always take priority.
 // On successful LDAP auth, user profile is synced from the LDAP result.
 func (h *Handler) authenticateUser(username, password string) (string, []string, error) {
 	var userGUID string
 	var ldapGroups []string
 	var ldapResult *auth.LDAPResult
 	var authenticated bool
+	var localUser *store.User // track for lockout accounting
 
-	// Step 1: Try LDAP authentication (if configured)
-	ldapCfg, ldapErr := h.store.GetLDAPConfig()
-	if ldapErr == nil {
-		cfg := ldapConfigFromStore(ldapCfg)
-		result, err := auth.LDAPAuthenticate(cfg, username, password)
+	// Step 1: Try local identity mapping + password (local users always take priority)
+	guid, err := h.store.ResolveMapping("local", username)
+	if err == nil {
+		user, err := h.store.ResolveUser(guid)
 		if err == nil {
-			ldapGroups = result.Groups
-			ldapResult = result
-			authenticated = true
-
-			// Resolve or JIT-provision user
-			guid, mapErr := h.store.ResolveMapping("ldap", username)
-			if mapErr == nil {
-				userGUID = guid
-			} else {
-				// JIT provisioning
-				newUser := &store.User{
-					DisplayName: result.DisplayName,
-					Email:       result.Email,
-					Department:  result.Department,
-					Company:     result.Company,
-					JobTitle:    result.JobTitle,
-				}
-				h.store.CreateUser(newUser)
-				userGUID = newUser.GUID
-				h.store.SetIdentityMapping("ldap", username, userGUID)
-				h.store.SetIdentityMapping("local", username, userGUID)
+			localUser = user
+			if user.Disabled {
+				return "", nil, fmt.Errorf("account disabled")
+			}
+			// Check account lockout
+			if h.isAccountLocked(user) {
+				return "", nil, fmt.Errorf("account locked")
+			}
+			if user.PasswordHash != "" && auth.CheckPassword(user.PasswordHash, password) {
+				userGUID = user.GUID
+				authenticated = true
 			}
 		}
 	}
 
-	// Step 2: Fallback — try local identity mapping + password
+	// Step 2: Fallback — try LDAP authentication (if configured and local didn't match)
 	if !authenticated {
-		guid, err := h.store.ResolveMapping("local", username)
-		if err == nil {
-			user, err := h.store.ResolveUser(guid)
+		ldapCfg, ldapErr := h.store.GetLDAPConfig()
+		if ldapErr == nil {
+			cfg := ldapConfigFromStore(ldapCfg)
+			result, err := auth.LDAPAuthenticate(cfg, username, password)
 			if err == nil {
-				if user.Disabled {
-					return "", nil, fmt.Errorf("account disabled")
-				}
-				if user.PasswordHash != "" && auth.CheckPassword(user.PasswordHash, password) {
-					userGUID = user.GUID
-					authenticated = true
-				}
-			}
-		}
-	}
+				ldapGroups = result.Groups
+				ldapResult = result
+				authenticated = true
 
-	// Step 3: Fallback — scan all local users
-	if !authenticated {
-		users, _ := h.store.ListUsers()
-		for _, u := range users {
-			if u.PasswordHash != "" {
-				mappings, _ := h.store.GetMappingsForUser(u.GUID)
-				for _, m := range mappings {
-					if m.ExternalID == username && auth.CheckPassword(u.PasswordHash, password) {
-						userGUID = u.GUID
-						authenticated = true
-						break
+				// Resolve or JIT-provision user
+				guid, mapErr := h.store.ResolveMapping("ldap", username)
+				if mapErr == nil {
+					userGUID = guid
+				} else {
+					// JIT provisioning
+					newUser := &store.User{
+						DisplayName: result.DisplayName,
+						Email:       result.Email,
+						Department:  result.Department,
+						Company:     result.Company,
+						JobTitle:    result.JobTitle,
 					}
-				}
-				if authenticated {
-					break
+					h.store.CreateUser(newUser)
+					userGUID = newUser.GUID
+					h.store.SetIdentityMapping("ldap", username, userGUID)
+					h.store.SetIdentityMapping("local", username, userGUID)
 				}
 			}
 		}
 	}
 
 	if !authenticated {
+		// Record failed login attempt for lockout tracking
+		if localUser != nil {
+			h.recordFailedLogin(localUser)
+		}
 		return "", nil, fmt.Errorf("invalid credentials")
 	}
 
@@ -155,12 +168,58 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 		return "", nil, fmt.Errorf("account disabled")
 	}
 
+	// Clear failed login attempts on successful auth
+	if finalUser.FailedLoginAttempts > 0 {
+		finalUser.FailedLoginAttempts = 0
+		finalUser.LockedUntil = nil
+		h.store.UpdateUser(finalUser)
+	}
+
 	// Sync profile from LDAP on every successful LDAP login
 	if ldapResult != nil {
 		h.syncUserFromLDAP(finalUser, ldapResult)
 	}
 
 	return finalUser.GUID, ldapGroups, nil
+}
+
+// isAccountLocked checks if a user account is currently locked due to failed login attempts.
+func (h *Handler) isAccountLocked(user *store.User) bool {
+	if h.cfg.AccountLockoutThreshold <= 0 {
+		return false
+	}
+	if user.LockedUntil == nil {
+		return false
+	}
+	if time.Now().After(*user.LockedUntil) {
+		// Lock has expired — clear it
+		user.FailedLoginAttempts = 0
+		user.LockedUntil = nil
+		h.store.UpdateUser(user)
+		return false
+	}
+	return true
+}
+
+// recordFailedLogin increments the failed login counter and locks the account if threshold is reached.
+func (h *Handler) recordFailedLogin(user *store.User) {
+	user.FailedLoginAttempts++
+	if h.cfg.AccountLockoutThreshold > 0 && user.FailedLoginAttempts >= h.cfg.AccountLockoutThreshold {
+		lockUntil := time.Now().Add(h.cfg.AccountLockoutDuration)
+		user.LockedUntil = &lockUntil
+	}
+	h.store.UpdateUser(user)
+}
+
+// passwordPolicy returns the auth.PasswordPolicy derived from config.
+func (h *Handler) passwordPolicy() auth.PasswordPolicy {
+	return auth.PasswordPolicy{
+		MinLength:        h.cfg.PasswordMinLength,
+		RequireUppercase: h.cfg.PasswordRequireUppercase,
+		RequireLowercase: h.cfg.PasswordRequireLowercase,
+		RequireDigit:     h.cfg.PasswordRequireDigit,
+		RequireSpecial:   h.cfg.PasswordRequireSpecial,
+	}
 }
 
 // syncUserFromLDAP updates a user's profile fields from LDAP result (non-empty fields only).
@@ -534,8 +593,10 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "new_password required", http.StatusBadRequest)
 		return
 	}
-	if len(req.NewPassword) < 6 {
-		jsonError(w, "new_password must be at least 6 characters", http.StatusBadRequest)
+
+	// Validate password against policy
+	if err := auth.ValidatePassword(req.NewPassword, h.passwordPolicy()); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -545,8 +606,8 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify current password if user has one set
-	if user.PasswordHash != "" {
+	// Verify current password if user has one set (skip if force_password_change is set)
+	if user.PasswordHash != "" && !user.ForcePasswordChange {
 		if req.CurrentPassword == "" {
 			jsonError(w, "current_password required", http.StatusBadRequest)
 			return
@@ -557,12 +618,25 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check password history
+	if h.cfg.PasswordHistoryCount > 0 && auth.CheckPasswordHistory(req.NewPassword, user.PasswordHistory) {
+		jsonError(w, fmt.Sprintf("password was recently used — choose a different password (last %d passwords are remembered)", h.cfg.PasswordHistoryCount), http.StatusBadRequest)
+		return
+	}
+
 	hash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
 		jsonError(w, "failed to hash password", http.StatusInternalServerError)
 		return
 	}
+
+	// Update password history
+	if h.cfg.PasswordHistoryCount > 0 && user.PasswordHash != "" {
+		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.cfg.PasswordHistoryCount)
+	}
+
 	user.PasswordHash = hash
+	user.ForcePasswordChange = false // clear the flag on successful password change
 	if err := h.store.UpdateUser(user); err != nil {
 		jsonError(w, "failed to update password", http.StatusInternalServerError)
 		return
@@ -852,7 +926,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	redirectURI := r.URL.Query().Get("redirect_uri")
 
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}

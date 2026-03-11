@@ -31,6 +31,17 @@ console.log(tokens.refresh_token);
 console.log(tokens.id_token);
 ```
 
+### Handling Force Password Change
+
+The login response may indicate that the user must change their password before proceeding:
+
+```ts
+const tokens = await auth.login('username', 'password');
+if (tokens.force_password_change) {
+  // Redirect user to password change page
+}
+```
+
 ### Refresh Token
 
 ```ts
@@ -149,7 +160,7 @@ app.get('/api/admin',
 
 ## Admin Operations
 
-Admin operations require `clientSecret`. The secret is sent as a Bearer token to the SimpleAuth admin API.
+Admin operations require `clientSecret`. The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
 
 ### Get User
 

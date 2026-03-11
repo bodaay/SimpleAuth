@@ -117,11 +117,12 @@ function Dashboard() {
 // === Roles & Permissions ===
 function RolesPage() {
   const [defaultRoles, setDefaultRoles] = useState([]);
-  const [newDefaultRole, setNewDefaultRole] = useState('');
   const [rolePerms, setRolePerms] = useState({});
+  const [selectedRole, setSelectedRole] = useState(null);
   const [newRoleName, setNewRoleName] = useState('');
-  const [newPermForRole, setNewPermForRole] = useState({});
+  const [newPerm, setNewPerm] = useState('');
   const [toast, setToast] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -143,22 +144,15 @@ function RolesPage() {
     try {
       await api('PUT', '/api/admin/defaults/roles', roles);
       setDefaultRoles(roles);
-      showToast('Default roles saved');
+      showToast('Default roles updated');
     } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const addDefaultRole = () => {
-    const r = newDefaultRole.trim();
-    if (!r || defaultRoles.includes(r)) return;
-    setNewDefaultRole('');
-    saveDefaultRoles([...defaultRoles, r]);
   };
 
   const saveRolePerms = async (mapping) => {
     try {
       await api('PUT', '/api/admin/role-permissions', mapping);
       setRolePerms(mapping);
-      showToast('Role permissions saved');
+      showToast('Permissions saved');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
@@ -168,87 +162,126 @@ function RolesPage() {
     const updated = { ...rolePerms, [r]: [] };
     setNewRoleName('');
     saveRolePerms(updated);
+    setSelectedRole(r);
   };
 
   const deleteRole = (role) => {
     const updated = { ...rolePerms };
     delete updated[role];
+    // Also remove from defaults if it was there
+    const newDefaults = defaultRoles.filter(r => r !== role);
+    if (newDefaults.length !== defaultRoles.length) {
+      saveDefaultRoles(newDefaults);
+    }
+    saveRolePerms(updated);
+    setSelectedRole(null);
+    setConfirmDelete(false);
+  };
+
+  const toggleDefault = (role) => {
+    if (defaultRoles.includes(role)) {
+      saveDefaultRoles(defaultRoles.filter(r => r !== role));
+    } else {
+      saveDefaultRoles([...defaultRoles, role]);
+    }
+  };
+
+  const addPermission = () => {
+    const p = newPerm.trim();
+    if (!p || !selectedRole || (rolePerms[selectedRole] || []).includes(p)) return;
+    const updated = { ...rolePerms, [selectedRole]: [...(rolePerms[selectedRole] || []), p] };
+    setNewPerm('');
     saveRolePerms(updated);
   };
 
-  const addPermToRole = (role) => {
-    const p = (newPermForRole[role] || '').trim();
-    if (!p || (rolePerms[role] || []).includes(p)) return;
-    const updated = { ...rolePerms, [role]: [...(rolePerms[role] || []), p] };
-    setNewPermForRole({ ...newPermForRole, [role]: '' });
+  const removePerm = (perm) => {
+    if (!selectedRole) return;
+    const updated = { ...rolePerms, [selectedRole]: (rolePerms[selectedRole] || []).filter(p => p !== perm) };
     saveRolePerms(updated);
   };
 
-  const removePermFromRole = (role, perm) => {
-    const updated = { ...rolePerms, [role]: (rolePerms[role] || []).filter(p => p !== perm) };
-    saveRolePerms(updated);
-  };
+  const roleNames = Object.keys(rolePerms);
+  const selectedPerms = selectedRole ? (rolePerms[selectedRole] || []) : [];
 
   return html`
     <div class="page-header"><h2>Roles & Permissions</h2></div>
     <div class="gold-bar" style="margin-bottom: var(--sp-8)"></div>
 
-    <div class="card" style="margin-bottom:var(--sp-6)">
-      <div class="card-header"><h3>Default Roles</h3></div>
-      <div style="padding:var(--sp-4)">
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-3)">Automatically assigned to every new user on first login.</p>
-        <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-3)">
-          ${defaultRoles.map(r => html`
-            <span class="badge" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px">
-              ${r}
-              <button class="btn-icon" style="padding:0;min-width:auto" onClick=${() => saveDefaultRoles(defaultRoles.filter(x => x !== r))} title="Remove">×</button>
-            </span>
-          `)}
-          ${defaultRoles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.875rem">None configured</span>`}
+    <div class="roles-layout">
+      <!-- Left: Roles list -->
+      <div class="roles-sidebar">
+        <div class="roles-sidebar-header">
+          <h3>Roles</h3>
+          <div style="font-size:0.75rem;color:var(--text-muted)">
+            <span style="color:var(--brand-copper)">★</span> = auto-assigned to new users
+          </div>
         </div>
-        <div style="display:flex;gap:var(--sp-2)">
-          <input class="form-input" style="flex:1;max-width:300px" value=${newDefaultRole} onInput=${e => setNewDefaultRole(e.target.value)} placeholder="e.g. user, member" onKeyDown=${e => e.key === 'Enter' && addDefaultRole()} />
-          <button class="btn btn-sm btn-primary" onClick=${addDefaultRole}>Add</button>
+        <div class="roles-list">
+          ${roleNames.length === 0
+            ? html`<div style="padding:var(--sp-4);text-align:center;color:var(--text-muted);font-size:0.8rem">No roles defined yet</div>`
+            : roleNames.map(role => html`
+              <div class="role-item ${selectedRole === role ? 'active' : ''}" onClick=${() => { setSelectedRole(role); setConfirmDelete(false); }}>
+                <span class="role-name">${role}</span>
+                <span class="role-perm-count">${(rolePerms[role] || []).length}</span>
+                <span
+                  class="role-default-star ${defaultRoles.includes(role) ? 'is-default' : ''}"
+                  onClick=${(e) => { e.stopPropagation(); toggleDefault(role); }}
+                  title=${defaultRoles.includes(role) ? 'Remove from default roles' : 'Make default role for new users'}
+                >${defaultRoles.includes(role) ? '★' : '☆'}</span>
+              </div>
+            `)
+          }
+        </div>
+        <div class="roles-add-form">
+          <input class="form-input" style="padding:var(--sp-2) var(--sp-3);font-size:0.8rem" value=${newRoleName} onInput=${e => setNewRoleName(e.target.value)} placeholder="New role..." onKeyDown=${e => e.key === 'Enter' && addRole()} />
+          <button class="btn btn-sm btn-primary" onClick=${addRole}>${icons.plus}</button>
         </div>
       </div>
-    </div>
 
-    <div class="card">
-      <div class="card-header">
-        <h3>Role → Permissions</h3>
-      </div>
-      <div style="padding:var(--sp-4)">
-        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-3)">Define what permissions each role grants. These are expanded into the JWT automatically.</p>
-
-        ${Object.keys(rolePerms).length === 0
-          ? html`<div style="color:var(--text-muted);font-size:0.875rem;margin-bottom:var(--sp-3)">No roles defined yet.</div>`
-          : Object.entries(rolePerms).map(([role, perms]) => html`
-            <div class="card" style="padding:var(--sp-3);margin-bottom:var(--sp-3)">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-2)">
-                <strong style="font-size:0.875rem">${role}</strong>
-                <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(role)}>Remove</button>
-              </div>
-              <div style="display:flex;gap:var(--sp-1);flex-wrap:wrap;margin-bottom:var(--sp-2)">
-                ${(perms || []).map(p => html`
-                  <span class="badge badge-success" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;font-size:0.75rem">
-                    ${p}
-                    <button class="btn-icon" style="padding:0;min-width:auto;font-size:0.75rem" onClick=${() => removePermFromRole(role, p)} title="Remove">×</button>
-                  </span>
-                `)}
-                ${(perms || []).length === 0 && html`<span style="color:var(--text-muted);font-size:0.75rem">No permissions</span>`}
-              </div>
-              <div style="display:flex;gap:var(--sp-1)">
-                <input class="form-input" style="flex:1;padding:6px 10px;font-size:0.8rem" value=${newPermForRole[role] || ''} onInput=${e => setNewPermForRole({ ...newPermForRole, [role]: e.target.value })} placeholder="e.g. posts:write" onKeyDown=${e => e.key === 'Enter' && addPermToRole(role)} />
-                <button class="btn btn-sm btn-secondary" onClick=${() => addPermToRole(role)}>Add</button>
-              </div>
+      <!-- Right: Permissions for selected role -->
+      <div class="roles-detail">
+        ${!selectedRole
+          ? html`<div class="roles-empty">Select a role to view its permissions</div>`
+          : html`
+            <div class="roles-detail-header">
+              <h3>${selectedRole}</h3>
+              ${!confirmDelete
+                ? html`<button class="btn btn-sm btn-danger" onClick=${() => setConfirmDelete(true)}>Delete Role</button>`
+                : html`<div style="display:flex;gap:var(--sp-2);align-items:center">
+                    <span style="font-size:0.8rem;color:var(--status-error-text)">Sure?</span>
+                    <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(selectedRole)}>Yes, delete</button>
+                    <button class="btn btn-sm btn-secondary" onClick=${() => setConfirmDelete(false)}>Cancel</button>
+                  </div>`
+              }
             </div>
-          `)
-        }
+            <div class="roles-detail-meta">
+              ${defaultRoles.includes(selectedRole)
+                ? html`<span style="color:var(--brand-copper)">★</span> Default role — automatically assigned to new users on first login`
+                : 'Not a default role'}
+              <span style="margin-left:var(--sp-3)">·</span>
+              <span style="margin-left:var(--sp-3)">${selectedPerms.length} permission${selectedPerms.length !== 1 ? 's' : ''}</span>
+            </div>
 
-        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
-          <input class="form-input" style="flex:1" value=${newRoleName} onInput=${e => setNewRoleName(e.target.value)} placeholder="New role name, e.g. editor" onKeyDown=${e => e.key === 'Enter' && addRole()} />
-          <button class="btn btn-sm btn-primary" onClick=${addRole}>${icons.plus} Add Role</button>
-        </div>
+            <div style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:var(--sp-3)">Permissions</div>
+
+            ${selectedPerms.length === 0
+              ? html`<div style="color:var(--text-muted);font-size:0.85rem;margin-bottom:var(--sp-4);padding:var(--sp-4);background:var(--bg-hover);border-radius:var(--radius-md);text-align:center">No permissions assigned to this role yet</div>`
+              : html`<div class="roles-perms-list">
+                  ${selectedPerms.map(p => html`
+                    <span class="perm-tag">
+                      ${p}
+                      <button onClick=${() => removePerm(p)} title="Remove permission">×</button>
+                    </span>
+                  `)}
+                </div>`
+            }
+
+            <div style="display:flex;gap:var(--sp-2);margin-top:auto">
+              <input class="form-input" value=${newPerm} onInput=${e => setNewPerm(e.target.value)} placeholder="Add permission, e.g. posts:write" onKeyDown=${e => e.key === 'Enter' && addPermission()} />
+              <button class="btn btn-sm btn-primary" style="white-space:nowrap" onClick=${addPermission}>${icons.plus} Add</button>
+            </div>
+          `
+        }
       </div>
     </div>
     ${toast && html`<${Toast} ...${toast} />`}
@@ -529,64 +562,51 @@ function UsersPage() {
         </div>
 
         <div>
-          <div style="display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)">
-            <strong style="font-size:0.875rem">Roles & Permissions</strong>
+          <strong style="font-size:0.875rem;display:block;margin-bottom:var(--sp-3)">Roles</strong>
+
+          ${Object.keys(roleDefs).length > 0 && html`
+            <div style="display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-3)">
+              ${Object.keys(roleDefs).map(r => html`
+                <label style="display:flex;align-items:center;gap:var(--sp-2);cursor:pointer;font-size:0.875rem">
+                  <input type="checkbox" checked=${roles.includes(r)} onChange=${() => {
+                    const updated = roles.includes(r) ? roles.filter(x => x !== r) : [...roles, r];
+                    api('PUT', '/api/admin/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast(roles.includes(r) ? 'Role removed' : 'Role added'); }).catch(e => showToast(e.message, 'error'));
+                  }} style="width:16px;height:16px;accent-color:var(--btn-primary-bg)" />
+                  <span>${r}</span>
+                  <span style="font-size:0.7rem;color:var(--text-muted)">(${(roleDefs[r] || []).length} permissions)</span>
+                </label>
+              `)}
+            </div>
+          `}
+
+          ${roles.filter(r => !Object.keys(roleDefs).includes(r)).length > 0 && html`
+            <div style="margin-bottom:var(--sp-2)">
+              <span style="font-size:0.75rem;color:var(--text-muted)">Custom roles: </span>
+              ${roles.filter(r => !Object.keys(roleDefs).includes(r)).map(r => html`
+                <span class="badge" style="cursor:pointer;margin:2px" onClick=${() => removeRole(r)}>${r} ×</span>
+              `)}
+            </div>
+          `}
+
+          <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-5)">
+            <input class="form-input" style="flex:1" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
+            <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
           </div>
 
-          <div style="margin-bottom:var(--sp-3)">
-            <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Roles</label>
-            <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
-              ${roles.map(r => html`
-                <span class="badge" style="cursor:pointer" onClick=${() => removeRole(r)}>${r} ×</span>
-              `)}
-              ${roles.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
-            </div>
-            ${Object.keys(roleDefs).length > 0 && html`
-              <div style="margin-bottom:var(--sp-1)">
-                <span style="font-size:0.7rem;color:var(--text-muted)">Available: </span>
-                ${Object.keys(roleDefs).filter(r => !roles.includes(r)).map(r => html`
-                  <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
-                    const updated = [...roles, r];
-                    api('PUT', '/api/admin/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast('Role added'); }).catch(e => showToast(e.message, 'error'));
-                  }}>+ ${r}</button>
-                `)}
-                ${Object.keys(roleDefs).filter(r => !roles.includes(r)).length === 0 && html`<span style="font-size:0.7rem;color:var(--text-muted)">all assigned</span>`}
-              </div>
-            `}
-            <div style="display:flex;gap:var(--sp-1)">
-              <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
-              <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
-            </div>
+          <strong style="font-size:0.875rem;display:block;margin-bottom:var(--sp-1)">Direct Permissions</strong>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:var(--sp-3)">Extra permissions on top of what roles grant.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-bottom:var(--sp-3)">
+            ${perms.map(p => html`
+              <span class="perm-tag">
+                ${p}
+                <button onClick=${() => removePerm(p)} title="Remove">×</button>
+              </span>
+            `)}
+            ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.85rem">None</span>`}
           </div>
-
-          <div>
-            <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:var(--sp-1)">Direct Permissions</label>
-            <div class="form-help" style="font-size:0.7rem;margin-bottom:var(--sp-1)">Extra permissions for this user, on top of what their roles grant.</div>
-            <div style="display:flex;flex-wrap:wrap;gap:var(--sp-1);margin-bottom:var(--sp-1)">
-              ${perms.map(p => html`
-                <span class="badge" style="cursor:pointer" onClick=${() => removePerm(p)}>${p} ×</span>
-              `)}
-              ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.8rem">None</span>`}
-            </div>
-            ${(() => {
-              const allDefinedPerms = [...new Set(Object.values(roleDefs).flat())];
-              const available = allDefinedPerms.filter(p => !perms.includes(p));
-              return available.length > 0 && html`
-                <div style="margin-bottom:var(--sp-1)">
-                  <span style="font-size:0.7rem;color:var(--text-muted)">Known: </span>
-                  ${available.map(p => html`
-                    <button class="btn btn-sm btn-secondary" style="padding:1px 6px;font-size:0.7rem;margin:1px" onClick=${() => {
-                      const updated = [...perms, p];
-                      api('PUT', '/api/admin/users/' + detail.guid + '/permissions', updated).then(() => { setPerms(updated); showToast('Permission added'); }).catch(e => showToast(e.message, 'error'));
-                    }}>+ ${p}</button>
-                  `)}
-                </div>
-              `;
-            })()}
-            <div style="display:flex;gap:var(--sp-1)">
-              <input class="form-input" style="flex:1;padding:4px 8px;font-size:0.8rem" placeholder="Add custom permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
-              <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
-            </div>
+          <div style="display:flex;gap:var(--sp-2)">
+            <input class="form-input" style="flex:1" placeholder="Add permission, e.g. posts:read" value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+            <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
           </div>
         </div>
       <//>
@@ -608,6 +628,10 @@ function LDAPPage() {
   const [connectionStatus, setConnectionStatus] = useState(null); // null, 'ok', 'error'
   const [testUserResult, setTestUserResult] = useState(null);
   const [editing, setEditing] = useState(null); // which section is being edited
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null); // null = not searched, [] = no results
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedImports, setSelectedImports] = useState(new Set());
 
   const load = () => {
     api('GET', '/api/admin/ldap').then(cfg => {
@@ -740,6 +764,50 @@ function LDAPPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const searchLDAPUsers = async () => {
+    if (!searchQuery.trim()) return;
+    setSearchLoading(true);
+    try {
+      const results = await api('POST', '/api/admin/ldap/search-users', { query: searchQuery.trim(), limit: 50 });
+      setSearchResults(results || []);
+      setSelectedImports(new Set());
+    } catch (e) { showToast(e.message, 'error'); }
+    setSearchLoading(false);
+  };
+
+  const toggleImport = (username) => {
+    const next = new Set(selectedImports);
+    next.has(username) ? next.delete(username) : next.add(username);
+    setSelectedImports(next);
+  };
+
+  const toggleAllImports = () => {
+    if (!searchResults) return;
+    const importable = searchResults.filter(r => !r.imported).map(r => r.username);
+    if (selectedImports.size === importable.length) {
+      setSelectedImports(new Set());
+    } else {
+      setSelectedImports(new Set(importable));
+    }
+  };
+
+  const importSelectedUsers = async () => {
+    if (selectedImports.size === 0) return;
+    try {
+      const results = await api('POST', '/api/admin/ldap/import-users', { usernames: [...selectedImports] });
+      const imported = results.filter(r => r.status === 'imported').length;
+      const existed = results.filter(r => r.status === 'exists').length;
+      const failed = results.filter(r => r.status === 'error').length;
+      let msg = `Imported ${imported} user${imported !== 1 ? 's' : ''}`;
+      if (existed) msg += `, ${existed} already existed`;
+      if (failed) msg += `, ${failed} failed`;
+      showToast(msg);
+      setSelectedImports(new Set());
+      // Refresh search to update imported status
+      searchLDAPUsers();
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   const downloadSetupScript = async () => {
     try {
       const res = await fetch(BASE_PATH + '/api/admin/setup-script', {
@@ -803,7 +871,7 @@ function LDAPPage() {
         <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-4)">
           <button class="btn btn-primary" disabled=${!form.server || !form.username || !form.password} onClick=${autoDiscover}>Connect</button>
           <button class="btn btn-secondary" onClick=${() => {
-            setForm({ url: '', base_dn: '', bind_dn: '', bind_password: '', user_filter: '(sAMAccountName={{username}})', display_name_attr: 'displayName', email_attr: 'mail', department_attr: 'department', company_attr: 'company', job_title_attr: 'title', groups_attr: 'memberOf' });
+            setForm({ url: '', base_dn: '', bind_dn: '', bind_password: '', username_attr: 'sAMAccountName', custom_filter: '', display_name_attr: 'displayName', email_attr: 'mail', department_attr: 'department', company_attr: 'company', job_title_attr: 'title', groups_attr: 'memberOf' });
             setModal('manual-setup');
           }}>Manual Setup</button>
         </div>
@@ -815,7 +883,21 @@ function LDAPPage() {
           <div class="form-group"><label class="form-label">Base DN</label><input class="form-input" value=${form.base_dn || ''} onInput=${e => setForm({ ...form, base_dn: e.target.value })} placeholder="DC=corp,DC=local" /></div>
           <div class="form-group"><label class="form-label">Bind DN</label><input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} placeholder="CN=svc-simpleauth,CN=Users,DC=corp,DC=local" /></div>
           <div class="form-group"><label class="form-label">Bind Password</label><input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} /></div>
-          <div class="form-group"><label class="form-label">User Filter</label><input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} /></div>
+          <div class="form-group">
+            <label class="form-label">Username Attribute</label>
+            <select class="form-input" value=${form.username_attr || 'sAMAccountName'} onChange=${e => setForm({ ...form, username_attr: e.target.value })}>
+              <option value="sAMAccountName">sAMAccountName (Active Directory)</option>
+              <option value="userPrincipalName">userPrincipalName (UPN)</option>
+              <option value="uid">uid (OpenLDAP / FreeIPA)</option>
+              <option value="mail">mail (Email)</option>
+            </select>
+          </div>
+          <details style="margin-top:var(--sp-3)">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">Advanced</summary>
+            <div style="margin-top:var(--sp-2)">
+              <div class="form-group"><label class="form-label">Custom Filter</label><input class="form-input" value=${form.custom_filter || ''} onInput=${e => setForm({ ...form, custom_filter: e.target.value })} placeholder="e.g. (&(objectClass=person)(sAMAccountName={{username}}))" /><small style="color:var(--text-muted)">Overrides username attribute. Use {{username}} as placeholder.</small></div>
+            </div>
+          </details>
           <details style="margin-top:var(--sp-3)">
             <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">Attribute Mapping</summary>
             <div style="margin-top:var(--sp-2)">
@@ -902,7 +984,8 @@ function LDAPPage() {
       </div>
       ${editing !== 'attributes' ? html`
         <div style="display:grid;grid-template-columns:120px 1fr;gap:var(--sp-1) var(--sp-3);font-size:0.875rem;margin-bottom:var(--sp-4)">
-          <span style="color:var(--text-muted)">User Filter</span><span style="font-family:var(--font-mono)">${ldapConfig.user_filter}</span>
+          <span style="color:var(--text-muted)">Username Attr</span><span style="font-family:var(--font-mono)">${ldapConfig.username_attr || 'sAMAccountName'}</span>
+          ${ldapConfig.custom_filter ? html`<span style="color:var(--text-muted)">Custom Filter</span><span style="font-family:var(--font-mono)">${ldapConfig.custom_filter}</span>` : ''}
           <span style="color:var(--text-muted)">Display Name</span><span>${ldapConfig.display_name_attr || '—'}</span>
           <span style="color:var(--text-muted)">Email</span><span>${ldapConfig.email_attr || '—'}</span>
           <span style="color:var(--text-muted)">Department</span><span>${ldapConfig.department_attr || '—'}</span>
@@ -927,7 +1010,19 @@ function LDAPPage() {
           `}
         </div>
       ` : html`
-        <div class="form-group"><label class="form-label">User Filter</label><input class="form-input" value=${form.user_filter || ''} onInput=${e => setForm({ ...form, user_filter: e.target.value })} /></div>
+        <div class="form-group">
+          <label class="form-label">Username Attribute</label>
+          <select class="form-input" value=${form.username_attr || 'sAMAccountName'} onChange=${e => setForm({ ...form, username_attr: e.target.value })}>
+            <option value="sAMAccountName">sAMAccountName (Active Directory)</option>
+            <option value="userPrincipalName">userPrincipalName (UPN)</option>
+            <option value="uid">uid (OpenLDAP / FreeIPA)</option>
+            <option value="mail">mail (Email)</option>
+          </select>
+        </div>
+        <details>
+          <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-2)">Advanced</summary>
+          <div class="form-group"><label class="form-label">Custom Filter</label><input class="form-input" value=${form.custom_filter || ''} onInput=${e => setForm({ ...form, custom_filter: e.target.value })} placeholder="e.g. (&(objectClass=person)(sAMAccountName={{username}}))" /><small style="color:var(--text-muted)">Overrides username attribute. Use {{username}} as placeholder.</small></div>
+        </details>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-2)">
           <div class="form-group"><label class="form-label">Display Name Attr</label><input class="form-input" value=${form.display_name_attr || ''} onInput=${e => setForm({ ...form, display_name_attr: e.target.value })} /></div>
           <div class="form-group"><label class="form-label">Email Attr</label><input class="form-input" value=${form.email_attr || ''} onInput=${e => setForm({ ...form, email_attr: e.target.value })} /></div>
@@ -962,6 +1057,48 @@ function LDAPPage() {
         </div>
       ` : html`
         <p style="color:var(--text-secondary);font-size:0.875rem;margin:0">Not configured. Set up Kerberos to enable single sign-on (SSO) for domain-joined browsers.</p>
+      `}
+    </div>
+
+    <!-- Import Users -->
+    <div class="card" style="margin-bottom:var(--sp-4)">
+      <h3 style="margin:0 0 var(--sp-3) 0">Import Users from LDAP</h3>
+      <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-3)">
+        <input class="form-input" style="flex:1" placeholder="Search by name, email, or username..." value=${searchQuery} onInput=${e => setSearchQuery(e.target.value)} onKeyDown=${e => e.key === 'Enter' && searchLDAPUsers()} />
+        <button class="btn btn-primary" onClick=${searchLDAPUsers} disabled=${searchLoading || !searchQuery.trim()}>${searchLoading ? 'Searching...' : 'Search'}</button>
+      </div>
+      ${searchResults && searchResults.length > 0 && html`
+        <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+          <table>
+            <thead><tr>
+              <th style="width:30px"><input type="checkbox" checked=${selectedImports.size > 0 && selectedImports.size === searchResults.filter(r => !r.imported).length} onChange=${toggleAllImports} /></th>
+              <th>Username</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Status</th>
+            </tr></thead>
+            <tbody>
+              ${searchResults.map(r => html`
+                <tr style=${r.imported ? 'opacity:0.5' : ''}>
+                  <td><input type="checkbox" disabled=${r.imported} checked=${r.imported || selectedImports.has(r.username)} onChange=${() => toggleImport(r.username)} /></td>
+                  <td style="font-family:var(--font-mono);font-size:0.8rem">${r.username}</td>
+                  <td>${r.display_name || '—'}</td>
+                  <td>${r.email || '—'}</td>
+                  <td>${r.imported ? html`<span class="badge badge-success">Imported</span>` : html`<span class="badge">New</span>`}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+        ${selectedImports.size > 0 && html`
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:var(--sp-3)">
+            <span style="color:var(--text-secondary);font-size:0.875rem">${selectedImports.size} selected</span>
+            <button class="btn btn-primary" onClick=${importSelectedUsers}>Import Selected</button>
+          </div>
+        `}
+      `}
+      ${searchResults && searchResults.length === 0 && html`
+        <p style="color:var(--text-muted);font-size:0.875rem;margin:0">No users found matching "${searchQuery}"</p>
       `}
     </div>
 
@@ -1034,12 +1171,16 @@ function LDAPPage() {
 // === Impersonate Page ===
 function ImpersonatePage() {
   const [users, setUsers] = useState([]);
+  const [appURI, setAppURI] = useState('');
   const [selectedUser, setSelectedUser] = useState('');
   const [result, setResult] = useState(null);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     api('GET', '/api/admin/users').then(setUsers).catch(() => {});
+    api('GET', '/api/admin/server-info').then(info => {
+      if (info.redirect_uri) setAppURI(info.redirect_uri);
+    }).catch(() => {});
   }, []);
 
   const showToast = (message, type = 'success') => {
@@ -1058,26 +1199,41 @@ function ImpersonatePage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const launchInApp = () => {
+    if (!result || !appURI) return;
+    const fragment = `access_token=${encodeURIComponent(result.access_token)}&refresh_token=${encodeURIComponent(result.refresh_token || '')}&expires_in=${result.expires_in}&token_type=Bearer`;
+    window.open(appURI + '#' + fragment, '_blank');
+  };
+
   return html`
     <div class="page-header"><h2>Impersonate User</h2></div>
     <div class="card" style="max-width:600px">
       <div class="form-group">
         <label class="form-label">User</label>
-        <select class="form-select" value=${selectedUser} onChange=${e => setSelectedUser(e.target.value)}>
+        <select class="form-select" value=${selectedUser} onChange=${e => { setSelectedUser(e.target.value); setResult(null); }}>
           <option value="">Select a user...</option>
           ${users.map(u => html`<option value=${u.guid}>${u.display_name || u.guid} (${u.email || 'no email'})</option>`)}
         </select>
       </div>
-      <button class="btn btn-primary" onClick=${impersonate}>Generate Impersonated Token</button>
+      <button class="btn btn-primary" onClick=${impersonate} disabled=${!selectedUser}>Impersonate</button>
 
       ${result && html`
         <div style="margin-top:var(--sp-6)">
           <div class="gold-bar" style="margin-bottom:var(--sp-4)"></div>
-          <label class="form-label">Access Token</label>
-          <div style="position:relative">
-            <textarea class="form-textarea" style="font-family:var(--font-mono);font-size:0.75rem;height:120px" readonly value=${result.access_token}></textarea>
-            <button class="btn-icon" style="position:absolute;top:var(--sp-2);right:var(--sp-2)" onClick=${() => { navigator.clipboard.writeText(result.access_token); showToast('Copied'); }}>${icons.copy}</button>
-          </div>
+
+          ${appURI && html`
+            <button class="btn btn-primary" style="width:100%;margin-bottom:var(--sp-3)" onClick=${launchInApp}>Launch in App</button>
+          `}
+
+          <details>
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">Raw Token</summary>
+            <div style="margin-top:var(--sp-2)">
+              <div style="position:relative">
+                <textarea class="form-textarea" style="font-family:var(--font-mono);font-size:0.75rem;height:120px" readonly value=${result.access_token}></textarea>
+                <button class="btn-icon" style="position:absolute;top:var(--sp-2);right:var(--sp-2)" onClick=${() => { navigator.clipboard.writeText(result.access_token); showToast('Copied'); }}>${icons.copy}</button>
+              </div>
+            </div>
+          </details>
           <div style="display:flex;gap:var(--sp-4);margin-top:var(--sp-2)">
             <span class="badge badge-warning">Impersonated</span>
             <span class="badge">Expires in ${result.expires_in}s</span>

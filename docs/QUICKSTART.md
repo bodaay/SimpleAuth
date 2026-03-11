@@ -19,7 +19,7 @@ docker run -d \
   -v simpleauth-data:/data \
   -e AUTH_CLIENT_ID="my-web-app" \
   -e AUTH_CLIENT_SECRET="my-secret" \
-  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
+  -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   simpleauth
 ```
 
@@ -57,13 +57,12 @@ curl -k -X POST https://localhost:8080/api/admin/ldap \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "provider_id": "corp-ad",
     "name": "Corporate AD",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
     "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "YourServiceAccountPassword",
-    "user_filter": "(sAMAccountName={0})",
+    "username_attr": "sAMAccountName",
     "use_tls": true,
     "display_name_attr": "displayName",
     "email_attr": "mail",
@@ -77,7 +76,7 @@ curl -k -X POST https://localhost:8080/api/admin/ldap \
 Test the connection:
 
 ```bash
-curl -k -X POST https://localhost:8080/api/admin/ldap/corp-ad/test \
+curl -k -X POST https://localhost:8080/api/admin/ldap/test \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
 
@@ -89,7 +88,7 @@ OIDC settings are configured at the instance level using environment variables o
 
 - `AUTH_CLIENT_ID` -- The client ID for OIDC flows (your app's identifier)
 - `AUTH_CLIENT_SECRET` -- The client secret for OIDC flows
-- `AUTH_REDIRECT_URIS` -- Comma-separated list of allowed redirect URIs
+- `AUTH_REDIRECT_URI` -- The allowed redirect URI
 
 These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) for details.
 

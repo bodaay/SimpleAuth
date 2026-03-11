@@ -301,6 +301,14 @@ async function handleDirectLogin(username: string, password: string): Promise<vo
     throw new Error(body.error ?? "Login failed");
   }
 
+  const body = await response.json();
+
+  // If the user must change their password, redirect to the password change page
+  if (body.force_password_change) {
+    window.location.href = "/change-password";
+    return;
+  }
+
   // The API sets HTTP-only cookies. Redirect to the dashboard.
   window.location.href = "/dashboard";
 }
@@ -340,6 +348,14 @@ export async function POST_auth_login(request: Request): Promise<Response> {
       headers.append(
         "Set-Cookie",
         `refresh_token=${tokens.refresh_token}; Path=/api/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
+      );
+    }
+
+    // If the server requires the user to change their password, inform the client
+    if (tokens.force_password_change) {
+      return new Response(
+        JSON.stringify({ ok: true, force_password_change: true }),
+        { status: 200, headers },
       );
     }
 

@@ -44,6 +44,12 @@ type User struct {
 	Disabled     bool      `json:"disabled"`
 	MergedInto   string    `json:"merged_into,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	// Password security
+	ForcePasswordChange bool       `json:"force_password_change,omitempty"`
+	PasswordHistory     []string   `json:"password_history,omitempty"`
+	FailedLoginAttempts int        `json:"failed_login_attempts,omitempty"`
+	LockedUntil         *time.Time `json:"locked_until,omitempty"`
 }
 
 type LDAPConfig struct {
@@ -51,7 +57,8 @@ type LDAPConfig struct {
 	BaseDN          string    `json:"base_dn"`
 	BindDN          string    `json:"bind_dn"`
 	BindPassword    string    `json:"bind_password"`
-	UserFilter      string    `json:"user_filter"`
+	UsernameAttr    string    `json:"username_attr"`
+	CustomFilter    string    `json:"custom_filter,omitempty"`
 	UseTLS          bool      `json:"use_tls"`
 	SkipTLSVerify   bool      `json:"skip_tls_verify"`
 	DisplayNameAttr string    `json:"display_name_attr"`

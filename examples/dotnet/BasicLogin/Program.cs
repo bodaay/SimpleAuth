@@ -57,6 +57,11 @@ Console.WriteLine($"  Token type:    {tokens.TokenType}");
 Console.WriteLine($"  Expires in:    {tokens.ExpiresIn} seconds");
 Console.WriteLine($"  Refresh token: {(tokens.RefreshToken is not null ? tokens.RefreshToken[..Math.Min(40, tokens.RefreshToken.Length)] + "..." : "N/A")}");
 
+if (tokens.ForcePasswordChange)
+{
+    Console.WriteLine("\n  ** You must change your password before continuing. **");
+}
+
 // ---------------------------------------------------------------------------
 // Step 2: Verify the access token and inspect claims
 // ---------------------------------------------------------------------------

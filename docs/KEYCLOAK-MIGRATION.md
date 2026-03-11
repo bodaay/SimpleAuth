@@ -33,7 +33,7 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Keycloak | SimpleAuth | Notes |
 |---|---|---|
 | Realm | `jwt_issuer` config | SimpleAuth has one "realm" per instance. The OIDC URLs use it the same way: `/realms/{issuer}/...` |
-| Client | Instance-level config | OIDC client settings are configured via `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URIS` env vars |
+| Client | Instance-level config | OIDC client settings are configured via `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URI` env vars |
 | Client ID | `AUTH_CLIENT_ID` | Set at instance level |
 | Client Secret | `AUTH_CLIENT_SECRET` | Set at instance level |
 | User Federation (LDAP) | LDAP Provider | Created via `POST /api/admin/ldap` |
@@ -80,7 +80,7 @@ docker run -d \
   -e AUTH_JWT_ISSUER="myrealm" \
   -e AUTH_CLIENT_ID="my-app" \
   -e AUTH_CLIENT_SECRET="my-client-secret" \
-  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
+  -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   simpleauth
 ```
 
@@ -95,13 +95,12 @@ curl -k -X POST https://simpleauth:8080/api/admin/ldap \
   -H "Authorization: Bearer your-admin-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "provider_id": "corp-ad",
     "name": "Corporate AD",
     "url": "ldaps://dc01.corp.local:636",
     "base_dn": "DC=corp,DC=local",
     "bind_dn": "CN=svc-keycloak,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "same-password-as-keycloak",
-    "user_filter": "(sAMAccountName={0})",
+    "username_attr": "sAMAccountName",
     "use_tls": true,
     "display_name_attr": "displayName",
     "email_attr": "mail",
@@ -366,4 +365,4 @@ Keycloak has a "sync all users" feature. SimpleAuth doesn't. Users are created o
 
 ### What about multiple Keycloak clients?
 
-If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_REDIRECT_URIS`. They can all point to the same LDAP provider(s).
+If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_REDIRECT_URI`. They can all point to the same LDAP provider(s).

@@ -316,7 +316,7 @@ public class SimpleAuthClient : IDisposable
     private async Task<List<string>> AdminGetListAsync(string url)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Add("Authorization", BasicAuthHeader());
+        request.Headers.Add("Authorization", $"Bearer {_options.ClientSecret}");
 
         using var response = await _http.SendAsync(request);
         var json = await response.Content.ReadAsStringAsync();
@@ -336,7 +336,7 @@ public class SimpleAuthClient : IDisposable
                 Encoding.UTF8,
                 "application/json"),
         };
-        request.Headers.Add("Authorization", BasicAuthHeader());
+        request.Headers.Add("Authorization", $"Bearer {_options.ClientSecret}");
 
         using var response = await _http.SendAsync(request);
         if (!response.IsSuccessStatusCode)

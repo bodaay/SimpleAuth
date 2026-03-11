@@ -133,10 +133,11 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	})
 	h.mux.HandleFunc("GET /api/admin/server-info", h.requireMasterAdmin(func(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]interface{}{
-			"hostname":     h.cfg.Hostname,
+			"hostname":        h.cfg.Hostname,
 			"deployment_name": h.cfg.DeploymentName,
-			"jwt_issuer":   h.cfg.JWTIssuer,
-			"version":      h.version,
+			"jwt_issuer":      h.cfg.JWTIssuer,
+			"version":         h.version,
+			"redirect_uri":    h.cfg.RedirectURI,
 		}, http.StatusOK)
 	}))
 
@@ -148,6 +149,8 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/ldap/test-user", h.requireMasterAdmin(h.handleTestLDAPUser))
 	h.mux.HandleFunc("POST /api/admin/ldap/auto-discover", h.requireMasterAdmin(h.handleAutoDiscoverLDAP))
 	h.mux.HandleFunc("POST /api/admin/ldap/import", h.requireMasterAdmin(h.handleImportLDAP))
+	h.mux.HandleFunc("POST /api/admin/ldap/search-users", h.requireMasterAdmin(h.handleSearchLDAPUsers))
+	h.mux.HandleFunc("POST /api/admin/ldap/import-users", h.requireMasterAdmin(h.handleImportLDAPUsers))
 	h.mux.HandleFunc("POST /api/admin/ldap/setup-kerberos", h.requireMasterAdmin(h.handleSetupKerberos))
 	h.mux.HandleFunc("POST /api/admin/ldap/cleanup-kerberos", h.requireMasterAdmin(h.handleCleanupKerberos))
 	h.mux.HandleFunc("POST /api/admin/ldap/sync-user", h.requireMasterAdmin(h.handleSyncUser))
@@ -187,6 +190,10 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("PUT /api/admin/role-permissions", h.requireMasterAdmin(h.handleSetRolePermissions))
 	h.mux.HandleFunc("GET /api/admin/roles", h.requireMasterAdmin(h.handleListAllRoles))
 	h.mux.HandleFunc("GET /api/admin/permissions", h.requireMasterAdmin(h.handleListAllPermissions))
+
+	// Admin: Password Policy & Account Unlock
+	h.mux.HandleFunc("GET /api/admin/password-policy", h.requireMasterAdmin(h.handleGetPasswordPolicy))
+	h.mux.HandleFunc("PUT /api/admin/users/{guid}/unlock", h.requireMasterAdmin(h.handleUnlockAccount))
 
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))
@@ -303,7 +310,8 @@ func ldapConfigFromStore(p *store.LDAPConfig) *auth.LDAPConfig {
 		BaseDN:          p.BaseDN,
 		BindDN:          p.BindDN,
 		BindPassword:    p.BindPassword,
-		UserFilter:      p.UserFilter,
+		UsernameAttr:    p.UsernameAttr,
+		CustomFilter:    p.CustomFilter,
 		UseTLS:          p.UseTLS,
 		SkipTLSVerify:   p.SkipTLSVerify,
 		DisplayNameAttr: p.DisplayNameAttr,

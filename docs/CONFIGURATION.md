@@ -41,7 +41,7 @@ SimpleAuth looks for a config file in this order:
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
 | `client_id` | `AUTH_CLIENT_ID` | (none) | OIDC client ID for this instance. Used in authorization code flow, token endpoint, and introspection. |
 | `client_secret` | `AUTH_CLIENT_SECRET` | (none) | OIDC client secret for this instance. |
-| `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Comma-separated list of allowed OIDC redirect URIs. |
+| `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (string). For backwards compatibility, a comma-separated list is accepted but only the first entry is used. |
 | `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
 | `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
 | `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime. Go duration format (e.g., `30m`, `8h`, `24h`). |
@@ -59,6 +59,14 @@ SimpleAuth looks for a config file in this order:
 | `rate_limit_window` | `AUTH_RATE_LIMIT_WINDOW` | `1m` | Rate limit sliding window duration. |
 | `cors_origins` | `AUTH_CORS_ORIGINS` | (none) | Allowed CORS origins. Comma-separated list or `*` for all. Example: `https://app1.example.com,https://app2.example.com` |
 | `default_roles` | `AUTH_DEFAULT_ROLES` | (none) | Default roles assigned to new users on first login. Comma-separated in env var, YAML list in config file. Example: `user,viewer` |
+| `password_min_length` | `AUTH_PASSWORD_MIN_LENGTH` | `8` | Minimum password length. |
+| `password_require_uppercase` | `AUTH_PASSWORD_REQUIRE_UPPERCASE` | `false` | Require at least one uppercase letter. |
+| `password_require_lowercase` | `AUTH_PASSWORD_REQUIRE_LOWERCASE` | `false` | Require at least one lowercase letter. |
+| `password_require_digit` | `AUTH_PASSWORD_REQUIRE_DIGIT` | `false` | Require at least one digit. |
+| `password_require_special` | `AUTH_PASSWORD_REQUIRE_SPECIAL` | `false` | Require at least one special character. |
+| `password_history_count` | `AUTH_PASSWORD_HISTORY_COUNT` | `0` | Number of previous passwords to remember and prevent reuse. `0` disables history check. |
+| `account_lockout_threshold` | `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Number of failed login attempts before the account is locked. `0` disables account lockout. |
+| `account_lockout_duration` | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | How long an account stays locked after hitting the lockout threshold. Go duration format. |
 
 ---
 
@@ -84,7 +92,7 @@ admin_key: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 # OIDC client settings for this instance
 client_id: "my-web-app"
 client_secret: "my-client-secret"
-redirect_uris: "https://myapp.example.com/callback,https://myapp.example.com/silent-renew"
+redirect_uri: "https://myapp.example.com/callback"
 
 # Deployment name for multi-instance deployments (max 6 chars, letters only)
 deployment_name: "prod"
@@ -112,6 +120,18 @@ rate_limit_window: "1m"
 
 # CORS
 cors_origins: "https://app.corp.local,https://admin.corp.local"
+
+# Password policy
+password_min_length: 8
+password_require_uppercase: false
+password_require_lowercase: false
+password_require_digit: false
+password_require_special: false
+password_history_count: 0
+
+# Account lockout
+account_lockout_threshold: 0
+account_lockout_duration: "30m"
 ```
 
 ---
@@ -130,7 +150,7 @@ docker run -d \
   -e AUTH_JWT_ISSUER="simpleauth" \
   -e AUTH_CLIENT_ID="my-web-app" \
   -e AUTH_CLIENT_SECRET="my-client-secret" \
-  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
+  -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   -e AUTH_CORS_ORIGINS="https://app.corp.local" \
   simpleauth
 ```
@@ -164,7 +184,7 @@ services:
       AUTH_JWT_ACCESS_TTL: "4h"
       AUTH_CLIENT_ID: "my-web-app"
       AUTH_CLIENT_SECRET: "my-client-secret"
-      AUTH_REDIRECT_URIS: "https://myapp.example.com/callback"
+      AUTH_REDIRECT_URI: "https://myapp.example.com/callback"
       AUTH_CORS_ORIGINS: "*"
     restart: unless-stopped
 
@@ -202,21 +222,19 @@ This is the master key for bootstrapping admin access. Treat it like a root pass
 
 If you don't set it, SimpleAuth generates a random key on each startup and prints it to the logs. This is fine for development but not for production -- set it explicitly so it persists across restarts.
 
-After bootstrap, you can assign the `SimpleAuthAdmin` role to users. Users with this role get full admin access without needing the master admin key.
-
 Generate a good key:
 
 ```bash
 openssl rand -hex 16
 ```
 
-### `client_id` / `client_secret` / `redirect_uris`
+### `client_id` / `client_secret` / `redirect_uri`
 
 These configure the OIDC client for this SimpleAuth instance. One instance serves one application.
 
 - `client_id` is the identifier your app uses in OIDC flows (authorization code, token requests, introspection)
 - `client_secret` is the shared secret used to authenticate your app to SimpleAuth
-- `redirect_uris` is a comma-separated list of allowed redirect URIs for the authorization code flow
+- `redirect_uri` is the allowed redirect URI for the authorization code flow. For backwards compatibility, a comma-separated list is accepted but only the first entry (index 0) is used.
 
 ### `jwt_issuer`
 
