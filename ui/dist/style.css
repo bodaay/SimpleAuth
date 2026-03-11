@@ -645,6 +645,37 @@ tr:hover td { background: var(--bg-hover); }
   line-height: 1;
 }
 .perm-tag button:hover { color: var(--status-error-text); }
+.perm-usage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  background: var(--bg-active);
+  border-radius: 9px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+.perm-confirm-delete {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+}
+.perm-confirm-delete button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0 2px;
+  line-height: 1;
+}
+.perm-delete-yes { color: var(--status-error-text); }
+.perm-delete-yes:hover { text-decoration: underline; }
+.perm-delete-no { color: var(--text-muted); }
+.perm-delete-no:hover { text-decoration: underline; }
 .roles-empty {
   flex: 1;
   display: flex;

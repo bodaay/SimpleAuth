@@ -110,6 +110,7 @@ func Open(dataDir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	s.migrateRolesAndPermissions()
 	return s, nil
 }
 
@@ -133,6 +134,81 @@ func (s *Store) init() error {
 		}
 		return nil
 	})
+}
+
+// migrateRolesAndPermissions ensures any roles already assigned to users
+// are registered in the role registry, and any permissions already assigned
+// to users or roles are registered in the permissions registry.
+// Runs once on startup so existing data isn't rejected by the new validation.
+func (s *Store) migrateRolesAndPermissions() {
+	// Collect all roles assigned to users
+	roleSet := map[string]struct{}{}
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUserRoles).ForEach(func(k, v []byte) error {
+			var roles []string
+			if json.Unmarshal(v, &roles) == nil {
+				for _, r := range roles {
+					roleSet[r] = struct{}{}
+				}
+			}
+			return nil
+		})
+	})
+
+	// Collect all permissions assigned to users
+	permSet := map[string]struct{}{}
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUserPermissions).ForEach(func(k, v []byte) error {
+			var perms []string
+			if json.Unmarshal(v, &perms) == nil {
+				for _, p := range perms {
+					permSet[p] = struct{}{}
+				}
+			}
+			return nil
+		})
+	})
+
+	// Merge user-assigned roles into role registry
+	mapping, _ := s.GetRolePermissions()
+	if mapping == nil {
+		mapping = map[string][]string{}
+	}
+	changed := false
+	for r := range roleSet {
+		if _, exists := mapping[r]; !exists {
+			mapping[r] = []string{}
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.SetRolePermissions(mapping)
+	}
+
+	// Also collect permissions from role mappings
+	for _, perms := range mapping {
+		for _, p := range perms {
+			permSet[p] = struct{}{}
+		}
+	}
+
+	// Merge into permissions registry
+	defined, _ := s.GetDefinedPermissions()
+	defSet := map[string]struct{}{}
+	for _, p := range defined {
+		defSet[p] = struct{}{}
+	}
+	permChanged := false
+	for p := range permSet {
+		if _, exists := defSet[p]; !exists {
+			defined = append(defined, p)
+			permChanged = true
+		}
+	}
+	if permChanged {
+		sort.Strings(defined)
+		_ = s.SetDefinedPermissions(defined)
+	}
 }
 
 // --- Users ---
@@ -434,55 +510,23 @@ func (s *Store) GetUserPermissions(guid string) ([]string, error) {
 	return perms, err
 }
 
-// ListAllRoles returns all unique roles across all users.
+// ListAllRoles returns all defined roles (from the role registry).
 func (s *Store) ListAllRoles() ([]string, error) {
-	set := map[string]struct{}{}
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketUserRoles).ForEach(func(k, v []byte) error {
-			var roles []string
-			if err := json.Unmarshal(v, &roles); err == nil {
-				for _, r := range roles {
-					set[r] = struct{}{}
-				}
-			}
-			return nil
-		})
-	})
-	result := make([]string, 0, len(set))
-	for r := range set {
+	mapping, err := s.GetRolePermissions()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(mapping))
+	for r := range mapping {
 		result = append(result, r)
 	}
 	sort.Strings(result)
-	return result, err
+	return result, nil
 }
 
-// ListAllPermissions returns all unique permissions across all users.
+// ListAllPermissions returns all defined permissions (from the master list).
 func (s *Store) ListAllPermissions() ([]string, error) {
-	set := map[string]struct{}{}
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketUserPermissions).ForEach(func(k, v []byte) error {
-			var perms []string
-			if err := json.Unmarshal(v, &perms); err == nil {
-				for _, p := range perms {
-					set[p] = struct{}{}
-				}
-			}
-			return nil
-		})
-	})
-	// Also include permissions from role-permission mapping
-	mapping, _ := s.GetRolePermissions()
-	for _, perms := range mapping {
-		for _, p := range perms {
-			set[p] = struct{}{}
-		}
-	}
-	result := make([]string, 0, len(set))
-	for p := range set {
-		result = append(result, p)
-	}
-	sort.Strings(result)
-	return result, err
+	return s.GetDefinedPermissions()
 }
 
 // --- Config (generic key-value in config bucket) ---
@@ -536,9 +580,10 @@ func (s *Store) SetDefaultRoles(roles []string) error {
 	})
 }
 
-// --- Role → Permissions Mapping ---
+// --- Role → Permissions Mapping (role registry) ---
 
 // GetRolePermissions returns the role→permissions mapping.
+// This is also the role registry: keys are all defined roles.
 func (s *Store) GetRolePermissions() (map[string][]string, error) {
 	var mapping map[string][]string
 	err := s.db.View(func(tx *bolt.Tx) error {
@@ -560,6 +605,94 @@ func (s *Store) SetRolePermissions(mapping map[string][]string) error {
 		}
 		return tx.Bucket(bucketConfig).Put([]byte("role_permissions"), data)
 	})
+}
+
+// RoleExists checks if a role is defined in the role registry.
+func (s *Store) RoleExists(role string) (bool, error) {
+	mapping, err := s.GetRolePermissions()
+	if err != nil {
+		return false, err
+	}
+	if mapping == nil {
+		return false, nil
+	}
+	_, exists := mapping[role]
+	return exists, nil
+}
+
+// GetDefinedPermissions returns the master list of defined permissions.
+func (s *Store) GetDefinedPermissions() ([]string, error) {
+	var perms []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketConfig).Get([]byte("defined_permissions"))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &perms)
+	})
+	return perms, err
+}
+
+// SetDefinedPermissions sets the master list of defined permissions.
+func (s *Store) SetDefinedPermissions(perms []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(perms)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketConfig).Put([]byte("defined_permissions"), data)
+	})
+}
+
+// PermissionExists checks if a permission is defined in the master list.
+func (s *Store) PermissionExists(perm string) (bool, error) {
+	perms, err := s.GetDefinedPermissions()
+	if err != nil {
+		return false, err
+	}
+	for _, p := range perms {
+		if p == perm {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ValidateRolesExist checks that all given roles exist in the role registry.
+// Returns the first invalid role name, or empty string if all valid.
+func (s *Store) ValidateRolesExist(roles []string) (string, error) {
+	mapping, err := s.GetRolePermissions()
+	if err != nil {
+		return "", err
+	}
+	if mapping == nil {
+		mapping = map[string][]string{}
+	}
+	for _, r := range roles {
+		if _, exists := mapping[r]; !exists {
+			return r, nil
+		}
+	}
+	return "", nil
+}
+
+// ValidatePermissionsExist checks that all given permissions exist in the master list.
+// Returns the first invalid permission name, or empty string if all valid.
+func (s *Store) ValidatePermissionsExist(perms []string) (string, error) {
+	defined, err := s.GetDefinedPermissions()
+	if err != nil {
+		return "", err
+	}
+	set := make(map[string]struct{}, len(defined))
+	for _, p := range defined {
+		set[p] = struct{}{}
+	}
+	for _, p := range perms {
+		if _, exists := set[p]; !exists {
+			return p, nil
+		}
+	}
+	return "", nil
 }
 
 // ResolvePermissions expands roles into permissions using the role→permissions mapping,

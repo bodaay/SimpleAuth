@@ -21,7 +21,7 @@ import (
 var uiFiles embed.FS
 
 var (
-	Version   = "dev"
+	Version   = "0.2.0"
 	BuildTime = "unknown"
 )
 

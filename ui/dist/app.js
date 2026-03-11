@@ -118,11 +118,14 @@ function Dashboard() {
 function RolesPage() {
   const [defaultRoles, setDefaultRoles] = useState([]);
   const [rolePerms, setRolePerms] = useState({});
+  const [definedPerms, setDefinedPerms] = useState([]);
   const [selectedRole, setSelectedRole] = useState(null);
   const [newRoleName, setNewRoleName] = useState('');
   const [newPerm, setNewPerm] = useState('');
+  const [newGlobalPerm, setNewGlobalPerm] = useState('');
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeletePerm, setConfirmDeletePerm] = useState(null);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -134,9 +137,11 @@ function RolesPage() {
     Promise.all([
       api('GET', '/api/admin/defaults/roles'),
       api('GET', '/api/admin/role-permissions'),
-    ]).then(([dRoles, rp]) => {
+      api('GET', '/api/admin/permissions'),
+    ]).then(([dRoles, rp, dp]) => {
       setDefaultRoles(dRoles || []);
       setRolePerms(rp || {});
+      setDefinedPerms(dp || []);
     }).catch(() => {});
   }, []);
 
@@ -148,11 +153,18 @@ function RolesPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const saveDefinedPerms = async (perms) => {
+    try {
+      await api('PUT', '/api/admin/permissions', perms);
+      setDefinedPerms(perms);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   const saveRolePerms = async (mapping) => {
     try {
       await api('PUT', '/api/admin/role-permissions', mapping);
       setRolePerms(mapping);
-      showToast('Permissions saved');
+      showToast('Saved');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
@@ -186,9 +198,14 @@ function RolesPage() {
     }
   };
 
-  const addPermission = () => {
+  // Add a permission to the selected role (auto-registers in permission registry)
+  const addPermission = async () => {
     const p = newPerm.trim();
     if (!p || !selectedRole || (rolePerms[selectedRole] || []).includes(p)) return;
+    // Auto-register permission if not in registry
+    if (!definedPerms.includes(p)) {
+      await saveDefinedPerms([...definedPerms, p]);
+    }
     const updated = { ...rolePerms, [selectedRole]: [...(rolePerms[selectedRole] || []), p] };
     setNewPerm('');
     saveRolePerms(updated);
@@ -200,8 +217,38 @@ function RolesPage() {
     saveRolePerms(updated);
   };
 
-  const roleNames = Object.keys(rolePerms);
+  // Add a global permission to the registry (not tied to any role)
+  const addGlobalPerm = async () => {
+    const p = newGlobalPerm.trim();
+    if (!p || definedPerms.includes(p)) return;
+    await saveDefinedPerms([...definedPerms, p]);
+    setNewGlobalPerm('');
+    showToast('Permission created');
+  };
+
+  // Delete a permission from registry and all roles
+  const deleteGlobalPerm = async (perm) => {
+    const newPerms = definedPerms.filter(p => p !== perm);
+    // Also remove from all roles
+    const updatedMapping = {};
+    for (const [role, perms] of Object.entries(rolePerms)) {
+      updatedMapping[role] = perms.filter(p => p !== perm);
+    }
+    await saveDefinedPerms(newPerms);
+    await saveRolePerms(updatedMapping);
+    setConfirmDeletePerm(null);
+    showToast('Permission deleted');
+  };
+
+  const roleNames = Object.keys(rolePerms).sort();
   const selectedPerms = selectedRole ? (rolePerms[selectedRole] || []) : [];
+  // Permissions available to add to the selected role (from registry, not already assigned)
+  const availablePermsForRole = definedPerms.filter(p => !selectedPerms.includes(p));
+  // Count how many roles use each permission
+  const permUsage = {};
+  for (const perms of Object.values(rolePerms)) {
+    for (const p of perms) { permUsage[p] = (permUsage[p] || 0) + 1; }
+  }
 
   return html`
     <div class="page-header"><h2>Roles & Permissions</h2></div>
@@ -238,21 +285,53 @@ function RolesPage() {
         </div>
       </div>
 
-      <!-- Right: Permissions for selected role -->
+      <!-- Right: Selected role detail OR permissions registry -->
       <div class="roles-detail">
         ${!selectedRole
-          ? html`<div class="roles-empty">Select a role to view its permissions</div>`
+          ? html`
+            <div class="roles-detail-header">
+              <h3>Permissions Registry</h3>
+            </div>
+            <div class="roles-detail-meta">All permissions that can be assigned to roles or directly to users</div>
+
+            ${definedPerms.length === 0
+              ? html`<div style="color:var(--text-muted);font-size:0.85rem;margin-bottom:var(--sp-4);padding:var(--sp-4);background:var(--bg-hover);border-radius:var(--radius-md);text-align:center">No permissions defined yet. Add some below, or they'll be auto-created when added to a role.</div>`
+              : html`<div class="roles-perms-list">
+                  ${definedPerms.map(p => html`
+                    <span class="perm-tag">
+                      ${p}
+                      ${permUsage[p] ? html`<span class="perm-usage" title="Used by ${permUsage[p]} role(s)">${permUsage[p]}</span>` : null}
+                      ${confirmDeletePerm === p
+                        ? html`<span class="perm-confirm-delete">
+                            <button class="perm-delete-yes" onClick=${() => deleteGlobalPerm(p)} title="Confirm delete">Yes</button>
+                            <button class="perm-delete-no" onClick=${() => setConfirmDeletePerm(null)} title="Cancel">No</button>
+                          </span>`
+                        : html`<button onClick=${() => setConfirmDeletePerm(p)} title="Delete permission">×</button>`
+                      }
+                    </span>
+                  `)}
+                </div>`
+            }
+
+            <div style="display:flex;gap:var(--sp-2);margin-top:auto">
+              <input class="form-input" value=${newGlobalPerm} onInput=${e => setNewGlobalPerm(e.target.value)} placeholder="New permission, e.g. documents:read" onKeyDown=${e => e.key === 'Enter' && addGlobalPerm()} />
+              <button class="btn btn-sm btn-primary" style="white-space:nowrap" onClick=${addGlobalPerm}>${icons.plus} Add</button>
+            </div>
+          `
           : html`
             <div class="roles-detail-header">
               <h3>${selectedRole}</h3>
-              ${!confirmDelete
-                ? html`<button class="btn btn-sm btn-danger" onClick=${() => setConfirmDelete(true)}>Delete Role</button>`
-                : html`<div style="display:flex;gap:var(--sp-2);align-items:center">
-                    <span style="font-size:0.8rem;color:var(--status-error-text)">Sure?</span>
-                    <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(selectedRole)}>Yes, delete</button>
-                    <button class="btn btn-sm btn-secondary" onClick=${() => setConfirmDelete(false)}>Cancel</button>
-                  </div>`
-              }
+              <div style="display:flex;gap:var(--sp-2);align-items:center">
+                <button class="btn btn-sm btn-secondary" onClick=${() => { setSelectedRole(null); setConfirmDelete(false); }}>View All Permissions</button>
+                ${!confirmDelete
+                  ? html`<button class="btn btn-sm btn-danger" onClick=${() => setConfirmDelete(true)}>Delete Role</button>`
+                  : html`<div style="display:flex;gap:var(--sp-2);align-items:center">
+                      <span style="font-size:0.8rem;color:var(--status-error-text)">Sure?</span>
+                      <button class="btn btn-sm btn-danger" onClick=${() => deleteRole(selectedRole)}>Yes, delete</button>
+                      <button class="btn btn-sm btn-secondary" onClick=${() => setConfirmDelete(false)}>Cancel</button>
+                    </div>`
+                }
+              </div>
             </div>
             <div class="roles-detail-meta">
               ${defaultRoles.includes(selectedRole)
@@ -270,14 +349,17 @@ function RolesPage() {
                   ${selectedPerms.map(p => html`
                     <span class="perm-tag">
                       ${p}
-                      <button onClick=${() => removePerm(p)} title="Remove permission">×</button>
+                      <button onClick=${() => removePerm(p)} title="Remove from role">×</button>
                     </span>
                   `)}
                 </div>`
             }
 
             <div style="display:flex;gap:var(--sp-2);margin-top:auto">
-              <input class="form-input" value=${newPerm} onInput=${e => setNewPerm(e.target.value)} placeholder="Add permission, e.g. posts:write" onKeyDown=${e => e.key === 'Enter' && addPermission()} />
+              <input class="form-input" list="perm-suggestions" value=${newPerm} onInput=${e => setNewPerm(e.target.value)} placeholder="Add permission..." onKeyDown=${e => e.key === 'Enter' && addPermission()} />
+              <datalist id="perm-suggestions">
+                ${availablePermsForRole.map(p => html`<option value=${p} />`)}
+              </datalist>
               <button class="btn btn-sm btn-primary" style="white-space:nowrap" onClick=${addPermission}>${icons.plus} Add</button>
             </div>
           `
@@ -302,6 +384,7 @@ function UsersPage() {
   const [permInput, setPermInput] = useState('');
   const [search, setSearch] = useState('');
   const [roleDefs, setRoleDefs] = useState({});
+  const [definedPermsList, setDefinedPermsList] = useState([]);
 
   const load = () => {
     api('GET', '/api/admin/users').then(setUsers).catch(() => {});
@@ -374,6 +457,10 @@ function UsersPage() {
       const rp = await api('GET', '/api/admin/role-permissions');
       setRoleDefs(rp || {});
     } catch { setRoleDefs({}); }
+    try {
+      const dp = await api('GET', '/api/admin/permissions');
+      setDefinedPermsList(dp || []);
+    } catch { setDefinedPermsList([]); }
   };
 
   const addRole = async () => {
@@ -564,34 +651,20 @@ function UsersPage() {
         <div>
           <strong style="font-size:0.875rem;display:block;margin-bottom:var(--sp-3)">Roles</strong>
 
-          ${Object.keys(roleDefs).length > 0 && html`
-            <div style="display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-3)">
-              ${Object.keys(roleDefs).map(r => html`
+          ${Object.keys(roleDefs).length > 0 ? html`
+            <div style="display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-5)">
+              ${Object.keys(roleDefs).sort().map(r => html`
                 <label style="display:flex;align-items:center;gap:var(--sp-2);cursor:pointer;font-size:0.875rem">
                   <input type="checkbox" checked=${roles.includes(r)} onChange=${() => {
                     const updated = roles.includes(r) ? roles.filter(x => x !== r) : [...roles, r];
                     api('PUT', '/api/admin/users/' + detail.guid + '/roles', updated).then(() => { setRoles(updated); showToast(roles.includes(r) ? 'Role removed' : 'Role added'); }).catch(e => showToast(e.message, 'error'));
                   }} style="width:16px;height:16px;accent-color:var(--btn-primary-bg)" />
                   <span>${r}</span>
-                  <span style="font-size:0.7rem;color:var(--text-muted)">(${(roleDefs[r] || []).length} permissions)</span>
+                  <span style="font-size:0.7rem;color:var(--text-muted)">(${(roleDefs[r] || []).length} perms)</span>
                 </label>
               `)}
             </div>
-          `}
-
-          ${roles.filter(r => !Object.keys(roleDefs).includes(r)).length > 0 && html`
-            <div style="margin-bottom:var(--sp-2)">
-              <span style="font-size:0.75rem;color:var(--text-muted)">Custom roles: </span>
-              ${roles.filter(r => !Object.keys(roleDefs).includes(r)).map(r => html`
-                <span class="badge" style="cursor:pointer;margin:2px" onClick=${() => removeRole(r)}>${r} ×</span>
-              `)}
-            </div>
-          `}
-
-          <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-5)">
-            <input class="form-input" style="flex:1" placeholder="Add custom role..." value=${roleInput} onInput=${e => setRoleInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addRole()} />
-            <button class="btn btn-sm btn-primary" onClick=${addRole}>Add</button>
-          </div>
+          ` : html`<div style="color:var(--text-muted);font-size:0.85rem;margin-bottom:var(--sp-5)">No roles defined. Create roles on the Roles & Permissions page first.</div>`}
 
           <strong style="font-size:0.875rem;display:block;margin-bottom:var(--sp-1)">Direct Permissions</strong>
           <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:var(--sp-3)">Extra permissions on top of what roles grant.</div>
@@ -605,7 +678,10 @@ function UsersPage() {
             ${perms.length === 0 && html`<span style="color:var(--text-muted);font-size:0.85rem">None</span>`}
           </div>
           <div style="display:flex;gap:var(--sp-2)">
-            <input class="form-input" style="flex:1" placeholder="Add permission, e.g. posts:read" value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+            <input class="form-input" style="flex:1" list="user-perm-suggestions" placeholder="Add permission..." value=${permInput} onInput=${e => setPermInput(e.target.value)} onKeyDown=${e => e.key === 'Enter' && addPerm()} />
+            <datalist id="user-perm-suggestions">
+              ${definedPermsList.filter(p => !perms.includes(p)).map(p => html`<option value=${p} />`)}
+            </datalist>
             <button class="btn btn-sm btn-primary" onClick=${addPerm}>Add</button>
           </div>
         </div>
