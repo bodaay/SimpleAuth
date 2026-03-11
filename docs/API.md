@@ -786,6 +786,12 @@ Revoke all sessions for a user. Forces them to log in again everywhere.
 
 ---
 
+## Roles & Permissions Model
+
+SimpleAuth is the authority for roles and permissions -- they must be defined in the registries before they can be assigned to users. Use `PUT /api/admin/role-permissions` to define roles (and their associated permissions) and `PUT /api/admin/permissions` to define the master permissions list. On first startup, any roles or permissions already assigned to existing users are automatically registered into the respective registries.
+
+---
+
 ## Admin: Roles & Permissions
 
 Roles and permissions are global per SimpleAuth instance.
@@ -809,6 +815,8 @@ Get a user's roles.
 **Auth:** Admin Key
 
 Set a user's roles. Replaces the entire role list.
+
+> **Note:** All roles must be defined in the role registry first (via `PUT /api/admin/role-permissions`), otherwise a `400` error is returned.
 
 **Request body:** Array of strings.
 
@@ -838,6 +846,8 @@ Get a user's permissions.
 
 Set a user's permissions.
 
+> **Note:** All permissions must be defined in the permissions registry first (via `PUT /api/admin/permissions`), otherwise a `400` error is returned.
+
 **Request body:** Array of strings.
 
 ```json
@@ -859,6 +869,8 @@ Get default roles that are automatically assigned to new users when they first l
 **Auth:** Admin Key
 
 Set default roles for new users.
+
+> **Note:** Default roles must be defined in the role registry first (via `PUT /api/admin/role-permissions`).
 
 **Request body:** Array of strings.
 
@@ -882,6 +894,8 @@ Get the role-to-permissions mapping. This defines which permissions are automati
 
 Set the role-to-permissions mapping.
 
+> **Note:** All permissions referenced in the mapping must be defined in the permissions registry first (via `PUT /api/admin/permissions`).
+
 **Request body:** Object mapping role names to permission arrays.
 
 ```json
@@ -898,7 +912,7 @@ Set the role-to-permissions mapping.
 
 **Auth:** Admin Key
 
-List all unique roles across all users.
+Returns all defined roles from the role registry.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
@@ -915,7 +929,7 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 **Auth:** Admin Key
 
-List all unique permissions across all users and the role-permissions mapping.
+Returns all defined permissions from the permissions registry.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
@@ -924,6 +938,26 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ```json
 ["delete:all", "read:all", "write:all"]
+```
+
+---
+
+### `PUT /api/admin/permissions`
+
+**Auth:** Admin Key
+
+Sets the master permissions list. Replaces the entire permissions registry.
+
+**Request body:** Array of strings.
+
+```json
+["read:all", "write:all", "delete:all", "read:reports", "write:config"]
+```
+
+**Response (200):**
+
+```json
+["read:all", "write:all", "delete:all", "read:reports", "write:config"]
 ```
 
 ---

@@ -188,6 +188,8 @@ const perms = await auth.getUserPermissions('user-guid');
 await auth.setUserPermissions('user-guid', ['read', 'write', 'delete']);
 ```
 
+> **Note:** Roles and permissions must be defined in SimpleAuth before they can be assigned to users. Use the admin API to define roles (`PUT /api/admin/role-permissions`) and permissions (`PUT /api/admin/permissions`) first, or define them in the Admin UI under Roles & Permissions.
+
 ## Error Handling
 
 All methods throw `SimpleAuthError` on failure:

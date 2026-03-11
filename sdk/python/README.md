@@ -122,6 +122,8 @@ perms = auth.get_user_permissions(guid="user-guid")
 auth.set_user_permissions(guid="user-guid", permissions=["read:posts", "write:posts"])
 ```
 
+> **Note:** Roles and permissions must be defined in SimpleAuth before they can be assigned to users. Use the admin API to define roles (`PUT /api/admin/role-permissions`) and permissions (`PUT /api/admin/permissions`) first, or define them in the Admin UI under Roles & Permissions.
+
 ## Framework Middleware
 
 ### FastAPI

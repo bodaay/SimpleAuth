@@ -152,6 +152,8 @@ perms, err := client.GetUserPermissions(ctx, userGUID)
 err = client.SetUserPermissions(ctx, userGUID, []string{"read", "write"})
 ```
 
+> **Note:** Roles and permissions must be defined in SimpleAuth before they can be assigned to users. Use the admin API to define roles (`PUT /api/admin/role-permissions`) and permissions (`PUT /api/admin/permissions`) first, or define them in the Admin UI under Roles & Permissions.
+
 ## Self-signed certificates
 
 For development environments with self-signed TLS certificates:
