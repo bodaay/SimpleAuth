@@ -40,8 +40,11 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[login] Attempt user=%q ip=%s", req.Username, ip)
+
 	userGUID, ldapGroups, err := h.authenticateUser(req.Username, req.Password)
 	if err != nil {
+		log.Printf("[login] Failed user=%q ip=%s reason=%q", req.Username, ip, err.Error())
 		h.audit("login_failed", "", ip, map[string]interface{}{"username": req.Username, "reason": err.Error()})
 		switch err.Error() {
 		case "account disabled":
@@ -63,6 +66,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Assign default roles if user has none
 	h.assignDefaultRoles(finalUser.GUID)
+
+	log.Printf("[login] Success user=%q guid=%s name=%q ip=%s", req.Username, finalUser.GUID, finalUser.DisplayName, ip)
 
 	// Check force password change — still issue tokens but flag the response
 	if finalUser.ForcePasswordChange {
@@ -114,6 +119,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 			if user.PasswordHash != "" && auth.CheckPassword(user.PasswordHash, password) {
 				userGUID = user.GUID
 				authenticated = true
+				log.Printf("[auth] Local auth success user=%q guid=%s", username, user.GUID)
 			}
 		}
 	}
@@ -128,11 +134,13 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 				ldapGroups = result.Groups
 				ldapResult = result
 				authenticated = true
+				log.Printf("[auth] LDAP auth success user=%q name=%q email=%q groups=%d", username, result.DisplayName, result.Email, len(result.Groups))
 
 				// Resolve or JIT-provision user
 				guid, mapErr := h.store.ResolveMapping("ldap", username)
 				if mapErr == nil {
 					userGUID = guid
+					log.Printf("[auth] LDAP user resolved user=%q guid=%s", username, guid)
 				} else {
 					// JIT provisioning
 					newUser := &store.User{
@@ -146,6 +154,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 					userGUID = newUser.GUID
 					h.store.SetIdentityMapping("ldap", username, userGUID)
 					h.store.SetIdentityMapping("local", username, userGUID)
+					log.Printf("[auth] JIT provisioned user=%q guid=%s name=%q email=%q", username, newUser.GUID, result.DisplayName, result.Email)
 				}
 			}
 		}
@@ -155,7 +164,9 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 		// Record failed login attempt for lockout tracking
 		if localUser != nil {
 			h.recordFailedLogin(localUser)
+			log.Printf("[auth] Failed attempts=%d user=%q guid=%s", localUser.FailedLoginAttempts, username, localUser.GUID)
 		}
+		log.Printf("[auth] Authentication failed user=%q (no valid local or LDAP credentials)", username)
 		return "", nil, fmt.Errorf("invalid credentials")
 	}
 
@@ -207,6 +218,7 @@ func (h *Handler) recordFailedLogin(user *store.User) {
 	if h.cfg.AccountLockoutThreshold > 0 && user.FailedLoginAttempts >= h.cfg.AccountLockoutThreshold {
 		lockUntil := time.Now().Add(h.cfg.AccountLockoutDuration)
 		user.LockedUntil = &lockUntil
+		log.Printf("[auth] Account locked guid=%s until=%s (threshold=%d)", user.GUID, lockUntil.Format(time.RFC3339), h.cfg.AccountLockoutThreshold)
 	}
 	h.store.UpdateUser(user)
 }
@@ -369,6 +381,7 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.jwt.ValidateToken(req.RefreshToken)
 	if err != nil {
+		log.Printf("[refresh] Invalid token ip=%s err=%q", ip, err.Error())
 		jsonError(w, "invalid refresh token", http.StatusUnauthorized)
 		return
 	}
@@ -376,6 +389,7 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// Check if token exists and hasn't been used
 	storedRT, err := h.store.GetRefreshToken(claims.ID)
 	if err != nil {
+		log.Printf("[refresh] Token not found id=%s user=%s ip=%s", claims.ID, claims.Subject, ip)
 		jsonError(w, "refresh token not found", http.StatusUnauthorized)
 		return
 	}
@@ -383,6 +397,7 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if storedRT.Used {
 		// Token reuse detected — revoke entire family
 		h.store.RevokeTokenFamily(storedRT.FamilyID)
+		log.Printf("[refresh] REPLAY DETECTED user=%s family=%s ip=%s — all sessions revoked", claims.Subject, storedRT.FamilyID, ip)
 		h.audit("token_refresh", claims.Subject, getClientIP(r), map[string]interface{}{
 			"event": "replay_detected", "family_id": storedRT.FamilyID,
 		})
@@ -447,6 +462,7 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	h.store.SaveRefreshToken(newRT)
 
+	log.Printf("[refresh] Success user=%q guid=%s ip=%s", h.resolvePreferredUsername(user), user.GUID, ip)
 	h.audit("token_refresh", user.GUID, getClientIP(r), nil)
 
 	jsonResp(w, map[string]interface{}{
@@ -548,6 +564,7 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := getClientIP(r)
+	log.Printf("[impersonate] Admin impersonating user=%q guid=%s ip=%s", h.resolvePreferredUsername(target), target.GUID, ip)
 	h.audit("impersonation", adminActor, ip, map[string]interface{}{
 		"target_guid": target.GUID,
 	})
@@ -652,6 +669,7 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := getClientIP(r)
+	log.Printf("[password] Changed user=%q guid=%s ip=%s", h.resolvePreferredUsername(user), user.GUID, ip)
 	h.audit("password_changed", user.GUID, ip, nil)
 	jsonResp(w, map[string]string{"status": "password updated"}, http.StatusOK)
 }
@@ -942,10 +960,14 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 
 	authHeader := r.Header.Get("Authorization")
 
+	ip := getClientIP(r)
+	log.Printf("[sso] SSO login attempt ip=%s redirect_uri=%q", ip, redirectURI)
+
 	// No auth header — send Negotiate challenge or fail
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Negotiate ") {
 		keytabPath := h.getKeytabPath()
 		if keytabPath == "" {
+			log.Printf("[sso] Kerberos not configured ip=%s", ip)
 			h.redirectToLoginError(w, r, redirectURI, "Kerberos not configured")
 			return
 		}
@@ -953,10 +975,12 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		// If we already sent the challenge (sso_attempt=1) and the browser
 		// still didn't respond with a Negotiate token, SSO has failed.
 		if r.URL.Query().Get("sso_attempt") == "1" {
+			log.Printf("[sso] Browser did not provide Kerberos credentials ip=%s", ip)
 			h.redirectToLoginError(w, r, redirectURI, "SSO authentication failed — your browser did not provide Kerberos credentials")
 			return
 		}
 
+		log.Printf("[sso] Sending Negotiate challenge ip=%s", ip)
 		// First visit — send the 401 challenge
 		retryURL := h.url("/login/sso") + "?sso_attempt=1"
 		if redirectURI != "" {
@@ -978,6 +1002,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isNTLMToken(tokenBytes) {
+		log.Printf("[sso] NTLM token rejected (Kerberos required) ip=%s", ip)
 		h.redirectToLoginError(w, r, redirectURI, "NTLM is not supported, Kerberos required")
 		return
 	}
@@ -1030,7 +1055,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := getClientIP(r)
+	log.Printf("[sso] Login success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
 	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
 
 	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",

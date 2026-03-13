@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,8 +67,10 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	log.Printf("[hosted-login] Attempt user=%q ip=%s redirect_uri=%q", username, ip, redirectURI)
 	userGUID, ldapGroups, err := h.authenticateUser(username, password)
 	if err != nil {
+		log.Printf("[hosted-login] Failed user=%q ip=%s reason=%q", username, ip, err.Error())
 		h.audit("login_failed", "", ip, map[string]interface{}{
 			"username": username, "reason": err.Error(), "flow": "hosted",
 		})
@@ -97,6 +100,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	log.Printf("[hosted-login] Success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
 	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "hosted"})
 
 	if redirectURI != "" {

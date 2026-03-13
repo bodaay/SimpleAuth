@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -75,6 +76,7 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		h.store.SetIdentityMapping("local", req.Username, user.GUID)
 	}
 
+	log.Printf("[admin] User created username=%q guid=%s name=%q email=%q ip=%s", req.Username, user.GUID, req.DisplayName, req.Email, getClientIP(r))
 	h.audit("user_created", user.GUID, getClientIP(r), map[string]interface{}{"username": req.Username})
 
 	jsonResp(w, map[string]interface{}{
@@ -143,6 +145,7 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	guid := pathParam(r, "guid")
+	log.Printf("[admin] User deleted guid=%s ip=%s", guid, getClientIP(r))
 	if err := h.store.DeleteUser(guid); err != nil {
 		jsonError(w, "failed to delete user", http.StatusInternalServerError)
 		return
@@ -202,6 +205,7 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[admin] Password set guid=%s force_change=%v ip=%s", guid, user.ForcePasswordChange, getClientIP(r))
 	h.audit("password_set", "admin", getClientIP(r), map[string]interface{}{
 		"target_guid":  guid,
 		"force_change": user.ForcePasswordChange,
@@ -233,6 +237,7 @@ func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update user", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[admin] User disabled=%v guid=%s ip=%s", user.Disabled, guid, getClientIP(r))
 	jsonResp(w, map[string]interface{}{"guid": guid, "disabled": user.Disabled}, http.StatusOK)
 }
 
@@ -264,6 +269,7 @@ func (h *Handler) handleUnlockAccount(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to unlock account", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[admin] Account unlocked guid=%s ip=%s", guid, getClientIP(r))
 	h.audit("account_unlocked", "admin", getClientIP(r), map[string]interface{}{"target_guid": guid})
 	jsonResp(w, map[string]string{"status": "account unlocked"}, http.StatusOK)
 }
@@ -429,6 +435,7 @@ func (h *Handler) handleSetRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[admin] Roles changed guid=%s old=%v new=%v ip=%s", guid, oldRoles, roles, getClientIP(r))
 	h.audit("role_changed", "admin", getClientIP(r), map[string]interface{}{
 		"user_guid": guid,
 		"old_roles": oldRoles, "new_roles": roles,
@@ -474,6 +481,7 @@ func (h *Handler) handleSetPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[admin] Permissions changed guid=%s old=%v new=%v ip=%s", guid, oldPerms, perms, getClientIP(r))
 	h.audit("permission_changed", "admin", getClientIP(r), map[string]interface{}{
 		"user_guid":       guid,
 		"old_permissions": oldPerms, "new_permissions": perms,
@@ -625,6 +633,7 @@ func (h *Handler) handleMergeUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[admin] Users merged sources=%v merged_guid=%s ip=%s", req.SourceGUIDs, newUser.GUID, getClientIP(r))
 	h.audit("user_merged", "admin", getClientIP(r), map[string]interface{}{
 		"source_guids": req.SourceGUIDs, "merged_guid": newUser.GUID,
 	})
@@ -650,6 +659,7 @@ func (h *Handler) handleUnmergeUser(w http.ResponseWriter, r *http.Request) {
 // --- Backup & Restore ---
 
 func (h *Handler) handleBackup(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[admin] Database backup requested ip=%s", getClientIP(r))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="auth-backup-%s.db"`, time.Now().Format("2006-01-02")))
 
@@ -671,10 +681,12 @@ func (h *Handler) handleRestore(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	if err := h.store.Restore(file); err != nil {
+		log.Printf("[admin] Database restore failed ip=%s err=%q", getClientIP(r), err.Error())
 		jsonError(w, "restore failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("[admin] Database restored successfully ip=%s", getClientIP(r))
 	jsonResp(w, map[string]string{"status": "restored"}, http.StatusOK)
 }
 
