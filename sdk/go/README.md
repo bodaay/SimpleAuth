@@ -165,6 +165,34 @@ client := sa.New(sa.Options{
 })
 ```
 
+## Embedding SimpleAuth in your Go app
+
+Instead of running SimpleAuth as a separate binary, you can embed it directly into your Go application. The full auth server (REST API, admin UI, JWT issuance) runs inside your process.
+
+```go
+import (
+    "simpleauth/pkg/server"
+    "simpleauth/ui"
+)
+
+// Start embedded SimpleAuth
+sa, err := server.New(server.Config{
+    Hostname: "myapp.example.com",
+    AdminKey: "my-secret-key",
+    DataDir:  "./auth-data",
+    BasePath: "/auth",
+}, ui.FS()) // pass nil instead of ui.FS() for API-only (no admin UI)
+if err != nil {
+    log.Fatal(err)
+}
+defer sa.Close()
+
+// Mount on your router
+mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
+```
+
+Config fields override env vars. Unset fields fall through to `AUTH_*` env vars, then defaults. Your app talks to SimpleAuth via its REST API — same endpoints, same SDK client, just running in-process.
+
 ## Configuration reference
 
 | Field | Description | Default |

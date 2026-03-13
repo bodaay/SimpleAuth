@@ -2,10 +2,8 @@ package main
 
 import (
 	"crypto/rand"
-	"embed"
 	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -15,13 +13,11 @@ import (
 	"simpleauth/internal/config"
 	"simpleauth/internal/handler"
 	"simpleauth/internal/store"
+	saui "simpleauth/ui"
 )
 
-//go:embed ui/dist/*
-var uiFiles embed.FS
-
 var (
-	Version   = "0.2.0"
+	Version   = "0.2.1"
 	BuildTime = "unknown"
 )
 
@@ -75,14 +71,8 @@ func main() {
 		log.Fatalf("Failed to initialize JWT manager: %v", err)
 	}
 
-	// Prepare embedded UI filesystem
-	uiFS, err := fs.Sub(uiFiles, "ui/dist")
-	if err != nil {
-		log.Fatalf("Failed to load embedded UI: %v", err)
-	}
-
 	// Create handler
-	h := handler.New(cfg, s, jwtMgr, uiFS, Version)
+	h := handler.New(cfg, s, jwtMgr, saui.FS(), Version)
 
 	// Start audit log pruner
 	h.StartAuditPruner()

@@ -236,6 +236,51 @@ Every SDK supports:
 
 See [examples/](examples/) for copy-paste ready integration code.
 
+## Embed in Your Go App
+
+SimpleAuth can be embedded directly into any Go application as a library. It runs as a full auth server inside your process — same REST API, same admin UI, same JWT issuance — no separate binary needed.
+
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+
+    "simpleauth/pkg/server"
+    "simpleauth/ui"
+)
+
+func main() {
+    sa, err := server.New(server.Config{
+        Hostname: "myapp.example.com",
+        AdminKey: "my-secret-key",
+        DataDir:  "./auth-data",
+        BasePath: "/auth",
+    }, ui.FS())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer sa.Close()
+
+    mux := http.NewServeMux()
+    mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("My app"))
+    })
+
+    log.Println("App running on :8080, auth at /auth/")
+    http.ListenAndServe(":8080", mux)
+}
+```
+
+**How it works:**
+- `server.New()` initializes BoltDB, RSA keys, and all handlers — same as the standalone binary
+- `sa.Handler()` returns a standard `http.Handler` you mount on your router
+- `ui.FS()` provides the embedded admin UI; pass `nil` to run without a UI (API only)
+- Config fields override env vars — unset fields fall through to `AUTH_*` env vars, then defaults
+- Your app communicates with SimpleAuth via its REST API at whatever path you mount it on
+
 ## Build
 
 ```bash
@@ -442,7 +487,8 @@ Users are auto-created on first login. No import, no sync, no migration.
 
 ```
 simpleauth
-├── main.go                        # Entry point, embeds UI, HTTPS + HTTP redirect
+├── main.go                        # Entry point, HTTPS + HTTP redirect
+├── pkg/server/                    # Embeddable library (server.New + Handler)
 ├── simpleauth.yaml                # Config (generated with init-config)
 ├── Dockerfile                     # Multi-stage production build
 ├── docker-compose.yml             # Full stack with nginx
@@ -483,10 +529,12 @@ simpleauth
 │   └── SDK-GUIDE.md
 ├── deploy/
 │   └── nginx/                     # Production nginx config with SSL
-└── ui/dist/                       # Embedded Preact admin UI
-    ├── index.html
-    ├── app.js                     # SPA: Dashboard, Users, LDAP, Mappings, Audit
-    └── vendor/                    # Preact, htm (offline, no CDN)
+└── ui/                            # Embedded Preact admin UI
+    ├── embed.go                   # ui.FS() for embedding in Go apps
+    └── dist/
+        ├── index.html
+        ├── app.js                 # SPA: Dashboard, Users, LDAP, Mappings, Audit
+        └── vendor/                # Preact, htm (offline, no CDN)
 ```
 
 ## LDAP User Attributes
