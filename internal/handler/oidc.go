@@ -329,6 +329,7 @@ func (h *Handler) handleOIDCTokenAuthCode(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	log.Printf("[oidc] Auth code exchange user=%q guid=%s ip=%s", h.resolvePreferredUsername(user), user.GUID, getClientIP(r))
 	h.issueOIDCTokens(w, r, user, ac.Scope, ac.Nonce)
 }
 
@@ -353,8 +354,10 @@ func (h *Handler) handleOIDCTokenPassword(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	log.Printf("[oidc] Password grant user=%q ip=%s", username, ip)
 	userGUID, _, err := h.authenticateUser(username, password)
 	if err != nil {
+		log.Printf("[oidc] Password grant failed user=%q ip=%s reason=%q", username, ip, err.Error())
 		h.audit("login_failed", "", ip, map[string]interface{}{
 			"username": username, "reason": err.Error(), "flow": "oidc_password",
 		})
@@ -375,6 +378,7 @@ func (h *Handler) handleOIDCTokenPassword(w http.ResponseWriter, r *http.Request
 	// Assign default roles
 	h.assignDefaultRoles(user.GUID)
 
+	log.Printf("[oidc] Password grant success user=%q guid=%s ip=%s", username, user.GUID, ip)
 	h.issueOIDCTokens(w, r, user, scope, "")
 }
 
@@ -399,6 +403,7 @@ func (h *Handler) handleOIDCTokenClientCredentials(w http.ResponseWriter, r *htt
 		return
 	}
 
+	log.Printf("[oidc] Client credentials grant client_id=%s ip=%s", h.cfg.ClientID, getClientIP(r))
 	h.audit("oidc_token", h.cfg.ClientID, getClientIP(r), map[string]interface{}{
 		"grant_type": "client_credentials",
 	})
