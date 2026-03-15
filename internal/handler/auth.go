@@ -78,7 +78,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "token generation failed", http.StatusInternalServerError)
 			return
 		}
-		h.audit("login_success", finalUser.GUID, ip, map[string]interface{}{"force_password_change": true})
+		h.auditLogin(finalUser, ip, map[string]interface{}{"force_password_change": true})
 		jsonResp(w, map[string]interface{}{
 			"access_token":          accessToken,
 			"refresh_token":         refreshToken,
@@ -272,7 +272,7 @@ func (h *Handler) issueTokenResponse(w http.ResponseWriter, user *store.User, gr
 		return
 	}
 
-	h.audit("login_success", user.GUID, ip, nil)
+	h.auditLogin(user, ip, nil)
 
 	jsonResp(w, map[string]interface{}{
 		"access_token":  accessToken,
@@ -798,7 +798,7 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit("login_success", user.GUID, ip, map[string]interface{}{
+	h.auditLogin(user, ip, map[string]interface{}{
 		"flow": "kerberos", "principal": cname,
 	})
 
@@ -1056,7 +1056,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[sso] Login success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
-	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
+	h.auditLogin(user, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
 
 	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
 		url.QueryEscape(accessToken),
