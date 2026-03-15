@@ -101,7 +101,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	}
 
 	log.Printf("[hosted-login] Success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
-	h.audit("login_success", user.GUID, ip, map[string]interface{}{"flow": "hosted"})
+	h.auditLogin(user, ip, map[string]interface{}{"flow": "hosted"})
 
 	if redirectURI != "" {
 		// Redirect with tokens in fragment

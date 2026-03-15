@@ -305,6 +305,19 @@ func (h *Handler) audit(event, actor, ip string, data map[string]interface{}) {
 	}
 }
 
+// auditLogin logs a login event enriched with user identity fields.
+func (h *Handler) auditLogin(user *store.User, ip string, extra map[string]interface{}) {
+	data := map[string]interface{}{
+		"username":     h.resolvePreferredUsername(user),
+		"display_name": user.DisplayName,
+		"email":        user.Email,
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	h.audit("login_success", user.GUID, ip, data)
+}
+
 func ldapConfigFromStore(p *store.LDAPConfig) *auth.LDAPConfig {
 	return &auth.LDAPConfig{
 		URL:             p.URL,
