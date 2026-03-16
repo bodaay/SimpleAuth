@@ -844,3 +844,159 @@ func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, resp, http.StatusOK)
 }
+
+// --- Bootstrap ---
+
+func (h *Handler) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Users []struct {
+			Username      string   `json:"username"`
+			Password      string   `json:"password"`
+			DisplayName   string   `json:"display_name"`
+			Email         string   `json:"email"`
+			Roles         []string `json:"roles"`
+			Permissions   []string `json:"permissions"`
+			ForcePassword bool     `json:"force_password"`
+		} `json:"users"`
+		Permissions     []string            `json:"permissions"`
+		RolePermissions map[string][]string `json:"role_permissions"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	ip := getClientIP(r)
+	var resp struct {
+		Users                []map[string]interface{} `json:"users,omitempty"`
+		PermissionsCount     *int                     `json:"permissions_count,omitempty"`
+		RolePermissionsCount *int                     `json:"role_permissions_count,omitempty"`
+	}
+
+	// 1. Define permissions
+	if req.Permissions != nil {
+		if err := h.store.SetDefinedPermissions(req.Permissions); err != nil {
+			jsonError(w, fmt.Sprintf("failed to set permissions: %v", err), http.StatusInternalServerError)
+			return
+		}
+		n := len(req.Permissions)
+		resp.PermissionsCount = &n
+		log.Printf("[bootstrap] Defined %d permissions ip=%s", n, ip)
+	}
+
+	// 2. Define role-permissions
+	if req.RolePermissions != nil {
+		if err := h.store.SetRolePermissions(req.RolePermissions); err != nil {
+			jsonError(w, fmt.Sprintf("failed to set role permissions: %v", err), http.StatusBadRequest)
+			return
+		}
+		n := len(req.RolePermissions)
+		resp.RolePermissionsCount = &n
+		log.Printf("[bootstrap] Defined %d roles ip=%s", n, ip)
+	}
+
+	// 3. Process users
+	for _, u := range req.Users {
+		if u.Username == "" {
+			jsonError(w, "each user must have a username", http.StatusBadRequest)
+			return
+		}
+
+		created := false
+		guid, err := h.store.ResolveMapping("local", u.Username)
+		if err != nil {
+			// User doesn't exist — create
+			user := &store.User{
+				DisplayName: u.DisplayName,
+				Email:       u.Email,
+			}
+			if u.Password != "" {
+				hash, err := auth.HashPassword(u.Password)
+				if err != nil {
+					jsonError(w, fmt.Sprintf("failed to hash password for %s: %v", u.Username, err), http.StatusInternalServerError)
+					return
+				}
+				user.PasswordHash = hash
+			}
+			if err := h.store.CreateUser(user); err != nil {
+				jsonError(w, fmt.Sprintf("failed to create user %s: %v", u.Username, err), http.StatusInternalServerError)
+				return
+			}
+			h.store.SetIdentityMapping("local", u.Username, user.GUID)
+			guid = user.GUID
+			created = true
+			log.Printf("[bootstrap] Created user %q guid=%s ip=%s", u.Username, guid, ip)
+		}
+
+		// Set password if force_password or newly created (and password provided)
+		if u.Password != "" && (u.ForcePassword || created) && !created {
+			// created users already have password set above, only need this for existing + force
+			hash, err := auth.HashPassword(u.Password)
+			if err != nil {
+				jsonError(w, fmt.Sprintf("failed to hash password for %s: %v", u.Username, err), http.StatusInternalServerError)
+				return
+			}
+			user, err := h.store.GetUser(guid)
+			if err != nil {
+				jsonError(w, fmt.Sprintf("user %s not found after resolve: %v", u.Username, err), http.StatusInternalServerError)
+				return
+			}
+			user.PasswordHash = hash
+			user.ForcePasswordChange = false
+			if err := h.store.UpdateUser(user); err != nil {
+				jsonError(w, fmt.Sprintf("failed to set password for %s: %v", u.Username, err), http.StatusInternalServerError)
+				return
+			}
+			log.Printf("[bootstrap] Password reset for %q guid=%s ip=%s", u.Username, guid, ip)
+		}
+
+		// Update display_name/email on existing user if provided
+		if !created && (u.DisplayName != "" || u.Email != "") {
+			user, err := h.store.GetUser(guid)
+			if err == nil {
+				changed := false
+				if u.DisplayName != "" && user.DisplayName != u.DisplayName {
+					user.DisplayName = u.DisplayName
+					changed = true
+				}
+				if u.Email != "" && user.Email != u.Email {
+					user.Email = u.Email
+					changed = true
+				}
+				if changed {
+					h.store.UpdateUser(user)
+				}
+			}
+		}
+
+		// Set roles
+		if u.Roles != nil {
+			if err := h.store.SetUserRoles(guid, u.Roles); err != nil {
+				jsonError(w, fmt.Sprintf("failed to set roles for %s: %v", u.Username, err), http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Set permissions
+		if u.Permissions != nil {
+			if err := h.store.SetUserPermissions(guid, u.Permissions); err != nil {
+				jsonError(w, fmt.Sprintf("failed to set permissions for %s: %v", u.Username, err), http.StatusBadRequest)
+				return
+			}
+		}
+
+		resp.Users = append(resp.Users, map[string]interface{}{
+			"username": u.Username,
+			"guid":     guid,
+			"created":  created,
+		})
+	}
+
+	h.audit("bootstrap", "", ip, map[string]interface{}{
+		"users_count":       len(req.Users),
+		"permissions_count": len(req.Permissions),
+		"roles_count":       len(req.RolePermissions),
+	})
+
+	jsonResp(w, resp, http.StatusOK)
+}

@@ -192,6 +192,9 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/admin/permissions", h.requireMasterAdmin(h.handleListAllPermissions))
 	h.mux.HandleFunc("PUT /api/admin/permissions", h.requireMasterAdmin(h.handleSetDefinedPermissions))
 
+	// Admin: Bootstrap
+	h.mux.HandleFunc("POST /api/admin/bootstrap", h.requireMasterAdmin(h.handleBootstrap))
+
 	// Admin: Password Policy & Account Unlock
 	h.mux.HandleFunc("GET /api/admin/password-policy", h.requireMasterAdmin(h.handleGetPasswordPolicy))
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/unlock", h.requireMasterAdmin(h.handleUnlockAccount))

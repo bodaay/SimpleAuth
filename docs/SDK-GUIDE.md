@@ -716,56 +716,54 @@ Do not allow the user to access protected resources until they have changed thei
 
 ## Bootstrap Pattern (Recommended for Integrators)
 
-Whether you embed SimpleAuth as a library or run it standalone, your application should **bootstrap** the auth state on every startup. This ensures:
+Whether you embed SimpleAuth as a library or run it standalone, your application should **bootstrap** the auth state on every startup using `POST /api/admin/bootstrap`. This single idempotent call handles everything in one request. This ensures:
 
 - **Roles and permissions your app needs are always present** -- even on first deploy or after a database reset
 - **A root admin user always exists** with a password controlled by your config/environment
 - **If anyone gets locked out**, a restart resets the root password to whatever's in the config
 - **Config is the single source of truth** -- no manual setup, no forgotten passwords
 
-### The pattern
+### The endpoint
 
-On every startup, after SimpleAuth is ready:
+`POST /api/admin/bootstrap` accepts permissions, role-permission mappings, and a users array -- all optional. It processes them in order: permissions first, then roles, then users. Each user is resolved by `username` via identity mapping, created if missing, and updated as specified. Set `force_password: true` on a user to always reset their password from config (even if the user already exists).
 
-1. **Define permissions** -- `PUT /api/admin/permissions` with the full list your app uses
-2. **Define roles** -- `PUT /api/admin/role-permissions` with role-to-permission mappings
-3. **Ensure root user exists** -- `POST /api/admin/users` (create if missing)
-4. **Always reset root password** -- `PUT /api/admin/users/{guid}/password` with password from env/config, regardless of current value
-5. **Ensure root has the admin role** -- `PUT /api/admin/users/{guid}/roles`
+See [API Reference](API.md#admin-bootstrap) for the full request/response schema.
 
 ### Go example
 
 ```go
 func bootstrapAuth(adminKey, baseURL, rootPassword string) error {
-    client := &http.Client{}
-    auth := "Bearer " + adminKey
-
-    // 1. Define permissions your app needs
-    put(client, baseURL+"/api/admin/permissions", auth,
-        []string{"posts:read", "posts:write", "users:manage", "admin:access"})
-
-    // 2. Define roles with grouped permissions
-    put(client, baseURL+"/api/admin/role-permissions", auth, map[string][]string{
-        "viewer": {"posts:read"},
-        "editor": {"posts:read", "posts:write"},
-        "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+    body, _ := json.Marshal(map[string]interface{}{
+        "permissions": []string{"posts:read", "posts:write", "users:manage", "admin:access"},
+        "role_permissions": map[string][]string{
+            "viewer": {"posts:read"},
+            "editor": {"posts:read", "posts:write"},
+            "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+        },
+        "users": []map[string]interface{}{
+            {
+                "username":       "root",
+                "password":       rootPassword,
+                "display_name":   "Root Admin",
+                "roles":          []string{"admin"},
+                "force_password": true,
+            },
+        },
     })
 
-    // 3. Ensure root user exists
-    users := listUsers(client, baseURL, auth)
-    rootGUID := findUserByUsername(users, "root")
-    if rootGUID == "" {
-        rootGUID = createUser(client, baseURL, auth, "root", rootPassword)
+    req, _ := http.NewRequest("POST", baseURL+"/api/admin/bootstrap", bytes.NewReader(body))
+    req.Header.Set("Authorization", "Bearer "+adminKey)
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return err
     }
-
-    // 4. ALWAYS reset root password from config
-    put(client, baseURL+"/api/admin/users/"+rootGUID+"/password", auth,
-        map[string]string{"password": rootPassword})
-
-    // 5. Ensure root has admin role
-    put(client, baseURL+"/api/admin/users/"+rootGUID+"/roles", auth,
-        []string{"admin"})
-
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 {
+        b, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("bootstrap failed (%d): %s", resp.StatusCode, b)
+    }
     return nil
 }
 ```
@@ -774,48 +772,44 @@ func bootstrapAuth(adminKey, baseURL, rootPassword string) error {
 
 ```typescript
 async function bootstrapAuth(adminKey: string, baseURL: string, rootPassword: string) {
-  const headers = { 'Authorization': `Bearer ${adminKey}`, 'Content-Type': 'application/json' };
-
-  // 1. Define permissions
-  await fetch(`${baseURL}/api/admin/permissions`, {
-    method: 'PUT', headers, body: JSON.stringify(["posts:read", "posts:write", "admin:access"]),
+  const resp = await fetch(`${baseURL}/api/admin/bootstrap`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${adminKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      permissions: ["posts:read", "posts:write", "users:manage", "admin:access"],
+      role_permissions: {
+        viewer: ["posts:read"],
+        editor: ["posts:read", "posts:write"],
+        admin: ["posts:read", "posts:write", "users:manage", "admin:access"],
+      },
+      users: [
+        {
+          username: "root",
+          password: rootPassword,
+          display_name: "Root Admin",
+          roles: ["admin"],
+          force_password: true,
+        },
+      ],
+    }),
   });
 
-  // 2. Define roles
-  await fetch(`${baseURL}/api/admin/role-permissions`, {
-    method: 'PUT', headers,
-    body: JSON.stringify({ viewer: ["posts:read"], admin: ["posts:read", "posts:write", "admin:access"] }),
-  });
-
-  // 3. Find or create root user
-  const res = await fetch(`${baseURL}/api/admin/users`, { headers });
-  const users = await res.json();
-  let root = users.find((u: any) => u.display_name === "root");
-  if (!root) {
-    const createRes = await fetch(`${baseURL}/api/admin/users`, {
-      method: 'POST', headers, body: JSON.stringify({ username: "root", password: rootPassword, display_name: "root" }),
-    });
-    root = await createRes.json();
+  if (!resp.ok) {
+    throw new Error(`Bootstrap failed (${resp.status}): ${await resp.text()}`);
   }
-
-  // 4. Always reset root password
-  await fetch(`${baseURL}/api/admin/users/${root.guid}/password`, {
-    method: 'PUT', headers, body: JSON.stringify({ password: rootPassword }),
-  });
-
-  // 5. Ensure admin role
-  await fetch(`${baseURL}/api/admin/users/${root.guid}/roles`, {
-    method: 'PUT', headers, body: JSON.stringify(["admin"]),
-  });
+  return resp.json();
 }
 ```
 
 ### Key points
 
-- **Always overwrite the root password** on startup, never "create only if missing". This makes the env/config the authority.
+- **Use `force_password: true`** on users whose password should always match the config. This resets the password on every startup, making the env/config the authority.
 - **Set the root password via environment variable** (e.g. `ROOT_PASSWORD`), never hardcode it.
 - This pattern works identically for embedded and standalone SimpleAuth deployments.
-- The bootstrap calls are idempotent -- safe to run on every restart.
+- The bootstrap call is idempotent -- safe to run on every restart.
 
 ---
 
