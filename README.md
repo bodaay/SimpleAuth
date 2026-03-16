@@ -281,6 +281,58 @@ func main() {
 - Config fields override env vars — unset fields fall through to `AUTH_*` env vars, then defaults
 - Your app communicates with SimpleAuth via its REST API at whatever path you mount it on
 
+### Bootstrap Pattern (Recommended)
+
+When embedding SimpleAuth, your app should **bootstrap** the auth state on every startup: define the roles and permissions your app needs, and ensure a root admin user exists with a password controlled by your config. This way:
+
+- The config/env is always the source of truth for the root password
+- If someone gets locked out, a restart resets the root password
+- Your app's required roles and permissions are always present
+
+```go
+func bootstrapAuth(adminKey, baseURL, rootPassword string) error {
+    client := &http.Client{}
+    auth := "Bearer " + adminKey
+
+    // 1. Define permissions your app needs
+    put(client, baseURL+"/api/admin/permissions", auth,
+        []string{"posts:read", "posts:write", "users:manage", "admin:access"})
+
+    // 2. Define roles with grouped permissions
+    put(client, baseURL+"/api/admin/role-permissions", auth, map[string][]string{
+        "viewer": {"posts:read"},
+        "editor": {"posts:read", "posts:write"},
+        "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+    })
+
+    // 3. Ensure root user exists — create if missing
+    users := listUsers(client, baseURL, auth)
+    rootGUID := findUserByUsername(users, "root")
+    if rootGUID == "" {
+        rootGUID = createUser(client, baseURL, auth, "root", rootPassword)
+    }
+
+    // 4. ALWAYS reset root password from config (even if user already exists)
+    put(client, baseURL+"/api/admin/users/"+rootGUID+"/password", auth,
+        map[string]string{"password": rootPassword})
+
+    // 5. Ensure root has admin role
+    put(client, baseURL+"/api/admin/users/"+rootGUID+"/roles", auth,
+        []string{"admin"})
+
+    return nil
+}
+```
+
+Call `bootstrapAuth()` after `server.New()` on every startup. Set the root password via environment variable (e.g. `ROOT_PASSWORD`) so it never lives in code:
+
+```go
+sa, _ := server.New(cfg, ui.FS())
+bootstrapAuth(cfg.AdminKey, "http://localhost:8080/auth", os.Getenv("ROOT_PASSWORD"))
+```
+
+This pattern works identically when SimpleAuth runs as a standalone server — just call the same admin API endpoints from your app's startup script.
+
 ## Build
 
 ```bash

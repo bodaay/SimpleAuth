@@ -714,6 +714,111 @@ Do not allow the user to access protected resources until they have changed thei
 
 ---
 
+## Bootstrap Pattern (Recommended for Integrators)
+
+Whether you embed SimpleAuth as a library or run it standalone, your application should **bootstrap** the auth state on every startup. This ensures:
+
+- **Roles and permissions your app needs are always present** -- even on first deploy or after a database reset
+- **A root admin user always exists** with a password controlled by your config/environment
+- **If anyone gets locked out**, a restart resets the root password to whatever's in the config
+- **Config is the single source of truth** -- no manual setup, no forgotten passwords
+
+### The pattern
+
+On every startup, after SimpleAuth is ready:
+
+1. **Define permissions** -- `PUT /api/admin/permissions` with the full list your app uses
+2. **Define roles** -- `PUT /api/admin/role-permissions` with role-to-permission mappings
+3. **Ensure root user exists** -- `POST /api/admin/users` (create if missing)
+4. **Always reset root password** -- `PUT /api/admin/users/{guid}/password` with password from env/config, regardless of current value
+5. **Ensure root has the admin role** -- `PUT /api/admin/users/{guid}/roles`
+
+### Go example
+
+```go
+func bootstrapAuth(adminKey, baseURL, rootPassword string) error {
+    client := &http.Client{}
+    auth := "Bearer " + adminKey
+
+    // 1. Define permissions your app needs
+    put(client, baseURL+"/api/admin/permissions", auth,
+        []string{"posts:read", "posts:write", "users:manage", "admin:access"})
+
+    // 2. Define roles with grouped permissions
+    put(client, baseURL+"/api/admin/role-permissions", auth, map[string][]string{
+        "viewer": {"posts:read"},
+        "editor": {"posts:read", "posts:write"},
+        "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+    })
+
+    // 3. Ensure root user exists
+    users := listUsers(client, baseURL, auth)
+    rootGUID := findUserByUsername(users, "root")
+    if rootGUID == "" {
+        rootGUID = createUser(client, baseURL, auth, "root", rootPassword)
+    }
+
+    // 4. ALWAYS reset root password from config
+    put(client, baseURL+"/api/admin/users/"+rootGUID+"/password", auth,
+        map[string]string{"password": rootPassword})
+
+    // 5. Ensure root has admin role
+    put(client, baseURL+"/api/admin/users/"+rootGUID+"/roles", auth,
+        []string{"admin"})
+
+    return nil
+}
+```
+
+### JavaScript/TypeScript example
+
+```typescript
+async function bootstrapAuth(adminKey: string, baseURL: string, rootPassword: string) {
+  const headers = { 'Authorization': `Bearer ${adminKey}`, 'Content-Type': 'application/json' };
+
+  // 1. Define permissions
+  await fetch(`${baseURL}/api/admin/permissions`, {
+    method: 'PUT', headers, body: JSON.stringify(["posts:read", "posts:write", "admin:access"]),
+  });
+
+  // 2. Define roles
+  await fetch(`${baseURL}/api/admin/role-permissions`, {
+    method: 'PUT', headers,
+    body: JSON.stringify({ viewer: ["posts:read"], admin: ["posts:read", "posts:write", "admin:access"] }),
+  });
+
+  // 3. Find or create root user
+  const res = await fetch(`${baseURL}/api/admin/users`, { headers });
+  const users = await res.json();
+  let root = users.find((u: any) => u.display_name === "root");
+  if (!root) {
+    const createRes = await fetch(`${baseURL}/api/admin/users`, {
+      method: 'POST', headers, body: JSON.stringify({ username: "root", password: rootPassword, display_name: "root" }),
+    });
+    root = await createRes.json();
+  }
+
+  // 4. Always reset root password
+  await fetch(`${baseURL}/api/admin/users/${root.guid}/password`, {
+    method: 'PUT', headers, body: JSON.stringify({ password: rootPassword }),
+  });
+
+  // 5. Ensure admin role
+  await fetch(`${baseURL}/api/admin/users/${root.guid}/roles`, {
+    method: 'PUT', headers, body: JSON.stringify(["admin"]),
+  });
+}
+```
+
+### Key points
+
+- **Always overwrite the root password** on startup, never "create only if missing". This makes the env/config the authority.
+- **Set the root password via environment variable** (e.g. `ROOT_PASSWORD`), never hardcode it.
+- This pattern works identically for embedded and standalone SimpleAuth deployments.
+- The bootstrap calls are idempotent -- safe to run on every restart.
+
+---
+
 ## Error Handling
 
 All SDKs throw/return errors with consistent information:
