@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	Version   = "0.2.3"
+	Version   = "0.2.4"
 	BuildTime = "unknown"
 )
 
@@ -42,6 +42,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Config error: %v", err)
+	}
 
 	if cfg.AdminKey == "" {
 		cfg.AdminKey = generateAdminKey()

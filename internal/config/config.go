@@ -106,6 +106,9 @@ type configFile struct {
 // Load reads config with priority: env vars > config file > defaults.
 // Config file is looked up at: ./simpleauth.yaml, /etc/simpleauth/config.yaml,
 // or the path specified by AUTH_CONFIG_FILE env var.
+//
+// Load only populates the config struct — it does not validate or generate
+// certificates. Call Validate() after applying any programmatic overrides.
 func Load() *Config {
 	cfg := &Config{
 		Port:            "9090",
@@ -129,17 +132,25 @@ func Load() *Config {
 	// Env vars override config file values
 	applyEnvOverrides(cfg)
 
+	return cfg
+}
+
+// Validate checks required fields, generates TLS certs if needed, parses
+// trusted proxies, normalizes paths, and auto-generates OIDC credentials.
+// Returns an error instead of calling log.Fatalf, so callers control their
+// own process lifecycle.
+func (cfg *Config) Validate() error {
 	// Ensure data directory exists
 	os.MkdirAll(cfg.DataDir, 0700)
 
 	// Hostname is mandatory
 	if cfg.Hostname == "" {
-		log.Fatalf("hostname is required — set it in config file (hostname:) or AUTH_HOSTNAME env var")
+		return fmt.Errorf("hostname is required — set it in config file (hostname:) or AUTH_HOSTNAME env var")
 	}
 
 	// Validate deployment name: 1-6 letters only
 	if !deploymentNameRe.MatchString(cfg.DeploymentName) {
-		log.Fatalf("deployment_name must be 1-6 letters only (a-z/A-Z), got: %q", cfg.DeploymentName)
+		return fmt.Errorf("deployment_name must be 1-6 letters only (a-z/A-Z), got: %q", cfg.DeploymentName)
 	}
 
 	// Auto-generate TLS cert if not configured and TLS is not disabled
@@ -160,7 +171,7 @@ func Load() *Config {
 		if needRegen {
 			log.Printf("Generating self-signed certificate for %s...", cfg.Hostname)
 			if err := generateSelfSignedCert(certPath, keyPath, cfg.Hostname); err != nil {
-				log.Fatalf("Failed to generate self-signed certificate: %v", err)
+				return fmt.Errorf("failed to generate self-signed certificate: %w", err)
 			}
 			log.Printf("Self-signed certificate saved to %s", certPath)
 		}
@@ -216,7 +227,7 @@ func Load() *Config {
 		log.Printf("No client_secret configured — generated: %s", cfg.ClientSecret)
 	}
 
-	return cfg
+	return nil
 }
 
 // WriteDefaultConfig writes a default config file to the given path.
