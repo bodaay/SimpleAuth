@@ -68,6 +68,8 @@ type Config struct {
 	RedirectURI string
 	// BasePath prefix if mounted under a subpath (e.g. "/auth").
 	BasePath string
+	// TLSDisabled disables TLS cert generation — use when the embedding app handles TLS.
+	TLSDisabled bool
 
 	// Password policy
 	PasswordMinLength        int
@@ -96,8 +98,13 @@ func New(cfg Config, uiFS fs.FS) (*Server, error) {
 	// Load base config from env/file (same as standalone)
 	base := config.Load()
 
-	// Override with any explicitly set fields
+	// Override BEFORE validation so programmatic config takes priority
 	applyOverrides(base, &cfg)
+
+	// Validate after overrides are applied
+	if err := base.Validate(); err != nil {
+		return nil, fmt.Errorf("simpleauth: %w", err)
+	}
 
 	if base.AdminKey == "" {
 		base.AdminKey = generateKey()
@@ -179,6 +186,9 @@ func applyOverrides(base *config.Config, cfg *Config) {
 	}
 	if cfg.BasePath != "" {
 		base.BasePath = cfg.BasePath
+	}
+	if cfg.TLSDisabled {
+		base.TLSDisabled = true
 	}
 	if cfg.PasswordMinLength != 0 {
 		base.PasswordMinLength = cfg.PasswordMinLength
