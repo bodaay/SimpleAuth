@@ -999,6 +999,109 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 ---
 
+## Admin: Bootstrap
+
+### `POST /api/admin/bootstrap`
+
+**Auth:** Admin Key
+
+Idempotent endpoint for app startup. Defines permissions, roles, and ensures users exist with correct credentials. Safe to call on every boot -- designed for the "config is the source of truth" pattern.
+
+All fields are optional. Only include what you need.
+
+**Request:**
+
+```json
+{
+  "permissions": ["posts:read", "posts:write", "users:manage", "admin:access"],
+  "role_permissions": {
+    "viewer": ["posts:read"],
+    "editor": ["posts:read", "posts:write"],
+    "admin": ["posts:read", "posts:write", "users:manage", "admin:access"]
+  },
+  "users": [
+    {
+      "username": "root",
+      "password": "from-env-var",
+      "display_name": "Root Admin",
+      "email": "root@example.com",
+      "roles": ["admin"],
+      "permissions": ["admin:access"],
+      "force_password": true
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `permissions` | string[] | Master permissions list. Replaces the permissions registry (same as `PUT /api/admin/permissions`) |
+| `role_permissions` | object | Role-to-permissions mapping. Keys are role names, values are permission arrays (same as `PUT /api/admin/role-permissions`) |
+| `users` | array | Users to ensure exist. See user fields below |
+
+**User fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `username` | string | **Required.** Local username. Used to look up the user via `local` identity mapping |
+| `password` | string | Password to set. On new users, always set. On existing users, only set if `force_password` is `true` |
+| `display_name` | string | Display name. Set on create; updated on existing users if provided |
+| `email` | string | Email address. Set on create; updated on existing users if provided |
+| `roles` | string[] | Roles to assign. Must be defined in role registry first (via `permissions` + `role_permissions` in the same request, or previously) |
+| `permissions` | string[] | Direct permissions to assign. Must be defined in permissions registry first |
+| `force_password` | boolean | If `true`, always reset the password (even if user already exists). If `false` or omitted, password is only set on newly created users |
+
+**User resolution:** Each user is looked up by `username` via the `local` identity mapping. If no mapping exists, a new user is created with a `local` identity mapping.
+
+**Processing order:** Permissions are defined first, then role-permissions, then users. This means you can define roles and permissions in the same request that assigns them to users.
+
+```bash
+curl -k -X POST \
+  https://localhost:8080/api/admin/bootstrap \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "permissions": ["posts:read", "posts:write", "admin:access"],
+    "role_permissions": {
+      "viewer": ["posts:read"],
+      "admin": ["posts:read", "posts:write", "admin:access"]
+    },
+    "users": [
+      {
+        "username": "root",
+        "password": "'"$ROOT_PASSWORD"'",
+        "display_name": "Root Admin",
+        "roles": ["admin"],
+        "force_password": true
+      }
+    ]
+  }'
+```
+
+**Response (200):**
+
+```json
+{
+  "users": [
+    {
+      "username": "root",
+      "guid": "550e8400-e29b-41d4-a716-446655440000",
+      "created": false
+    }
+  ],
+  "permissions_count": 3,
+  "role_permissions_count": 2
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `users` | array | One entry per user in the request. `created` is `true` if the user was newly created, `false` if it already existed |
+| `permissions_count` | integer | Number of permissions defined (only present if `permissions` was provided) |
+| `role_permissions_count` | integer | Number of roles defined (only present if `role_permissions` was provided) |
+
+---
+
 ## Admin: LDAP Configuration
 
 SimpleAuth supports a single LDAP/Active Directory configuration. All LDAP endpoints are under `/api/admin/ldap` (no provider IDs).

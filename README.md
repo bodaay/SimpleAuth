@@ -283,7 +283,7 @@ func main() {
 
 ### Bootstrap Pattern (Recommended)
 
-When embedding SimpleAuth, your app should **bootstrap** the auth state on every startup: define the roles and permissions your app needs, and ensure a root admin user exists with a password controlled by your config. This way:
+When embedding SimpleAuth, your app should **bootstrap** the auth state on every startup using `POST /api/admin/bootstrap`. This single idempotent call defines the roles and permissions your app needs and ensures a root admin user exists with a password controlled by your config. This way:
 
 - The config/env is always the source of truth for the root password
 - If someone gets locked out, a restart resets the root password
@@ -291,35 +291,37 @@ When embedding SimpleAuth, your app should **bootstrap** the auth state on every
 
 ```go
 func bootstrapAuth(adminKey, baseURL, rootPassword string) error {
-    client := &http.Client{}
-    auth := "Bearer " + adminKey
-
-    // 1. Define permissions your app needs
-    put(client, baseURL+"/api/admin/permissions", auth,
-        []string{"posts:read", "posts:write", "users:manage", "admin:access"})
-
-    // 2. Define roles with grouped permissions
-    put(client, baseURL+"/api/admin/role-permissions", auth, map[string][]string{
-        "viewer": {"posts:read"},
-        "editor": {"posts:read", "posts:write"},
-        "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+    body, _ := json.Marshal(map[string]interface{}{
+        "permissions": []string{"posts:read", "posts:write", "users:manage", "admin:access"},
+        "role_permissions": map[string][]string{
+            "viewer": {"posts:read"},
+            "editor": {"posts:read", "posts:write"},
+            "admin":  {"posts:read", "posts:write", "users:manage", "admin:access"},
+        },
+        "users": []map[string]interface{}{
+            {
+                "username":       "root",
+                "password":       rootPassword,
+                "display_name":   "Root Admin",
+                "roles":          []string{"admin"},
+                "force_password": true,
+            },
+        },
     })
 
-    // 3. Ensure root user exists — create if missing
-    users := listUsers(client, baseURL, auth)
-    rootGUID := findUserByUsername(users, "root")
-    if rootGUID == "" {
-        rootGUID = createUser(client, baseURL, auth, "root", rootPassword)
+    req, _ := http.NewRequest("POST", baseURL+"/api/admin/bootstrap", bytes.NewReader(body))
+    req.Header.Set("Authorization", "Bearer "+adminKey)
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return err
     }
-
-    // 4. ALWAYS reset root password from config (even if user already exists)
-    put(client, baseURL+"/api/admin/users/"+rootGUID+"/password", auth,
-        map[string]string{"password": rootPassword})
-
-    // 5. Ensure root has admin role
-    put(client, baseURL+"/api/admin/users/"+rootGUID+"/roles", auth,
-        []string{"admin"})
-
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 {
+        b, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("bootstrap failed (%d): %s", resp.StatusCode, b)
+    }
     return nil
 }
 ```
@@ -331,7 +333,7 @@ sa, _ := server.New(cfg, ui.FS())
 bootstrapAuth(cfg.AdminKey, "http://localhost:8080/auth", os.Getenv("ROOT_PASSWORD"))
 ```
 
-This pattern works identically when SimpleAuth runs as a standalone server — just call the same admin API endpoints from your app's startup script.
+This pattern works identically when SimpleAuth runs as a standalone server -- just call the same endpoint from your app's startup script.
 
 ## Build
 
@@ -483,6 +485,7 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 
 | Category | Endpoints |
 |----------|-----------|
+| **Bootstrap** | `POST /api/admin/bootstrap` -- idempotent startup: define permissions, roles, ensure users exist |
 | **Users** | CRUD `/api/admin/users`, merge/unmerge, password, disable, sessions |
 | **Roles** | `GET/PUT /api/admin/users/{guid}/roles`, `GET/PUT /api/admin/users/{guid}/permissions` |
 | **Default Roles** | `GET/PUT /api/admin/defaults/roles` |
