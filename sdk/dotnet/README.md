@@ -153,7 +153,7 @@ var info = await client.UserInfoAsync(tokens.AccessToken);
 
 ## Admin Operations
 
-Admin operations require `ClientSecret`. The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
+Admin operations require the admin key. The key is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
 
 ```csharp
 // Roles
@@ -196,9 +196,9 @@ var client = new SimpleAuthClient(new SimpleAuthOptions
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `Url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
-| `ClientId`     | `string` | No       | `""`            | OIDC client ID (for auth code flows)     |
-| `ClientSecret` | `string` | No       | `""`            | OIDC client secret for server-side ops   |
-| `Realm`        | `string` | No       | `"simpleauth"`  | OIDC realm name                          |
+| `ClientId`     | `string` | No       | `""`            | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
+| `ClientSecret` | `string` | No       | `""`            | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
+| `Realm`        | `string` | No       | `"simpleauth"`  | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. |
 | `ValidateSsl`  | `bool`   | No       | `true`          | Whether to validate SSL certificates     |
 
 ## Error Handling

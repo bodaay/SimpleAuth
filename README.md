@@ -11,7 +11,7 @@
 
 **SimpleAuth** is a single-instance identity server that replaces Keycloak, ADFS, and custom LDAP code with a single Go binary. It connects to your Active Directory, handles Kerberos/SPNEGO for transparent Windows SSO, provides a clean REST API, and issues RS256 JWTs -- all with zero external dependencies and an embedded admin UI.
 
-Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. OIDC client configuration (client ID, client secret, redirect URI) is set at the instance level via environment variables.
+Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. Since SimpleAuth is single-app, single-instance, OIDC client credentials (`client_id`, `client_secret`) are deprecated and not validated. They are accepted for backward compatibility but will be removed in v1.0.
 
 Every user gets a stable GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
 
@@ -34,12 +34,12 @@ Every user gets a stable GUID. AD is just another identity provider. Users are a
 ```bash
 docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_HOSTNAME=auth.corp.local \
-  -e AUTH_CLIENT_ID=my-app \
-  -e AUTH_CLIENT_SECRET=changeme \
   -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
 ```
+
+> **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated. They are accepted for backward compatibility but not validated. They will be removed in v1.0.
 
 ### Option 2: Binary
 
@@ -358,8 +358,6 @@ docker build -t simpleauth .
 docker run -d -p 9090:9090 -p 80:80 \
   -e AUTH_ADMIN_KEY=changeme \
   -e AUTH_HOSTNAME=auth.corp.local \
-  -e AUTH_CLIENT_ID=my-app \
-  -e AUTH_CLIENT_SECRET=supersecret \
   -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
   simpleauth
@@ -392,8 +390,8 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_HTTP_PORT` | `80` | HTTP redirect port (empty = disabled) |
 | `AUTH_DATA_DIR` | `./data` | Data directory for DB, certs, keytabs |
 | `AUTH_ADMIN_KEY` | auto-generated | Bootstrap admin API key |
-| `AUTH_CLIENT_ID` | | OIDC client ID for this instance |
-| `AUTH_CLIENT_SECRET` | | OIDC client secret for this instance |
+| `AUTH_CLIENT_ID` | | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
+| `AUTH_CLIENT_SECRET` | | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
 | `AUTH_REDIRECT_URI` | | Allowed OIDC redirect URI (comma-separated) |
 | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only; for service account naming) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |

@@ -15,8 +15,8 @@ import { SimpleAuth } from '@simpleauth/js';
 
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  clientId: 'my-client',       // optional — for OIDC flows
-  clientSecret: 'my-secret',   // optional — only needed for server-side operations
+  clientId: 'my-client',       // deprecated — accepted but not validated, will be removed in v1.0
+  clientSecret: 'my-secret',   // deprecated — accepted but not validated, will be removed in v1.0
 });
 ```
 
@@ -160,7 +160,7 @@ app.get('/api/admin',
 
 ## Admin Operations
 
-Admin operations require `clientSecret`. The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
+Admin operations require the admin key. The key is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API.
 
 ### Get User
 
@@ -214,9 +214,9 @@ try {
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
-| `clientId`     | `string` | No       | `''`            | OIDC client ID (for auth code flows)     |
-| `clientSecret` | `string` | No       | --              | OIDC client secret for server-side ops   |
-| `realm`        | `string` | No       | `'simpleauth'`  | OIDC realm name                          |
+| `clientId`     | `string` | No       | `''`            | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
+| `clientSecret` | `string` | No       | --              | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
+| `realm`        | `string` | No       | `'simpleauth'`  | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. |
 
 ## Browser Usage
 

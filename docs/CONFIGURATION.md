@@ -39,8 +39,8 @@ SimpleAuth looks for a config file in this order:
 | `http_port` | `AUTH_HTTP_PORT` | `80` | HTTP port for automatic redirect to HTTPS. Set to `""` to disable. |
 | `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the BoltDB database, TLS certificates, and keytabs. |
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
-| `client_id` | `AUTH_CLIENT_ID` | (none) | OIDC client ID for this instance. Used in authorization code flow, token endpoint, and introspection. |
-| `client_secret` | `AUTH_CLIENT_SECRET` | (none) | OIDC client secret for this instance. |
+| `client_id` | `AUTH_CLIENT_ID` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
+| `client_secret` | `AUTH_CLIENT_SECRET` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
 | `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (string). For backwards compatibility, a comma-separated list is accepted but only the first entry is used. |
 | `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
 | `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
@@ -89,9 +89,9 @@ data_dir: "/var/lib/simpleauth"
 # Master admin API key (generate one: openssl rand -hex 16)
 admin_key: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
-# OIDC client settings for this instance
-client_id: "my-web-app"
-client_secret: "my-client-secret"
+# OIDC client settings (deprecated: client_id and client_secret are accepted but not validated)
+# client_id: "my-web-app"       # optional, deprecated -- will be removed in v1.0
+# client_secret: "my-client-secret"  # optional, deprecated -- will be removed in v1.0
 redirect_uri: "https://myapp.example.com/callback"
 
 # Deployment name for multi-instance deployments (max 6 chars, letters only)
@@ -148,10 +148,9 @@ docker run -d \
   -e AUTH_ADMIN_KEY="your-secret-admin-key" \
   -e AUTH_HOSTNAME="auth.corp.local" \
   -e AUTH_JWT_ISSUER="simpleauth" \
-  -e AUTH_CLIENT_ID="my-web-app" \
-  -e AUTH_CLIENT_SECRET="my-client-secret" \
   -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   -e AUTH_CORS_ORIGINS="https://app.corp.local" \
+  # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
   simpleauth
 ```
 
@@ -182,8 +181,7 @@ services:
       AUTH_HOSTNAME: "auth.corp.local"
       AUTH_JWT_ISSUER: "simpleauth"
       AUTH_JWT_ACCESS_TTL: "4h"
-      AUTH_CLIENT_ID: "my-web-app"
-      AUTH_CLIENT_SECRET: "my-client-secret"
+      # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
       AUTH_REDIRECT_URI: "https://myapp.example.com/callback"
       AUTH_CORS_ORIGINS: "*"
     restart: unless-stopped
@@ -230,10 +228,10 @@ openssl rand -hex 16
 
 ### `client_id` / `client_secret` / `redirect_uri`
 
-These configure the OIDC client for this SimpleAuth instance. One instance serves one application.
+> **Deprecated:** `client_id` and `client_secret` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value. They will be removed in v1.0.
 
-- `client_id` is the identifier your app uses in OIDC flows (authorization code, token requests, introspection)
-- `client_secret` is the shared secret used to authenticate your app to SimpleAuth
+- `client_id` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
+- `client_secret` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
 - `redirect_uri` is the allowed redirect URI for the authorization code flow. For backwards compatibility, a comma-separated list is accepted but only the first entry (index 0) is used.
 
 ### `jwt_issuer`
