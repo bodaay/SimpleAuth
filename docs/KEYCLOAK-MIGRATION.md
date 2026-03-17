@@ -1,5 +1,7 @@
 # Migrating from Keycloak to SimpleAuth
 
+> **Deprecation notice:** The Keycloak-compatible OIDC layer (`/realms/...` endpoints) is deprecated and will be removed in v1.0. We recommend migrating to the direct `/api/auth/*` endpoints. `client_id`, `client_secret`, and `realm` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
+
 You're running Keycloak. It works, but it's a lot of infrastructure for what you actually need: authenticate users against AD and issue JWTs. This guide gets you migrated.
 
 ---
@@ -33,9 +35,9 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Keycloak | SimpleAuth | Notes |
 |---|---|---|
 | Realm | `jwt_issuer` config | SimpleAuth has one "realm" per instance. The OIDC URLs use it the same way: `/realms/{issuer}/...` |
-| Client | Instance-level config | OIDC client settings are configured via `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URI` env vars |
-| Client ID | `AUTH_CLIENT_ID` | Set at instance level |
-| Client Secret | `AUTH_CLIENT_SECRET` | Set at instance level |
+| Client | Instance-level config | `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated (accepted but not validated). Only `AUTH_REDIRECT_URI` is needed. |
+| Client ID | `AUTH_CLIENT_ID` | Deprecated: accepted but not validated. Will be removed in v1.0. |
+| Client Secret | `AUTH_CLIENT_SECRET` | Deprecated: accepted but not validated. Will be removed in v1.0. |
 | User Federation (LDAP) | LDAP Provider | Created via `POST /api/admin/ldap` |
 | Realm Roles | Roles | Set per-user via `PUT /api/admin/users/{guid}/roles` (global per instance) |
 | Client Roles | Also Roles | SimpleAuth doesn't distinguish; roles are global per instance |
@@ -78,13 +80,11 @@ docker run -d \
   -v simpleauth-data:/data \
   -e AUTH_ADMIN_KEY="your-admin-key" \
   -e AUTH_JWT_ISSUER="myrealm" \
-  -e AUTH_CLIENT_ID="my-app" \
-  -e AUTH_CLIENT_SECRET="my-client-secret" \
   -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   simpleauth
 ```
 
-Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. The OIDC client settings are configured at the instance level.
+Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are no longer needed -- they are accepted for backward compatibility but not validated.
 
 ### Step 2: Configure the same LDAP provider
 
@@ -136,7 +136,7 @@ curl -k -X PUT \
 
 ### Step 4: Update your application
 
-This is the core change. You need to update your app's OIDC configuration to point to SimpleAuth. The client ID and secret are now the values you set via `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET`.
+This is the core change. You need to update your app's OIDC configuration to point to SimpleAuth. `client_id` and `client_secret` are accepted in requests for backward compatibility but are not validated -- you can pass any value or omit them entirely.
 
 ---
 
@@ -365,4 +365,4 @@ Keycloak has a "sync all users" feature. SimpleAuth doesn't. Users are created o
 
 ### What about multiple Keycloak clients?
 
-If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and `AUTH_REDIRECT_URI`. They can all point to the same LDAP provider(s).
+If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_REDIRECT_URI`. (`AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and not validated.) They can all point to the same LDAP provider(s).

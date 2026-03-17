@@ -312,11 +312,13 @@ Diagnostic page for testing Kerberos/SPNEGO authentication. Shows the raw negoti
 
 ## OIDC / Keycloak-Compatible Endpoints
 
+> **Deprecated:** The OIDC/Keycloak-compatible endpoints are deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id` and `client_secret` are accepted but not validated.
+
 All OIDC endpoints follow the Keycloak URL pattern: `/realms/{realm}/protocol/openid-connect/...`
 
 The realm defaults to your `jwt_issuer` config value (default: `simpleauth`).
 
-OIDC client settings are configured at the instance level using environment variables: `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URI`.
+OIDC client settings (`AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`) are accepted for backward compatibility but are not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
 
 ### `GET /.well-known/openid-configuration`
 

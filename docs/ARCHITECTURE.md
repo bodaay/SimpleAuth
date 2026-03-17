@@ -233,6 +233,8 @@ If RT-1 is reused:
 
 ## OIDC Compatibility Layer
 
+> **Deprecated:** The OIDC/Keycloak-compatible layer is deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id`, `client_secret`, and `realm` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
+
 SimpleAuth implements a Keycloak-compatible OIDC layer. This means any SDK or library that works with Keycloak works with SimpleAuth.
 
 ### URL Mapping

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -92,43 +91,21 @@ func (h *Handler) handleOIDCDiscovery(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, doc, http.StatusOK)
 }
 
-// authenticateOIDCClient extracts and validates client credentials against instance config.
+// authenticateOIDCClient extracts client credentials from the request.
+// Deprecated: client_id/client_secret validation is skipped — SimpleAuth is single-app.
+// These fields are accepted for backward compatibility but not enforced.
 func (h *Handler) authenticateOIDCClient(r *http.Request) error {
-	var clientID, clientSecret string
-
-	// Method 1: HTTP Basic auth
-	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Basic ") {
-		decoded, err := base64.StdEncoding.DecodeString(authHeader[6:])
-		if err == nil {
-			parts := strings.SplitN(string(decoded), ":", 2)
-			if len(parts) == 2 {
-				clientID, _ = url.QueryUnescape(parts[0])
-				clientSecret, _ = url.QueryUnescape(parts[1])
-			}
-		}
-	}
-
-	// Method 2: Form body
-	if clientID == "" {
-		clientID = r.FormValue("client_id")
-		clientSecret = r.FormValue("client_secret")
-	}
-
-	if clientID == "" {
-		return fmt.Errorf("missing client_id")
-	}
-
-	if clientID != h.cfg.ClientID {
-		return fmt.Errorf("invalid client_id")
-	}
-
-	// client_credentials and token introspection require client_secret
-	// authorization_code may not (public clients), but we require it
-	if clientSecret != "" && clientSecret != h.cfg.ClientSecret {
-		return fmt.Errorf("invalid client_secret")
-	}
-
+	// Accept any client_id/client_secret — no validation in single-app mode.
 	return nil
+}
+
+// oidcClientID returns the effective client_id for OIDC claims (azp, audience).
+// Uses configured ClientID if set, otherwise defaults to "simpleauth".
+func (h *Handler) oidcClientID() string {
+	if h.cfg.ClientID != "" {
+		return h.cfg.ClientID
+	}
+	return "simpleauth"
 }
 
 // handleOIDCAuthorize handles the OAuth2 authorization endpoint.
@@ -144,7 +121,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID := r.FormValue("client_id")
+	_ = r.FormValue("client_id") // accepted for backward compat, not validated
 	redirectURI := r.FormValue("redirect_uri")
 	state := r.FormValue("state")
 	nonce := r.FormValue("nonce")
@@ -152,13 +129,8 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
-	if clientID == "" || username == "" || password == "" {
+	if username == "" || password == "" {
 		h.renderOIDCLoginError(w, r, "Username and password are required")
-		return
-	}
-
-	if clientID != h.cfg.ClientID {
-		http.Error(w, "invalid client_id", http.StatusBadRequest)
 		return
 	}
 
@@ -235,16 +207,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	if clientID == "" {
-		http.Error(w, "client_id required", http.StatusBadRequest)
-		return
-	}
-
-	if clientID != h.cfg.ClientID {
-		http.Error(w, "invalid client_id", http.StatusBadRequest)
-		return
-	}
+	_ = r.URL.Query().Get("client_id") // accepted for backward compat, not validated
 
 	redirectURI := r.URL.Query().Get("redirect_uri")
 	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
@@ -271,7 +234,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, oidcLoginHTML, action, clientID, redirectURI, state, nonce, scope, appName, errorHTML)
+	fmt.Fprintf(w, oidcLoginHTML, action, h.oidcClientID(), redirectURI, state, nonce, scope, appName, errorHTML)
 }
 
 // handleOIDCToken handles the OAuth2 token endpoint.
@@ -394,8 +357,8 @@ func (h *Handler) handleOIDCTokenClientCredentials(w http.ResponseWriter, r *htt
 		Typ:   "Bearer",
 		Scope: r.FormValue("scope"),
 	}
-	claims.Subject = h.cfg.ClientID
-	claims.Audience = []string{h.cfg.ClientID}
+	claims.Subject = h.oidcClientID()
+	claims.Audience = []string{h.oidcClientID()}
 
 	accessToken, err := h.jwt.IssueAccessTokenWithIssuer(claims, h.cfg.AccessTTL, issuer)
 	if err != nil {
@@ -403,8 +366,8 @@ func (h *Handler) handleOIDCTokenClientCredentials(w http.ResponseWriter, r *htt
 		return
 	}
 
-	log.Printf("[oidc] Client credentials grant client_id=%s ip=%s", h.cfg.ClientID, getClientIP(r))
-	h.audit("oidc_token", h.cfg.ClientID, getClientIP(r), map[string]interface{}{
+	log.Printf("[oidc] Client credentials grant client_id=%s ip=%s", h.oidcClientID(), getClientIP(r))
+	h.audit("oidc_token", h.oidcClientID(), getClientIP(r), map[string]interface{}{
 		"grant_type": "client_credentials",
 	})
 
@@ -534,7 +497,7 @@ func (h *Handler) issueOIDCTokens(w http.ResponseWriter, r *http.Request, user *
 		Nonce:            nonce,
 		AtHash:           auth.ComputeAtHash(accessToken),
 		Typ:              "ID",
-		Azp:              h.cfg.ClientID,
+		Azp:              h.oidcClientID(),
 	}
 	if user.Email == "" {
 		idClaims.PreferredUsername = user.DisplayName
@@ -584,15 +547,15 @@ func (h *Handler) buildOIDCAccessClaims(user *store.User, roles, perms, groups [
 		Groups:           groups,
 		PreferredUsername: preferredUsername,
 		Typ:              "Bearer",
-		Azp:              h.cfg.ClientID,
+		Azp:              h.oidcClientID(),
 		Scope:            scope,
 		RealmAccess:      &auth.RealmAccess{Roles: roles},
 		ResourceAccess: map[string]*auth.ResourceAccess{
-			h.cfg.ClientID: {Roles: roles},
+			h.oidcClientID(): {Roles: roles},
 		},
 	}
 	claims.Subject = user.GUID
-	claims.Audience = []string{h.cfg.ClientID}
+	claims.Audience = []string{h.oidcClientID()}
 
 	if scope == "" {
 		claims.Scope = "openid profile email"
@@ -690,7 +653,7 @@ func (h *Handler) handleOIDCIntrospect(w http.ResponseWriter, r *http.Request) {
 		"exp":        claims.ExpiresAt.Unix(),
 		"iat":        claims.IssuedAt.Unix(),
 		"token_type": "Bearer",
-		"client_id":  h.cfg.ClientID,
+		"client_id":  h.oidcClientID(),
 		"scope":      claims.Scope,
 	}
 	if claims.PreferredUsername != "" {

@@ -37,7 +37,7 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://auth.corp.local:8080',
-  realm: 'simpleauth',        // optional, default 'simpleauth'
+  realm: 'simpleauth',        // deprecated — accepted but not validated, will be removed in v1.0
 });
 ```
 
@@ -172,7 +172,7 @@ import simpleauth "simpleauth/sdk/go"
 
 client := simpleauth.New(simpleauth.Options{
     URL:                "https://auth.corp.local:8080",
-    Realm:              "simpleauth",    // optional
+    Realm:              "simpleauth",    // deprecated — accepted but not validated, will be removed in v1.0
     InsecureSkipVerify: true,            // for self-signed certs
 })
 ```
@@ -299,7 +299,7 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.corp.local:8080",
-    realm="simpleauth",     # optional
+    realm="simpleauth",     # deprecated — accepted but not validated, will be removed in v1.0
     verify_ssl=False,        # for self-signed certs
 )
 ```
@@ -404,7 +404,7 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.corp.local:8080"
-SIMPLEAUTH_REALM = "simpleauth"
+SIMPLEAUTH_REALM = "simpleauth"  # deprecated — accepted but not validated, will be removed in v1.0
 SIMPLEAUTH_VERIFY_SSL = True
 
 # views.py
@@ -468,7 +468,7 @@ using SimpleAuth;
 var options = new SimpleAuthOptions
 {
     Url = "https://auth.corp.local:8080",
-    Realm = "simpleauth",
+    Realm = "simpleauth",    // deprecated — accepted but not validated, will be removed in v1.0
     ValidateSsl = false,     // for self-signed certs
 };
 

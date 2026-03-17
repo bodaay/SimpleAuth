@@ -17,11 +17,11 @@ docker run -d \
   --name simpleauth \
   -p 8080:8080 \
   -v simpleauth-data:/data \
-  -e AUTH_CLIENT_ID="my-web-app" \
-  -e AUTH_CLIENT_SECRET="my-secret" \
   -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   simpleauth
 ```
+
+> **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and optional. They are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value. They will be removed in v1.0.
 
 That's it. SimpleAuth is running at `https://localhost:8080` with a self-signed TLS certificate.
 
@@ -86,8 +86,8 @@ curl -k -X POST https://localhost:8080/api/admin/ldap/test \
 
 OIDC settings are configured at the instance level using environment variables or the config file:
 
-- `AUTH_CLIENT_ID` -- The client ID for OIDC flows (your app's identifier)
-- `AUTH_CLIENT_SECRET` -- The client secret for OIDC flows
+- `AUTH_CLIENT_ID` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
+- `AUTH_CLIENT_SECRET` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
 - `AUTH_REDIRECT_URI` -- The allowed redirect URI
 
 These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) for details.
@@ -107,12 +107,13 @@ curl -k -X POST https://localhost:8080/api/auth/login \
   }'
 ```
 
-### Option B: OIDC password grant (standard OAuth2)
+### Option B: OIDC password grant (standard OAuth2, deprecated)
+
+> **Deprecated:** The OIDC endpoints are deprecated and will be removed in v1.0. Use Option A (direct API) instead. `client_id` and `client_secret` are accepted but not validated.
 
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "my-web-app:my-secret" \
   -d "grant_type=password&username=jsmith&password=their-ad-password&scope=openid"
 ```
 

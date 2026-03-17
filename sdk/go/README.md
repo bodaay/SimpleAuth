@@ -142,7 +142,7 @@ Unauthenticated requests receive **401 Unauthorized**. Requests that lack the re
 
 ## Admin operations
 
-Manage user roles and permissions via the SimpleAuth admin API. Admin operations require `ClientSecret` -- it is sent as a Bearer token (not Basic auth) to authenticate with the admin API.
+Manage user roles and permissions via the SimpleAuth admin API. Admin operations require the admin key -- it is sent as a Bearer token (not Basic auth) to authenticate with the admin API.
 
 ```go
 roles, err := client.GetUserRoles(ctx, userGUID)
@@ -198,7 +198,7 @@ Config fields override env vars. Unset fields fall through to `AUTH_*` env vars,
 | Field | Description | Default |
 |---|---|---|
 | `URL` | SimpleAuth server base URL | *(required)* |
-| `ClientID` | OIDC client ID (for auth code / client credentials flows) | `""` |
-| `ClientSecret` | OIDC client secret | `""` |
-| `Realm` | OIDC realm name | `"simpleauth"` |
+| `ClientID` | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. | `""` |
+| `ClientSecret` | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. | `""` |
+| `Realm` | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. | `"simpleauth"` |
 | `InsecureSkipVerify` | Skip TLS certificate verification | `false` |

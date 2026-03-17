@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/mhalsuwaidi/.docker/run/**)",
+      "Bash(pkill -9 -f \"Docker Desktop\")",
+      "Bash(pkill -9 -f \"com.docker\")",
+      "Bash(./docker-build.sh)"
+    ]
+  }
+}

@@ -20,9 +20,9 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.example.com",
-    client_id="my-client",       # optional, for OIDC flows
-    client_secret="my-secret",   # optional
-    realm="simpleauth",          # default
+    client_id="my-client",       # deprecated — accepted but not validated, will be removed in v1.0
+    client_secret="my-secret",   # deprecated — accepted but not validated, will be removed in v1.0
+    realm="simpleauth",          # deprecated — accepted but not validated, will be removed in v1.0
 )
 ```
 
@@ -110,7 +110,7 @@ info = auth.userinfo(access_token=tokens.access_token)
 
 ## Admin Operations
 
-Manage user roles and permissions (requires `client_secret`). The secret is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API:
+Manage user roles and permissions (requires admin key). The key is sent as a Bearer token (not Basic auth) to the SimpleAuth admin API:
 
 ```python
 # Roles
@@ -186,9 +186,9 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-SIMPLEAUTH_CLIENT_ID = ""           # optional, for OIDC flows
-SIMPLEAUTH_CLIENT_SECRET = ""       # optional
-SIMPLEAUTH_REALM = "simpleauth"     # optional
+SIMPLEAUTH_CLIENT_ID = ""           # deprecated — accepted but not validated, will be removed in v1.0
+SIMPLEAUTH_CLIENT_SECRET = ""       # deprecated — accepted but not validated, will be removed in v1.0
+SIMPLEAUTH_REALM = "simpleauth"     # deprecated — accepted but not validated, will be removed in v1.0
 SIMPLEAUTH_VERIFY_SSL = True        # optional
 ```
 
