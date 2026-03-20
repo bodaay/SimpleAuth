@@ -175,23 +175,28 @@ import (
     "simpleauth/ui"
 )
 
-// Start embedded SimpleAuth
-sa, err := server.New(server.Config{
-    Hostname: "myapp.example.com",
-    AdminKey: "my-secret-key",
-    DataDir:  "./auth-data",
-    BasePath: "/auth",
-}, ui.FS()) // pass nil instead of ui.FS() for API-only (no admin UI)
+// Programmatic config — full control, no env vars read
+cfg := server.Defaults()
+cfg.Hostname = "myapp.example.com"
+cfg.AdminKey = "my-secret-key"
+cfg.DataDir = "./auth-data"
+cfg.BasePath = "/auth"
+cfg.TLSDisabled = true
+
+sa, err := server.New(cfg, ui.FS()) // pass nil instead of ui.FS() for API-only
 if err != nil {
     log.Fatal(err)
 }
 defer sa.Close()
 
+// Or load from env vars / config file (same as standalone binary):
+// sa, err := server.New(nil, ui.FS())
+
 // Mount on your router
 mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
 ```
 
-Config fields override env vars. Unset fields fall through to `AUTH_*` env vars, then defaults. Your app talks to SimpleAuth via its REST API — same endpoints, same SDK client, just running in-process.
+`server.Config` is the same struct used by the standalone binary — every field is available. `server.Defaults()` gives you sensible defaults, modify only what you need. Pass `nil` to `New()` to load from env vars instead.
 
 ## Configuration reference
 
