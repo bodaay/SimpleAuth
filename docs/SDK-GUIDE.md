@@ -716,7 +716,34 @@ Do not allow the user to access protected resources until they have changed thei
 
 ## Bootstrap Pattern (Recommended for Integrators)
 
-Whether you embed SimpleAuth as a library or run it standalone, your application should **bootstrap** the auth state on every startup using `POST /api/admin/bootstrap`. This single idempotent call handles everything in one request. This ensures:
+Whether you embed SimpleAuth as a Go library or run it as a standalone binary, your application should **bootstrap** the auth state on every startup using `POST /api/admin/bootstrap`. This single idempotent call handles everything in one request.
+
+#### Embedding SimpleAuth as a Go library
+
+SimpleAuth can be embedded directly into your Go application using the `server` package. There are two modes:
+
+**Programmatic config (no env vars read):**
+
+```go
+import "simpleauth/server"
+
+cfg := server.Defaults()          // sensible defaults for every field
+cfg.Port = "9090"
+cfg.AdminKey = "my-secret-key"
+cfg.DataDir = "/var/lib/myapp/auth"
+
+srv, err := server.New(cfg, nil)  // pass *Config — env vars are NOT read
+```
+
+**Env-var / config-file mode (same as standalone binary):**
+
+```go
+srv, err := server.New(nil, nil)  // pass nil — loads from env vars / config file
+```
+
+`server.Config` is a type alias for `config.Config`, so every configuration field is available. When you pass a `*Config`, it is used as-is; zero-value fields get sensible defaults. When you pass `nil`, the standard env-var and config-file loading runs, identical to the standalone binary.
+
+The bootstrap pattern below ensures:
 
 - **Roles and permissions your app needs are always present** -- even on first deploy or after a database reset
 - **A root admin user always exists** with a password controlled by your config/environment
@@ -808,7 +835,7 @@ async function bootstrapAuth(adminKey: string, baseURL: string, rootPassword: st
 
 - **Use `force_password: true`** on users whose password should always match the config. This resets the password on every startup, making the env/config the authority.
 - **Set the root password via environment variable** (e.g. `ROOT_PASSWORD`), never hardcode it.
-- This pattern works identically for embedded and standalone SimpleAuth deployments.
+- This pattern works identically whether SimpleAuth is embedded as a library (`server.New(cfg, nil)`) or run as a standalone binary.
 - The bootstrap call is idempotent -- safe to run on every restart.
 
 ---
