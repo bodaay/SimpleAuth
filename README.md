@@ -252,16 +252,22 @@ import (
 )
 
 func main() {
-    sa, err := server.New(server.Config{
-        Hostname: "myapp.example.com",
-        AdminKey: "my-secret-key",
-        DataDir:  "./auth-data",
-        BasePath: "/auth",
-    }, ui.FS())
+    // Option 1: Programmatic config — full control, no env vars read
+    cfg := server.Defaults()
+    cfg.Hostname = "myapp.example.com"
+    cfg.AdminKey = "my-secret-key"
+    cfg.DataDir = "./auth-data"
+    cfg.BasePath = "/auth"
+    cfg.TLSDisabled = true // your app handles TLS
+
+    sa, err := server.New(cfg, ui.FS())
     if err != nil {
         log.Fatal(err)
     }
     defer sa.Close()
+
+    // Option 2: Load from env vars / config file (same as standalone binary)
+    // sa, err := server.New(nil, ui.FS())
 
     mux := http.NewServeMux()
     mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
@@ -275,10 +281,12 @@ func main() {
 ```
 
 **How it works:**
-- `server.New()` initializes BoltDB, RSA keys, and all handlers — same as the standalone binary
+- `server.Defaults()` returns a config with sensible defaults — modify only what you need
+- `server.New(cfg, uiFS)` — pass a config for full programmatic control (no env vars read)
+- `server.New(nil, uiFS)` — pass nil to load from `AUTH_*` env vars / config file (same as standalone)
 - `sa.Handler()` returns a standard `http.Handler` you mount on your router
 - `ui.FS()` provides the embedded admin UI; pass `nil` to run without a UI (API only)
-- Config fields override env vars — unset fields fall through to `AUTH_*` env vars, then defaults
+- `server.Config` is the same struct used by the standalone binary — every field is available
 - Your app communicates with SimpleAuth via its REST API at whatever path you mount it on
 
 ### Bootstrap Pattern (Recommended)
