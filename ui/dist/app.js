@@ -600,19 +600,6 @@ function UsersPage() {
       <//>
     `}
 
-    ${modal === 'password' && html`
-      <${Modal} title="Set Password" onClose=${() => setModal(null)}>
-        <div class="form-group">
-          <label class="form-label">New Password</label>
-          <input class="form-input" type="password" value=${form.new_password || ''} onInput=${e => setForm({ ...form, new_password: e.target.value })} placeholder="Minimum 6 characters" />
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${setPassword}>Set Password</button>
-        </div>
-      <//>
-    `}
-
     ${detail && html`
       <${Modal} title="User Detail" onClose=${() => setDetail(null)}>
         <div style="display:grid;grid-template-columns:auto 1fr;gap:var(--sp-2) var(--sp-4);font-size:0.875rem;margin-bottom:var(--sp-4)">
@@ -687,6 +674,20 @@ function UsersPage() {
         </div>
       <//>
     `}
+
+    ${modal === 'password' && html`
+      <${Modal} title="Set Password" onClose=${() => setModal(null)}>
+        <div class="form-group">
+          <label class="form-label">New Password</label>
+          <input class="form-input" type="password" value=${form.new_password || ''} onInput=${e => setForm({ ...form, new_password: e.target.value })} placeholder="Minimum 6 characters" />
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" onClick=${setPassword}>Set Password</button>
+        </div>
+      <//>
+    `}
+
     ${toast && html`<${Toast} ...${toast} />`}
   `;
 }
