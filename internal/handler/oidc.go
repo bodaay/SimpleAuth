@@ -233,8 +233,17 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 		appName = "your application"
 	}
 
+	ssoHTML := ""
+	if h.getKeytabPath() != "" {
+		ssoLink := h.url("/login/sso")
+		if redirectURI != "" {
+			ssoLink += "?redirect_uri=" + url.QueryEscape(redirectURI)
+		}
+		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, oidcLoginHTML, action, h.oidcClientID(), redirectURI, state, nonce, scope, appName, errorHTML)
+	fmt.Fprintf(w, oidcLoginHTML, action, h.oidcClientID(), redirectURI, state, nonce, scope, appName, errorHTML, ssoHTML)
 }
 
 // handleOIDCToken handles the OAuth2 token endpoint.
@@ -757,6 +766,11 @@ input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(
 button{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
 button:hover{background:var(--burgundy-hover)}
 .app-name{font-size:0.75rem;color:var(--muted);text-align:center;margin-top:16px}
+.sso-btn{display:block;width:100%%;padding:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-weight:600;text-align:center;text-decoration:none;font-family:inherit;cursor:pointer}
+.sso-btn:hover{border-color:var(--burgundy);color:var(--burgundy)}
+.divider{display:flex;align-items:center;margin:20px 0;gap:12px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.divider span{color:var(--muted);font-size:0.75rem;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -764,6 +778,7 @@ button:hover{background:var(--burgundy-hover)}
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
   %[8]s
+  %[9]s
   <form method="POST" action="%[1]s">
     <input type="hidden" name="client_id" value="%[2]s">
     <input type="hidden" name="redirect_uri" value="%[3]s">
