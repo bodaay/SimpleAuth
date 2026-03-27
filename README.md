@@ -351,13 +351,13 @@ This pattern works identically when SimpleAuth runs as a standalone server -- ju
 
 ```bash
 # Build for current platform
-go build -o simpleauth .
+go build -ldflags "-X main.Version=$(cat VERSION)" -o simpleauth .
 
 # Cross-compile for Linux
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o simpleauth .
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=$(cat VERSION)" -trimpath -o simpleauth .
 
 # Build for Windows
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o simpleauth.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=$(cat VERSION)" -trimpath -o simpleauth.exe .
 
 # Build for all platforms
 ./build.sh

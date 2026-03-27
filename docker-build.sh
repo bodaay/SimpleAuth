@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-VERSION=$(grep 'Version.*=' main.go | head -1 | sed 's/.*"\(.*\)".*/\1/')
+VERSION=$(cat VERSION)
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 IMAGE_NAME="simpleauth"
 IMAGE_TAG="${IMAGE_NAME}:${VERSION}"
