@@ -394,7 +394,7 @@ OAuth2 Authorization endpoint. Renders the hosted login page for the authorizati
 
 **Query parameters:**
 - `client_id` (required) -- Must match the configured `AUTH_CLIENT_ID`
-- `redirect_uri` -- Where to redirect after login (must match `AUTH_REDIRECT_URI`; supports wildcard prefix matching)
+- `redirect_uri` -- Where to redirect after login (must match one of the allowed redirect URIs configured via `AUTH_REDIRECT_URI` and/or `AUTH_REDIRECT_URIS`; supports wildcard `*` suffix matching)
 - `response_type` -- Must be `code`
 - `state` -- CSRF protection value (passed through)
 - `nonce` -- Replay protection for ID tokens

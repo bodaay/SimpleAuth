@@ -50,7 +50,7 @@ type Config struct {
 	ClientID        string        `yaml:"client_id"`
 	ClientSecret    string        `yaml:"client_secret"`
 	RedirectURI     string        `yaml:"redirect_uri"`
-	RedirectURIs    []string      `yaml:"redirect_uris"` // deprecated, use redirect_uri
+	RedirectURIs    []string      `yaml:"redirect_uris"`
 	DefaultRoles    []string      `yaml:"default_roles"`
 
 	// Password policy
@@ -213,7 +213,20 @@ func (cfg *Config) Validate() error {
 		}
 	}
 
-	// Resolve redirect_uri: prefer redirect_uri, fallback to redirect_uris[0]
+	// Merge redirect_uri into redirect_uris list (deduplicated)
+	if cfg.RedirectURI != "" {
+		found := false
+		for _, u := range cfg.RedirectURIs {
+			if u == cfg.RedirectURI {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.RedirectURIs = append([]string{cfg.RedirectURI}, cfg.RedirectURIs...)
+		}
+	}
+	// Keep RedirectURI set to first entry for backward compat
 	if cfg.RedirectURI == "" && len(cfg.RedirectURIs) > 0 {
 		cfg.RedirectURI = cfg.RedirectURIs[0]
 	}

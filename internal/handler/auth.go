@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"log"
@@ -953,7 +955,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	redirectURI := r.URL.Query().Get("redirect_uri")
 
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -1058,6 +1060,45 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[sso] Login success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
 	h.auditLogin(user, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
 
+	// OIDC flow: issue auth code and redirect with ?code=X&state=Z
+	if r.URL.Query().Get("oidc") == "1" {
+		state := r.URL.Query().Get("state")
+		nonce := r.URL.Query().Get("nonce")
+
+		codeBytes := make([]byte, 32)
+		rand.Read(codeBytes)
+		code := hex.EncodeToString(codeBytes)
+
+		ac := &store.OIDCAuthCode{
+			Code:        code,
+			UserGUID:    user.GUID,
+			RedirectURI: redirectURI,
+			Nonce:       nonce,
+			ExpiresAt:   time.Now().Add(10 * time.Minute),
+			CreatedAt:   time.Now(),
+		}
+		if err := h.store.SaveOIDCAuthCode(ac); err != nil {
+			h.redirectToLoginError(w, r, redirectURI, "Internal error")
+			return
+		}
+
+		target := redirectURI
+		if target == "" && h.cfg.RedirectURI != "" {
+			target = h.cfg.RedirectURI
+		}
+		sep := "?"
+		if strings.Contains(target, "?") {
+			sep = "&"
+		}
+		target += sep + "code=" + url.QueryEscape(code)
+		if state != "" {
+			target += "&state=" + url.QueryEscape(state)
+		}
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+
+	// Direct flow: redirect with tokens in fragment
 	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
 		url.QueryEscape(accessToken),
 		url.QueryEscape(refreshToken),

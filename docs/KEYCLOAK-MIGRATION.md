@@ -35,7 +35,7 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Keycloak | SimpleAuth | Notes |
 |---|---|---|
 | Realm | `jwt_issuer` config | SimpleAuth has one "realm" per instance. The OIDC URLs use it the same way: `/realms/{issuer}/...` |
-| Client | Instance-level config | `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated (accepted but not validated). Only `AUTH_REDIRECT_URI` is needed. |
+| Client | Instance-level config | `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated (accepted but not validated). Use `AUTH_REDIRECT_URI` (single) or `AUTH_REDIRECT_URIS` (multiple, comma-separated) to configure allowed redirect URIs. |
 | Client ID | `AUTH_CLIENT_ID` | Deprecated: accepted but not validated. Will be removed in v1.0. |
 | Client Secret | `AUTH_CLIENT_SECRET` | Deprecated: accepted but not validated. Will be removed in v1.0. |
 | User Federation (LDAP) | LDAP Provider | Created via `POST /api/admin/ldap` |
@@ -365,4 +365,4 @@ Keycloak has a "sync all users" feature. SimpleAuth doesn't. Users are created o
 
 ### What about multiple Keycloak clients?
 
-If you had multiple clients in Keycloak, you'll run one SimpleAuth instance per application. Each instance gets its own `AUTH_REDIRECT_URI`. (`AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and not validated.) They can all point to the same LDAP provider(s).
+If you had multiple clients in Keycloak, you can now use a single SimpleAuth instance for all of them by setting `AUTH_REDIRECT_URIS` to a comma-separated list of all your apps' callback URLs (e.g. `AUTH_REDIRECT_URIS=https://app1.com/callback,https://app2.com/callback`). This keeps users centralized in one place. Alternatively, you can still run separate SimpleAuth instances, each with its own `AUTH_REDIRECT_URI`. (`AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and not validated.) All instances can point to the same LDAP provider(s).

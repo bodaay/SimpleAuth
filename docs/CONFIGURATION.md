@@ -41,7 +41,8 @@ SimpleAuth looks for a config file in this order:
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
 | `client_id` | `AUTH_CLIENT_ID` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
 | `client_secret` | `AUTH_CLIENT_SECRET` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
-| `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (string). For backwards compatibility, a comma-separated list is accepted but only the first entry is used. |
+| `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (single value). Backward compatible. |
+| `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Allowed OIDC redirect URIs (comma-separated list). Use this to allow multiple apps to share one SimpleAuth instance. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged and deduplicated. Wildcard `*` suffix supported (e.g. `https://app.corp.local/*`). If neither is set, any redirect URI is allowed. |
 | `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
 | `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
 | `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime. Go duration format (e.g., `30m`, `8h`, `24h`). |
@@ -93,6 +94,10 @@ admin_key: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 # client_id: "my-web-app"       # optional, deprecated -- will be removed in v1.0
 # client_secret: "my-client-secret"  # optional, deprecated -- will be removed in v1.0
 redirect_uri: "https://myapp.example.com/callback"
+# Multiple redirect URIs for multi-app deployments
+redirect_uris:
+  - "https://app2.example.com/callback"
+  - "https://app3.example.com/*"
 
 # Deployment name for multi-instance deployments (max 6 chars, letters only)
 deployment_name: "prod"
@@ -149,6 +154,7 @@ docker run -d \
   -e AUTH_HOSTNAME="auth.corp.local" \
   -e AUTH_JWT_ISSUER="simpleauth" \
   -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
+  -e AUTH_REDIRECT_URIS="https://app2.example.com/callback,https://app3.example.com/*" \
   -e AUTH_CORS_ORIGINS="https://app.corp.local" \
   # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
   simpleauth
@@ -232,7 +238,18 @@ openssl rand -hex 16
 
 - `client_id` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
 - `client_secret` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
-- `redirect_uri` is the allowed redirect URI for the authorization code flow. For backwards compatibility, a comma-separated list is accepted but only the first entry (index 0) is used.
+- `redirect_uri` sets a single allowed redirect URI for the authorization code flow (backward compatible).
+- `redirect_uris` sets multiple allowed redirect URIs as a comma-separated list (env var) or YAML list (config file). This lets multiple applications on different domains share one SimpleAuth instance.
+- Both can be set simultaneously -- they are merged into one deduplicated allow-list.
+- Wildcard `*` suffix is supported (e.g. `https://app.corp.local/*` matches any path under that origin).
+- If neither is set, any redirect URI is allowed.
+
+**Example (env vars):**
+
+```bash
+AUTH_REDIRECT_URI=https://app1.corp.local/callback
+AUTH_REDIRECT_URIS=https://app2.corp.local/callback,https://app3.corp.local/*
+```
 
 ### `jwt_issuer`
 

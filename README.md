@@ -41,6 +41,8 @@ docker run -d -p 9090:9090 -p 80:80 \
 
 > **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated. They are accepted for backward compatibility but not validated. They will be removed in v1.0.
 
+> **Multiple redirect URIs:** Use `AUTH_REDIRECT_URIS` (plural) to allow multiple redirect URIs, e.g. `AUTH_REDIRECT_URIS=https://app2.corp.local/callback,https://app3.corp.local/*`. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged into one deduplicated list. Wildcard `*` suffix is supported. If neither is set, any redirect URI is allowed.
+
 ### Option 2: Binary
 
 ```bash
@@ -402,7 +404,8 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_ADMIN_KEY` | auto-generated | Bootstrap admin API key |
 | `AUTH_CLIENT_ID` | | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
 | `AUTH_CLIENT_SECRET` | | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
-| `AUTH_REDIRECT_URI` | | Allowed OIDC redirect URI (comma-separated) |
+| `AUTH_REDIRECT_URI` | | Allowed OIDC redirect URI (single value; backward compatible) |
+| `AUTH_REDIRECT_URIS` | | Allowed OIDC redirect URIs (comma-separated list for multiple apps) |
 | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only; for service account naming) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |
 | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime |

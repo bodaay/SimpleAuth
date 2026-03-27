@@ -15,7 +15,7 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	errorMsg := r.URL.Query().Get("error")
 
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -55,7 +55,7 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	}
 
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -123,14 +123,20 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
 }
 
-func isAllowedRedirect(allowed string, uri string) bool {
-	if allowed == "" {
+func isAllowedRedirect(allowedList []string, uri string) bool {
+	if len(allowedList) == 0 {
 		return true // No restrictions configured
 	}
-	if strings.HasSuffix(allowed, "*") {
-		return strings.HasPrefix(uri, allowed[:len(allowed)-1])
+	for _, allowed := range allowedList {
+		if strings.HasSuffix(allowed, "*") {
+			if strings.HasPrefix(uri, allowed[:len(allowed)-1]) {
+				return true
+			}
+		} else if allowed == uri {
+			return true
+		}
 	}
-	return allowed == uri
+	return false
 }
 
 func (h *Handler) redirectToLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {

@@ -134,7 +134,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -210,7 +210,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	_ = r.URL.Query().Get("client_id") // accepted for backward compat, not validated
 
 	redirectURI := r.URL.Query().Get("redirect_uri")
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURI, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -235,9 +235,15 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 
 	ssoHTML := ""
 	if h.getKeytabPath() != "" {
-		ssoLink := h.url("/login/sso")
+		ssoLink := h.url("/login/sso") + "?oidc=1"
 		if redirectURI != "" {
-			ssoLink += "?redirect_uri=" + url.QueryEscape(redirectURI)
+			ssoLink += "&redirect_uri=" + url.QueryEscape(redirectURI)
+		}
+		if state != "" {
+			ssoLink += "&state=" + url.QueryEscape(state)
+		}
+		if nonce != "" {
+			ssoLink += "&nonce=" + url.QueryEscape(nonce)
 		}
 		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
 	}

@@ -88,7 +88,10 @@ OIDC settings are configured at the instance level using environment variables o
 
 - `AUTH_CLIENT_ID` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
 - `AUTH_CLIENT_SECRET` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
-- `AUTH_REDIRECT_URI` -- The allowed redirect URI
+- `AUTH_REDIRECT_URI` -- Allowed redirect URI (single value)
+- `AUTH_REDIRECT_URIS` -- Allowed redirect URIs (comma-separated list, for multiple apps sharing one instance)
+
+Both can be set -- they are merged and deduplicated. Wildcard `*` suffix is supported. If neither is set, any redirect URI is allowed.
 
 These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) for details.
 
