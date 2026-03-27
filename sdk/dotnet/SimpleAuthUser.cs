@@ -49,13 +49,19 @@ public class SimpleAuthOptions
     /// <summary>SimpleAuth server URL (e.g. https://auth.corp.local:9090)</summary>
     public string Url { get; set; } = string.Empty;
 
-    /// <summary>OIDC client ID (optional, for authorization code / client credentials flows)</summary>
+    /// <summary>Admin API key for admin operations (Bearer auth)</summary>
+    public string AdminKey { get; set; } = string.Empty;
+
+    [Obsolete("ClientId is no longer used. SimpleAuth uses direct API endpoints instead of OIDC.")]
+    /// <summary>OIDC client ID (deprecated — no longer used)</summary>
     public string ClientId { get; set; } = string.Empty;
 
-    /// <summary>OIDC client secret (optional)</summary>
+    [Obsolete("ClientSecret is deprecated. Use AdminKey for admin operations instead.")]
+    /// <summary>OIDC client secret (deprecated — use AdminKey instead)</summary>
     public string ClientSecret { get; set; } = string.Empty;
 
-    /// <summary>Realm name</summary>
+    [Obsolete("Realm is no longer used. SimpleAuth uses direct API endpoints instead of realm URLs.")]
+    /// <summary>Realm name (deprecated — no longer used)</summary>
     public string Realm { get; set; } = "simpleauth";
 
     /// <summary>Whether to validate SSL certificates</summary>

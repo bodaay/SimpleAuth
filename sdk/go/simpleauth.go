@@ -1,6 +1,6 @@
-// Package simpleauth provides a Go SDK for SimpleAuth, an OIDC-compatible
-// authentication server. It includes token acquisition, JWT verification with
-// JWKS caching, user helpers, and HTTP middleware.
+// Package simpleauth provides a Go SDK for SimpleAuth. It includes token
+// acquisition, JWT verification with JWKS caching, user helpers, and HTTP
+// middleware.
 package simpleauth
 
 import (
@@ -16,7 +16,6 @@ import (
 	"io"
 	"math/big"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +28,12 @@ import (
 // Options configures a new Client.
 type Options struct {
 	URL               string // SimpleAuth server URL (e.g. "https://auth.example.com")
-	ClientID          string // OIDC client ID (optional, for authorization code / client credentials flows)
-	ClientSecret      string // OIDC client secret (optional)
-	Realm             string // OIDC realm (default "simpleauth")
+	AdminKey          string // Admin API key (for admin operations and bootstrap)
 	InsecureSkipVerify bool  // Allow self-signed TLS certificates
+	// Deprecated: ClientID, ClientSecret, Realm are accepted but ignored. Will be removed in v1.0.
+	ClientID     string
+	ClientSecret string
+	Realm        string
 }
 
 // TokenResponse is the OAuth2 token endpoint response.
@@ -105,38 +106,34 @@ type UserInfo struct {
 
 // Client is the main entry point for interacting with SimpleAuth.
 type Client struct {
-	baseURL      string
-	realm        string
-	clientID     string
-	clientSecret string
-	http         *http.Client
+	baseURL  string
+	adminKey string
+	http     *http.Client
 
-	mu        sync.RWMutex
-	keys      map[string]*rsa.PublicKey
-	keysAt    time.Time
-	keysTTL   time.Duration
+	mu      sync.RWMutex
+	keys    map[string]*rsa.PublicKey
+	keysAt  time.Time
+	keysTTL time.Duration
 }
 
 // New creates a new SimpleAuth client with the given options.
 func New(opts Options) *Client {
-	realm := opts.Realm
-	if realm == "" {
-		realm = "simpleauth"
-	}
-
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if opts.InsecureSkipVerify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 
+	adminKey := opts.AdminKey
+	if adminKey == "" {
+		adminKey = opts.ClientSecret // backward compat
+	}
+
 	return &Client{
-		baseURL:      strings.TrimRight(opts.URL, "/"),
-		realm:        realm,
-		clientID:     opts.ClientID,
-		clientSecret: opts.ClientSecret,
-		http:      &http.Client{Transport: transport, Timeout: 30 * time.Second},
-		keys:      make(map[string]*rsa.PublicKey),
-		keysTTL:   1 * time.Hour,
+		baseURL:  strings.TrimRight(opts.URL, "/"),
+		adminKey: adminKey,
+		http:     &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		keys:     make(map[string]*rsa.PublicKey),
+		keysTTL:  1 * time.Hour,
 	}
 }
 
@@ -144,84 +141,69 @@ func New(opts Options) *Client {
 // Token acquisition
 // ---------------------------------------------------------------------------
 
-func (c *Client) tokenURL() string {
-	return fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", c.baseURL, c.realm)
-}
+func (c *Client) postJSON(ctx context.Context, path string, payload interface{}) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("simpleauth: marshal request: %w", err)
+	}
 
-func (c *Client) basicAuth() string {
-	return base64.StdEncoding.EncodeToString([]byte(c.clientID + ":" + c.clientSecret))
-}
-
-func (c *Client) postToken(ctx context.Context, form url.Values) (*TokenResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL(), strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, strings.NewReader(string(data)))
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Basic "+c.basicAuth())
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("simpleauth: token request: %w", err)
+		return nil, fmt.Errorf("simpleauth: request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("simpleauth: token endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("simpleauth: %s returned %d: %s", path, resp.StatusCode, string(body))
 	}
+	return body, nil
+}
 
+func (c *Client) decodeToken(data []byte) (*TokenResponse, error) {
 	var tok TokenResponse
-	if err := json.Unmarshal(body, &tok); err != nil {
+	if err := json.Unmarshal(data, &tok); err != nil {
 		return nil, fmt.Errorf("simpleauth: decode token response: %w", err)
 	}
 	return &tok, nil
 }
 
-// Login performs a resource-owner password credentials grant.
+// Login authenticates a user with username and password.
 func (c *Client) Login(ctx context.Context, username, password string) (*TokenResponse, error) {
-	form := url.Values{
-		"grant_type": {"password"},
-		"username":   {username},
-		"password":   {password},
+	body, err := c.postJSON(ctx, "/api/auth/login", map[string]string{
+		"username": username,
+		"password": password,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return c.postToken(ctx, form)
+	return c.decodeToken(body)
 }
 
 // Refresh exchanges a refresh token for a new token set.
 func (c *Client) Refresh(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
+	body, err := c.postJSON(ctx, "/api/auth/refresh", map[string]string{
+		"refresh_token": refreshToken,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return c.postToken(ctx, form)
-}
-
-// ClientCredentials performs a client credentials grant.
-func (c *Client) ClientCredentials(ctx context.Context) (*TokenResponse, error) {
-	form := url.Values{
-		"grant_type": {"client_credentials"},
-	}
-	return c.postToken(ctx, form)
-}
-
-// ExchangeCode exchanges an authorization code for tokens.
-func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
-	form := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"redirect_uri": {redirectURI},
-	}
-	return c.postToken(ctx, form)
+	return c.decodeToken(body)
 }
 
 // ---------------------------------------------------------------------------
 // UserInfo
 // ---------------------------------------------------------------------------
 
-// UserInfo calls the OIDC userinfo endpoint.
+// UserInfo calls the userinfo endpoint.
 func (c *Client) UserInfo(ctx context.Context, accessToken string) (*UserInfo, error) {
-	u := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", c.baseURL, c.realm)
+	u := c.baseURL + "/api/auth/userinfo"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: create request: %w", err)
@@ -265,7 +247,7 @@ func (c *Client) adminRequest(ctx context.Context, method, path string, payload 
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.clientSecret)
+	req.Header.Set("Authorization", "Bearer "+c.adminKey)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -339,7 +321,7 @@ type jwkKey struct {
 }
 
 func (c *Client) certsURL() string {
-	return fmt.Sprintf("%s/realms/%s/protocol/openid-connect/certs", c.baseURL, c.realm)
+	return c.baseURL + "/.well-known/jwks.json"
 }
 
 func (c *Client) fetchJWKS() error {

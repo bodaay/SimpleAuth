@@ -229,8 +229,10 @@ Official SDKs with JWKS-cached token validation, middleware, and role/permission
 | **.NET Core** | `SimpleAuth` | Reference the project |
 
 Every SDK supports:
-- Login, refresh, client credentials, authorization code exchange
-- **Offline token verification** -- JWKS keys cached, RS256 signature verified locally
+- Login (`POST /api/auth/login`), refresh (`POST /api/auth/refresh`) via direct JSON API
+- **Offline token verification** -- JWKS keys fetched from `GET /.well-known/jwks.json`, cached, RS256 signature verified locally
+- UserInfo (`GET /api/auth/userinfo`)
+- Admin operations via `AdminKey` (replaces `ClientSecret`)
 - Role and permission helpers (`HasRole`, `HasPermission`, `HasAnyRole`)
 - Framework middleware (Express, net/http, FastAPI/Flask/Django, ASP.NET Core)
 

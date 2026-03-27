@@ -1,6 +1,6 @@
 # SimpleAuth .NET SDK
 
-.NET 8 SDK for the SimpleAuth authentication server. Provides JWT verification with JWKS caching, OAuth2/OIDC flows, admin operations, and ASP.NET Core middleware.
+.NET 8 SDK for the SimpleAuth authentication server. Uses direct API endpoints (not OIDC realm URLs). Provides JWT verification with JWKS caching, admin operations, and ASP.NET Core middleware.
 
 ## Installation
 
@@ -92,30 +92,12 @@ public class ProfileController : ControllerBase
 
 ## Authentication Flows
 
-### Password Grant
+### Password Login
+
+Sends `POST /api/auth/login` with a JSON body.
 
 ```csharp
 var tokens = await client.LoginAsync("alice", "password123");
-```
-
-### Client Credentials
-
-```csharp
-var tokens = await client.ClientCredentialsAsync();
-```
-
-### Authorization Code (OIDC)
-
-```csharp
-// Step 1: Redirect user to auth URL
-var authUrl = client.GetAuthorizationUrl(
-    redirectUri: "https://myapp.com/callback",
-    state: "random-state",
-    scope: "openid profile email"
-);
-
-// Step 2: Exchange code for tokens in callback
-var tokens = await client.ExchangeCodeAsync(code, "https://myapp.com/callback");
 ```
 
 ### Handling Force Password Change
@@ -132,13 +114,15 @@ if (tokens.ForcePasswordChange)
 
 ### Refresh Token
 
+Sends `POST /api/auth/refresh` with a JSON body.
+
 ```csharp
 var newTokens = await client.RefreshAsync(tokens.RefreshToken);
 ```
 
 ## Token Verification
 
-Tokens are verified locally using RS256. JWKS keys are fetched from the SimpleAuth server and cached for 1 hour. If a token contains a `kid` that is not in the cache, the SDK automatically re-fetches the JWKS endpoint.
+Tokens are verified locally using RS256. JWKS keys are fetched from `GET /.well-known/jwks.json` and cached for 1 hour. If a token contains a `kid` that is not in the cache, the SDK automatically re-fetches the JWKS endpoint.
 
 ```csharp
 var user = await client.VerifyAsync(accessToken);
@@ -196,9 +180,10 @@ var client = new SimpleAuthClient(new SimpleAuthOptions
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `Url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
-| `ClientId`     | `string` | No       | `""`            | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
-| `ClientSecret` | `string` | No       | `""`            | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
-| `Realm`        | `string` | No       | `"simpleauth"`  | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. |
+| `AdminKey`     | `string` | No       | `""`            | Admin key for admin API operations (sent as Bearer token) |
+| `ClientId`     | `string` | No       | `""`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
+| `ClientSecret` | `string` | No       | `""`            | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |
+| `Realm`        | `string` | No       | `"simpleauth"`  | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. |
 | `ValidateSsl`  | `bool`   | No       | `true`          | Whether to validate SSL certificates     |
 
 ## Error Handling

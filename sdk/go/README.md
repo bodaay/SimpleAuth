@@ -1,6 +1,6 @@
 # simpleauth-go
 
-Go SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth) — a lightweight OIDC-compatible authentication server.
+Go SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth) — a lightweight authentication server with direct API endpoints.
 
 Zero external dependencies. Uses only the Go standard library.
 
@@ -48,29 +48,21 @@ func main() {
 
 ## Authentication flows
 
-### Resource Owner Password
+### Password Login
 
 ```go
 tok, err := client.Login(ctx, "username", "password")
 ```
 
-### Client Credentials
-
-```go
-tok, err := client.ClientCredentials(ctx)
-```
-
-### Authorization Code Exchange
-
-```go
-tok, err := client.ExchangeCode(ctx, code, "https://myapp.example.com/callback")
-```
+Sends `POST /api/auth/login` with a JSON body `{"username": "...", "password": "..."}`.
 
 ### Refresh Token
 
 ```go
 tok, err := client.Refresh(ctx, tok.RefreshToken)
 ```
+
+Sends `POST /api/auth/refresh` with a JSON body.
 
 ## Handling Force Password Change
 
@@ -86,7 +78,7 @@ if tok.ForcePasswordChange {
 
 ## Token verification
 
-`Verify` decodes and cryptographically verifies a JWT using the RS256 algorithm. Public keys are fetched from the JWKS endpoint and cached for one hour. A cache miss on the `kid` header triggers an automatic re-fetch.
+`Verify` decodes and cryptographically verifies a JWT using the RS256 algorithm. Public keys are fetched from `GET /.well-known/jwks.json` and cached for one hour. A cache miss on the `kid` header triggers an automatic re-fetch.
 
 ```go
 user, err := client.Verify(accessToken)
@@ -106,6 +98,8 @@ if user.HasAnyRole("admin", "editor") { ... }
 ```
 
 ## UserInfo endpoint
+
+Fetches user claims from `GET /api/auth/userinfo`.
 
 ```go
 info, err := client.UserInfo(ctx, accessToken)
@@ -203,7 +197,8 @@ mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
 | Field | Description | Default |
 |---|---|---|
 | `URL` | SimpleAuth server base URL | *(required)* |
-| `ClientID` | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. | `""` |
-| `ClientSecret` | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. | `""` |
-| `Realm` | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. | `"simpleauth"` |
+| `AdminKey` | Admin key for admin API operations (sent as Bearer token) | `""` |
+| `ClientID` | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. | `""` |
+| `ClientSecret` | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. | `""` |
+| `Realm` | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. | `"simpleauth"` |
 | `InsecureSkipVerify` | Skip TLS certificate verification | `false` |

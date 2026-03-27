@@ -1,6 +1,6 @@
 # SimpleAuth SDK Guide
 
-Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs follow the same patterns: authenticate, verify tokens, check roles, and use middleware.
+Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs use direct API endpoints (`/api/auth/login`, `/api/auth/refresh`, `/.well-known/jwks.json`, `/api/auth/userinfo`) instead of OIDC realm URLs. All SDKs follow the same patterns: authenticate, verify tokens, check roles, and use middleware.
 
 ---
 
@@ -37,11 +37,10 @@ import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
   url: 'https://auth.corp.local:8080',
-  realm: 'simpleauth',        // deprecated — accepted but not validated, will be removed in v1.0
 });
 ```
 
-### Login (Resource Owner Password)
+### Login
 
 ```typescript
 const tokens = await auth.login('jsmith', 'password');
@@ -106,26 +105,6 @@ app.get('/public/info', (req, res) => {
 });
 ```
 
-### Authorization Code Flow
-
-```typescript
-// Step 1: Redirect user to login
-const authUrl = auth.getAuthorizationUrl({
-  redirectUri: 'https://myapp.com/callback',
-  state: 'random-csrf-token',
-  scope: 'openid profile email',
-});
-// Redirect the browser to authUrl
-
-// Step 2: Handle callback
-app.get('/callback', async (req, res) => {
-  const { code, state } = req.query;
-  // Verify state matches what you sent
-  const tokens = await auth.exchangeCode(code, 'https://myapp.com/callback');
-  // Store tokens in session
-});
-```
-
 ### Admin Operations
 
 ```typescript
@@ -172,7 +151,6 @@ import simpleauth "simpleauth/sdk/go"
 
 client := simpleauth.New(simpleauth.Options{
     URL:                "https://auth.corp.local:8080",
-    Realm:              "simpleauth",    // deprecated — accepted but not validated, will be removed in v1.0
     InsecureSkipVerify: true,            // for self-signed certs
 })
 ```
@@ -192,12 +170,6 @@ fmt.Println(tokens.AccessToken)
 
 ```go
 newTokens, err := client.Refresh(ctx, tokens.RefreshToken)
-```
-
-### Client Credentials (Machine-to-Machine)
-
-```go
-tokens, err := client.ClientCredentials(ctx)
 ```
 
 ### Verify Token
@@ -255,13 +227,6 @@ func myHandler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### Authorization Code Flow
-
-```go
-// Exchange code from callback
-tokens, err := client.ExchangeCode(ctx, code, "https://myapp.com/callback")
-```
-
 ### Admin Operations
 
 ```go
@@ -299,7 +264,6 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.corp.local:8080",
-    realm="simpleauth",     # deprecated — accepted but not validated, will be removed in v1.0
     verify_ssl=False,        # for self-signed certs
 )
 ```
@@ -316,12 +280,6 @@ print(tokens.refresh_token)
 
 ```python
 new_tokens = auth.refresh(tokens.refresh_token)
-```
-
-### Client Credentials
-
-```python
-tokens = auth.client_credentials()
 ```
 
 ### Verify Token
@@ -404,7 +362,6 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.corp.local:8080"
-SIMPLEAUTH_REALM = "simpleauth"  # deprecated — accepted but not validated, will be removed in v1.0
 SIMPLEAUTH_VERIFY_SSL = True
 
 # views.py
@@ -436,20 +393,6 @@ perms = admin_auth.get_user_permissions("user-guid")
 admin_auth.set_user_permissions("user-guid", ["read:all"])
 ```
 
-### Authorization Code Flow
-
-```python
-# Build the authorization URL
-auth_url = auth.get_authorization_url(
-    redirect_uri="https://myapp.com/callback",
-    state="random-csrf-token",
-)
-# Redirect user to auth_url
-
-# Exchange code for tokens (in your callback handler)
-tokens = auth.exchange_code(code, "https://myapp.com/callback")
-```
-
 ---
 
 ## .NET (C#)
@@ -468,7 +411,6 @@ using SimpleAuth;
 var options = new SimpleAuthOptions
 {
     Url = "https://auth.corp.local:8080",
-    Realm = "simpleauth",    // deprecated — accepted but not validated, will be removed in v1.0
     ValidateSsl = false,     // for self-signed certs
 };
 
@@ -486,12 +428,6 @@ Console.WriteLine(tokens.AccessToken);
 
 ```csharp
 var newTokens = await client.RefreshAsync(tokens.RefreshToken);
-```
-
-### Client Credentials
-
-```csharp
-var tokens = await client.ClientCredentialsAsync();
 ```
 
 ### Verify Token
@@ -578,19 +514,6 @@ await adminClient.SetUserRolesAsync("user-guid", new List<string> { "admin", "us
 
 var perms = await adminClient.GetUserPermissionsAsync("user-guid");
 await adminClient.SetUserPermissionsAsync("user-guid", new List<string> { "read:all" });
-```
-
-### Authorization Code Flow
-
-```csharp
-// Build URL
-var authUrl = client.GetAuthorizationUrl(
-    redirectUri: "https://myapp.com/callback",
-    state: "random-csrf-token"
-);
-
-// Exchange code
-var tokens = await client.ExchangeCodeAsync(code, "https://myapp.com/callback");
 ```
 
 ---

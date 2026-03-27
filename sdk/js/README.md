@@ -1,6 +1,6 @@
 # @simpleauth/js
 
-Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/your-org/simpleauth). Works in Node.js (18+) and browsers.
+Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/your-org/simpleauth). Uses direct API endpoints (not OIDC realm URLs). Works in Node.js (18+) and browsers.
 
 ## Installation
 
@@ -15,20 +15,19 @@ import { SimpleAuth } from '@simpleauth/js';
 
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  clientId: 'my-client',       // deprecated — accepted but not validated, will be removed in v1.0
-  clientSecret: 'my-secret',   // deprecated — accepted but not validated, will be removed in v1.0
 });
 ```
 
 ## Authentication
 
-### Password Login (Resource Owner Password Credentials)
+### Password Login
+
+Sends `POST /api/auth/login` with a JSON body.
 
 ```ts
 const tokens = await auth.login('username', 'password');
 console.log(tokens.access_token);
 console.log(tokens.refresh_token);
-console.log(tokens.id_token);
 ```
 
 ### Handling Force Password Change
@@ -44,6 +43,8 @@ if (tokens.force_password_change) {
 
 ### Refresh Token
 
+Sends `POST /api/auth/refresh` with a JSON body.
+
 ```ts
 const newTokens = await auth.refresh(tokens.refresh_token);
 ```
@@ -56,7 +57,7 @@ await auth.logout(tokens.id_token);
 
 ## Token Verification (Server-Side)
 
-Verify a JWT access token using the server's JWKS. The SDK caches JWKS keys for 1 hour and automatically re-fetches on key ID miss.
+Verify a JWT access token using the server's JWKS (fetched from `GET /.well-known/jwks.json`). The SDK caches JWKS keys for 1 hour and automatically re-fetches on key ID miss.
 
 ```ts
 const user = await auth.verify(tokens.access_token);
@@ -79,33 +80,10 @@ user.hasAnyRole('admin', 'mod'); // true
 
 ## User Info
 
-Fetch user claims from the OIDC UserInfo endpoint:
+Fetch user claims from `GET /api/auth/userinfo`:
 
 ```ts
 const info = await auth.userInfo(tokens.access_token);
-```
-
-## Authorization Code Flow (OIDC)
-
-### 1. Redirect to Login
-
-```ts
-const authUrl = auth.getAuthorizationUrl({
-  redirectUri: 'https://myapp.com/callback',
-  state: 'random-state-value',
-  scope: 'openid profile email',
-  nonce: 'random-nonce',
-});
-
-// Redirect user to authUrl
-window.location.href = authUrl;
-```
-
-### 2. Exchange Code for Tokens
-
-```ts
-// In your callback handler:
-const tokens = await auth.exchangeCode(code, 'https://myapp.com/callback');
 ```
 
 ## Express Middleware
@@ -214,9 +192,10 @@ try {
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
-| `clientId`     | `string` | No       | `''`            | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
-| `clientSecret` | `string` | No       | --              | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
-| `realm`        | `string` | No       | `'simpleauth'`  | **(Deprecated)** OIDC realm name. Accepted but not validated. Will be removed in v1.0. |
+| `adminKey`     | `string` | No       | --              | Admin key for admin API operations (sent as Bearer token) |
+| `clientId`     | `string` | No       | `''`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
+| `clientSecret` | `string` | No       | --              | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |
+| `realm`        | `string` | No       | `'simpleauth'`  | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. |
 
 ## Browser Usage
 
@@ -228,17 +207,13 @@ import { SimpleAuth } from './index.js';
 
 const auth = new SimpleAuth({
   url: 'https://auth.corp.local:9090',
-  clientId: 'my-spa',
 });
 
-// Use authorization code flow for browser apps
-const authUrl = auth.getAuthorizationUrl({
-  redirectUri: window.location.origin + '/callback',
-});
+const tokens = await auth.login('username', 'password');
 </script>
 ```
 
-> **Note:** Do not include `clientSecret` in browser code. Use the authorization code flow instead of password login for browser-based applications.
+> **Note:** Do not include `adminKey` in browser code. For browser-based applications, use the hosted login page redirect flow at `/login` instead of embedding credentials.
 
 ## Platform Support
 

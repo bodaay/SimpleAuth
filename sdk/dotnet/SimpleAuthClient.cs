@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Web;
 
 namespace SimpleAuth;
 
@@ -15,12 +14,19 @@ public class SimpleAuthClient : IDisposable
     private Dictionary<string, RSAParameters>? _jwksCache;
     private DateTime _jwksCacheExpiry = DateTime.MinValue;
 
-    private string RealmUrl => $"{_options.Url.TrimEnd('/')}/realms/{_options.Realm}";
-    private string TokenUrl => $"{RealmUrl}/protocol/openid-connect/token";
-    private string CertsUrl => $"{RealmUrl}/protocol/openid-connect/certs";
-    private string UserInfoUrl => $"{RealmUrl}/protocol/openid-connect/userinfo";
-    private string AuthUrl => $"{RealmUrl}/protocol/openid-connect/auth";
-    private string AdminUrl => $"{_options.Url.TrimEnd('/')}/api/admin";
+    private string BaseUrl => _options.Url.TrimEnd('/');
+    private string LoginUrl => $"{BaseUrl}/api/auth/login";
+    private string RefreshUrl => $"{BaseUrl}/api/auth/refresh";
+    private string CertsUrl => $"{BaseUrl}/.well-known/jwks.json";
+    private string UserInfoUrl => $"{BaseUrl}/api/auth/userinfo";
+    private string AdminUrl => $"{BaseUrl}/api/admin";
+
+    /// <summary>Admin key for Bearer auth on admin endpoints. Falls back to ClientSecret for backward compat.</summary>
+    private string EffectiveAdminKey =>
+        !string.IsNullOrEmpty(_options.AdminKey) ? _options.AdminKey :
+#pragma warning disable CS0618 // suppress Obsolete warning for backward compat fallback
+        _options.ClientSecret;
+#pragma warning restore CS0618
 
     public SimpleAuthClient(SimpleAuthOptions options)
     {
@@ -28,7 +34,6 @@ public class SimpleAuthClient : IDisposable
 
         if (string.IsNullOrWhiteSpace(options.Url))
             throw new ArgumentException("Url is required.", nameof(options));
-        // ClientId is optional — only needed for OIDC flows
 
         var handler = new HttpClientHandler();
         if (!options.ValidateSsl)
@@ -40,88 +45,42 @@ public class SimpleAuthClient : IDisposable
         _http = new HttpClient(handler);
     }
 
-    private string BasicAuthHeader()
-    {
-        var credentials = Convert.ToBase64String(
-            Encoding.UTF8.GetBytes($"{_options.ClientId}:{_options.ClientSecret}"));
-        return $"Basic {credentials}";
-    }
-
     // ── Authentication ──────────────────────────────────────────────────
 
     public async Task<TokenResponse> LoginAsync(string username, string password)
     {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "password",
-            ["username"] = username,
-            ["password"] = password,
-            ["client_id"] = _options.ClientId,
-        };
-        if (!string.IsNullOrEmpty(_options.ClientSecret))
-            form["client_secret"] = _options.ClientSecret;
+        var body = new { username, password };
+        var content = new StringContent(
+            JsonSerializer.Serialize(body),
+            Encoding.UTF8,
+            "application/json");
 
-        return await PostTokenAsync(form);
+        using var response = await _http.PostAsync(LoginUrl, content);
+        var json = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+            throw new SimpleAuthException($"Login request failed ({response.StatusCode}): {json}");
+
+        return JsonSerializer.Deserialize<TokenResponse>(json)
+            ?? throw new SimpleAuthException("Empty login response.");
     }
 
     public async Task<TokenResponse> RefreshAsync(string refreshToken)
     {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = refreshToken,
-            ["client_id"] = _options.ClientId,
-        };
-        if (!string.IsNullOrEmpty(_options.ClientSecret))
-            form["client_secret"] = _options.ClientSecret;
+        var body = new { refresh_token = refreshToken };
+        var content = new StringContent(
+            JsonSerializer.Serialize(body),
+            Encoding.UTF8,
+            "application/json");
 
-        return await PostTokenAsync(form);
-    }
-
-    public async Task<TokenResponse> ClientCredentialsAsync()
-    {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "client_credentials",
-            ["client_id"] = _options.ClientId,
-            ["client_secret"] = _options.ClientSecret,
-        };
-        return await PostTokenAsync(form);
-    }
-
-    public async Task<TokenResponse> ExchangeCodeAsync(string code, string redirectUri)
-    {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "authorization_code",
-            ["code"] = code,
-            ["redirect_uri"] = redirectUri,
-            ["client_id"] = _options.ClientId,
-        };
-        if (!string.IsNullOrEmpty(_options.ClientSecret))
-            form["client_secret"] = _options.ClientSecret;
-
-        return await PostTokenAsync(form);
-    }
-
-    private async Task<TokenResponse> PostTokenAsync(Dictionary<string, string> form)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Post, TokenUrl)
-        {
-            Content = new FormUrlEncodedContent(form),
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue(
-            "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.ClientId}:{_options.ClientSecret}")));
-
-        using var response = await _http.SendAsync(request);
+        using var response = await _http.PostAsync(RefreshUrl, content);
         var json = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
-            throw new SimpleAuthException($"Token request failed ({response.StatusCode}): {json}");
+            throw new SimpleAuthException($"Refresh request failed ({response.StatusCode}): {json}");
 
         return JsonSerializer.Deserialize<TokenResponse>(json)
-            ?? throw new SimpleAuthException("Empty token response.");
+            ?? throw new SimpleAuthException("Empty refresh response.");
     }
 
     // ── Token verification ──────────────────────────────────────────────
@@ -163,7 +122,7 @@ public class SimpleAuthClient : IDisposable
         if (root.TryGetProperty("iss", out var issEl))
         {
             var issuer = issEl.GetString();
-            var expectedIssuer = RealmUrl;
+            var expectedIssuer = BaseUrl;
             if (!string.Equals(issuer, expectedIssuer, StringComparison.OrdinalIgnoreCase))
                 throw new SimpleAuthException($"Invalid issuer: {issuer}, expected: {expectedIssuer}");
         }
@@ -316,7 +275,7 @@ public class SimpleAuthClient : IDisposable
     private async Task<List<string>> AdminGetListAsync(string url)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Add("Authorization", $"Bearer {_options.ClientSecret}");
+        request.Headers.Add("Authorization", $"Bearer {EffectiveAdminKey}");
 
         using var response = await _http.SendAsync(request);
         var json = await response.Content.ReadAsStringAsync();
@@ -336,7 +295,7 @@ public class SimpleAuthClient : IDisposable
                 Encoding.UTF8,
                 "application/json"),
         };
-        request.Headers.Add("Authorization", $"Bearer {_options.ClientSecret}");
+        request.Headers.Add("Authorization", $"Bearer {EffectiveAdminKey}");
 
         using var response = await _http.SendAsync(request);
         if (!response.IsSuccessStatusCode)
@@ -344,22 +303,6 @@ public class SimpleAuthClient : IDisposable
             var json = await response.Content.ReadAsStringAsync();
             throw new SimpleAuthException($"Admin request failed ({response.StatusCode}): {json}");
         }
-    }
-
-    // ── OIDC ────────────────────────────────────────────────────────────
-
-    public string GetAuthorizationUrl(string redirectUri, string? state = null, string? scope = null)
-    {
-        var qs = HttpUtility.ParseQueryString(string.Empty);
-        qs["response_type"] = "code";
-        qs["client_id"] = _options.ClientId;
-        qs["redirect_uri"] = redirectUri;
-        qs["scope"] = scope ?? "openid profile email";
-
-        if (!string.IsNullOrEmpty(state))
-            qs["state"] = state;
-
-        return $"{AuthUrl}?{qs}";
     }
 
     // ── Base64url helpers ───────────────────────────────────────────────

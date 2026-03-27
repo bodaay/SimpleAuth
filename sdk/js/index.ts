@@ -8,11 +8,13 @@
 export interface SimpleAuthOptions {
   /** SimpleAuth server URL (e.g. https://auth.corp.local:9090) */
   url: string;
-  /** OIDC client ID (optional, for authorization code / client credentials flows) */
+  /** Admin API key for admin operations */
+  adminKey?: string;
+  /** @deprecated Use `adminKey` instead. Falls back to clientSecret if adminKey is not set. */
   clientId?: string;
-  /** OIDC client secret (optional) */
+  /** @deprecated Use `adminKey` instead. Falls back to clientSecret if adminKey is not set. */
   clientSecret?: string;
-  /** OIDC realm (default: 'simpleauth') */
+  /** @deprecated No longer used. Realm-based URLs have been removed. */
   realm?: string;
 }
 
@@ -184,14 +186,6 @@ function base64urlEncode(bytes: Uint8Array): string {
     return globalThis.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
   return Buffer.from(bytes).toString('base64url');
-}
-
-/** Base64 encode a string (for Basic auth) */
-function base64Encode(str: string): string {
-  if (typeof globalThis.btoa === 'function') {
-    return globalThis.btoa(str);
-  }
-  return Buffer.from(str).toString('base64');
 }
 
 /** Decode a JWT without verification — returns header and payload */
@@ -374,41 +368,25 @@ class JWKSCache {
 
 export class SimpleAuth {
   private readonly url: string;
-  private readonly clientId: string;
-  private readonly clientSecret?: string;
-  private readonly realm: string;
+  private readonly adminKey?: string;
   private readonly jwksCache: JWKSCache;
 
   constructor(options: SimpleAuthOptions) {
     // Strip trailing slash
     this.url = options.url.replace(/\/+$/, '');
-    this.clientId = options.clientId ?? '';
-    this.clientSecret = options.clientSecret;
-    this.realm = options.realm ?? 'simpleauth';
+    // adminKey takes precedence, fall back to clientSecret for backward compat
+    this.adminKey = options.adminKey ?? options.clientSecret;
 
-    const jwksUrl = `${this.url}/realms/${this.realm}/protocol/openid-connect/certs`;
+    const jwksUrl = `${this.url}/.well-known/jwks.json`;
     this.jwksCache = new JWKSCache(jwksUrl);
   }
 
-  /** OIDC prefix for this realm */
-  private get oidcPrefix(): string {
-    return `${this.url}/realms/${this.realm}/protocol/openid-connect`;
-  }
-
-  /** Build Basic auth header from clientId:clientSecret */
-  private basicAuthHeader(): string {
-    const secret = this.clientSecret ?? '';
-    return 'Basic ' + base64Encode(
-      encodeURIComponent(this.clientId) + ':' + encodeURIComponent(secret),
-    );
-  }
-
-  /** Build admin Bearer header (uses clientSecret as API key) */
+  /** Build admin Bearer header (uses adminKey or clientSecret as API key) */
   private adminAuthHeader(): string {
-    if (!this.clientSecret) {
-      throw new SimpleAuthError('clientSecret is required for admin operations', 401);
+    if (!this.adminKey) {
+      throw new SimpleAuthError('adminKey (or clientSecret) is required for admin operations', 401);
     }
-    return 'Bearer ' + this.clientSecret;
+    return 'Bearer ' + this.adminKey;
   }
 
   // -------------------------------------------------------------------------
@@ -416,24 +394,15 @@ export class SimpleAuth {
   // -------------------------------------------------------------------------
 
   /**
-   * Authenticate using the Resource Owner Password Credentials grant.
-   * Uses the OIDC token endpoint with grant_type=password.
+   * Authenticate with username and password via the direct login API.
    */
   async login(username: string, password: string): Promise<TokenResponse> {
-    const body = new URLSearchParams({
-      grant_type: 'password',
-      username,
-      password,
-      scope: 'openid profile email',
-    });
-
-    const resp = await fetch(`${this.oidcPrefix}/token`, {
+    const resp = await fetch(`${this.url}/api/auth/login`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: this.basicAuthHeader(),
+        'Content-Type': 'application/json',
       },
-      body: body.toString(),
+      body: JSON.stringify({ username, password }),
     });
 
     if (!resp.ok) {
@@ -453,18 +422,12 @@ export class SimpleAuth {
    * Refresh an access token using a refresh token.
    */
   async refresh(refreshToken: string): Promise<TokenResponse> {
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-    });
-
-    const resp = await fetch(`${this.oidcPrefix}/token`, {
+    const resp = await fetch(`${this.url}/api/auth/refresh`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: this.basicAuthHeader(),
+        'Content-Type': 'application/json',
       },
-      body: body.toString(),
+      body: JSON.stringify({ refresh_token: refreshToken }),
     });
 
     if (!resp.ok) {
@@ -481,26 +444,13 @@ export class SimpleAuth {
   }
 
   /**
-   * End the user session via the OIDC logout endpoint.
-   * Optionally pass the id_token to revoke all sessions.
+   * Logout is not available as a direct API endpoint.
+   * This method is a no-op retained for backward compatibility.
+   * @deprecated No direct logout endpoint exists. Discard tokens client-side instead.
    */
-  async logout(idToken?: string): Promise<void> {
-    const params = new URLSearchParams();
-    if (idToken) {
-      params.set('id_token_hint', idToken);
-    }
-
-    const resp = await fetch(`${this.oidcPrefix}/logout`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
-      redirect: 'manual', // logout may redirect
-    });
-
-    // 200, 204, or 302 are all acceptable
-    if (!resp.ok && resp.status !== 302) {
-      throw new SimpleAuthError('Logout failed', resp.status);
-    }
+  async logout(_idToken?: string): Promise<void> {
+    // No-op: SimpleAuth direct API does not have a logout endpoint.
+    // To "log out", simply discard the access and refresh tokens client-side.
   }
 
   // -------------------------------------------------------------------------
@@ -539,8 +489,8 @@ export class SimpleAuth {
       throw new SimpleAuthError('Token has expired', 401);
     }
 
-    // Check issuer
-    const expectedIssuer = `${this.url}/realms/${this.realm}`;
+    // Check issuer — accept the server URL as issuer
+    const expectedIssuer = this.url;
     if (payload.iss && payload.iss !== expectedIssuer) {
       throw new SimpleAuthError(
         `Invalid issuer: expected "${expectedIssuer}", got "${payload.iss}"`,
@@ -556,10 +506,10 @@ export class SimpleAuth {
   // -------------------------------------------------------------------------
 
   /**
-   * Fetch user claims from the OIDC UserInfo endpoint.
+   * Fetch user claims from the UserInfo endpoint.
    */
   async userInfo(accessToken: string): Promise<UserInfo> {
-    const resp = await fetch(`${this.oidcPrefix}/userinfo`, {
+    const resp = await fetch(`${this.url}/api/auth/userinfo`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
@@ -577,71 +527,12 @@ export class SimpleAuth {
   }
 
   // -------------------------------------------------------------------------
-  // OIDC Authorization Code Flow
-  // -------------------------------------------------------------------------
-
-  /**
-   * Build the authorization URL for the OIDC authorization code flow.
-   * Redirect the user's browser to this URL.
-   */
-  getAuthorizationUrl(options: {
-    redirectUri: string;
-    state?: string;
-    scope?: string;
-    nonce?: string;
-  }): string {
-    const params = new URLSearchParams({
-      client_id: this.clientId,
-      response_type: 'code',
-      redirect_uri: options.redirectUri,
-      scope: options.scope ?? 'openid profile email',
-    });
-
-    if (options.state) params.set('state', options.state);
-    if (options.nonce) params.set('nonce', options.nonce);
-
-    return `${this.oidcPrefix}/auth?${params.toString()}`;
-  }
-
-  /**
-   * Exchange an authorization code for tokens.
-   */
-  async exchangeCode(code: string, redirectUri: string): Promise<TokenResponse> {
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirectUri,
-    });
-
-    const resp = await fetch(`${this.oidcPrefix}/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: this.basicAuthHeader(),
-      },
-      body: body.toString(),
-    });
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new SimpleAuthError(
-        err.error_description ?? err.error ?? 'Code exchange failed',
-        resp.status,
-        err.error,
-        err.error_description,
-      );
-    }
-
-    return resp.json();
-  }
-
-  // -------------------------------------------------------------------------
-  // Admin Operations (require clientSecret as Bearer API key)
+  // Admin Operations (require adminKey as Bearer API key)
   // -------------------------------------------------------------------------
 
   /**
    * Get a user by GUID.
-   * Requires clientSecret (admin API key).
+   * Requires adminKey (or clientSecret for backward compat).
    */
   async getUser(guid: string): Promise<User> {
     const resp = await fetch(`${this.url}/api/admin/users/${encodeURIComponent(guid)}`, {
@@ -658,7 +549,7 @@ export class SimpleAuth {
 
   /**
    * Get the roles assigned to a user.
-   * Requires clientSecret (admin API key).
+   * Requires adminKey (or clientSecret for backward compat).
    */
   async getUserRoles(guid: string): Promise<string[]> {
     const resp = await fetch(
@@ -676,7 +567,7 @@ export class SimpleAuth {
 
   /**
    * Set the roles for a user.
-   * Requires clientSecret (admin API key).
+   * Requires adminKey (or clientSecret for backward compat).
    */
   async setUserRoles(guid: string, roles: string[]): Promise<void> {
     const resp = await fetch(
@@ -699,7 +590,7 @@ export class SimpleAuth {
 
   /**
    * Get the permissions assigned to a user.
-   * Requires clientSecret (admin API key).
+   * Requires adminKey (or clientSecret for backward compat).
    */
   async getUserPermissions(guid: string): Promise<string[]> {
     const resp = await fetch(
@@ -717,7 +608,7 @@ export class SimpleAuth {
 
   /**
    * Set the permissions for a user.
-   * Requires clientSecret (admin API key).
+   * Requires adminKey (or clientSecret for backward compat).
    */
   async setUserPermissions(guid: string, permissions: string[]): Promise<void> {
     const resp = await fetch(
@@ -794,8 +685,7 @@ export class SimpleAuth {
  *
  * const auth = createSimpleAuth({
  *   url: 'https://auth.corp.local:9090',
- *   clientId: 'my-client',         // optional, for OIDC flows
- *   clientSecret: 'my-secret',     // optional
+ *   adminKey: 'my-admin-key',      // optional, for admin operations
  * });
  *
  * const tokens = await auth.login('admin', 'password');

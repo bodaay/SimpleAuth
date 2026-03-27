@@ -1,6 +1,6 @@
 # SimpleAuth Python SDK
 
-Python SDK for [SimpleAuth](https://github.com/bodaay/simpleauth) -- an OIDC-compatible authentication server.
+Python SDK for [SimpleAuth](https://github.com/bodaay/simpleauth) -- a lightweight authentication server with direct API endpoints.
 
 ## Installation
 
@@ -20,15 +20,14 @@ from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
     url="https://auth.example.com",
-    client_id="my-client",       # deprecated — accepted but not validated, will be removed in v1.0
-    client_secret="my-secret",   # deprecated — accepted but not validated, will be removed in v1.0
-    realm="simpleauth",          # deprecated — accepted but not validated, will be removed in v1.0
 )
 ```
 
 ## Authentication
 
-### Password Login (Resource Owner)
+### Password Login
+
+Sends `POST /api/auth/login` with a JSON body.
 
 ```python
 tokens = auth.login(username="alice", password="secret")
@@ -48,33 +47,15 @@ if tokens.force_password_change:
 
 ### Refresh Token
 
+Sends `POST /api/auth/refresh` with a JSON body.
+
 ```python
 new_tokens = auth.refresh(refresh_token=tokens.refresh_token)
 ```
 
-### Client Credentials (Machine-to-Machine)
-
-```python
-tokens = auth.client_credentials()
-print(tokens.access_token)
-```
-
-### Authorization Code Flow
-
-```python
-# Step 1: Redirect user to the authorization URL
-url = auth.get_authorization_url(
-    redirect_uri="https://myapp.com/callback",
-    state="random-state-value",
-)
-
-# Step 2: Exchange the code from the callback
-tokens = auth.exchange_code(code="auth-code-from-callback", redirect_uri="https://myapp.com/callback")
-```
-
 ## Token Verification
 
-Verify a JWT access token locally using the server's JWKS (cached for 1 hour, re-fetched on key ID miss):
+Verify a JWT access token locally using the server's JWKS from `GET /.well-known/jwks.json` (cached for 1 hour, re-fetched on key ID miss):
 
 ```python
 user = auth.verify(tokens.access_token)
@@ -102,7 +83,7 @@ if user.has_any_role("admin", "editor"):
 
 ## User Info
 
-Fetch user info from the server (requires a valid access token):
+Fetch user info from `GET /api/auth/userinfo` (requires a valid access token):
 
 ```python
 info = auth.userinfo(access_token=tokens.access_token)
@@ -186,9 +167,7 @@ MIDDLEWARE = [
 ]
 
 SIMPLEAUTH_URL = "https://auth.example.com"
-SIMPLEAUTH_CLIENT_ID = ""           # deprecated — accepted but not validated, will be removed in v1.0
-SIMPLEAUTH_CLIENT_SECRET = ""       # deprecated — accepted but not validated, will be removed in v1.0
-SIMPLEAUTH_REALM = "simpleauth"     # deprecated — accepted but not validated, will be removed in v1.0
+SIMPLEAUTH_ADMIN_KEY = ""           # optional — only needed for admin operations
 SIMPLEAUTH_VERIFY_SSL = True        # optional
 ```
 

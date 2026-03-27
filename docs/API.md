@@ -312,7 +312,7 @@ Diagnostic page for testing Kerberos/SPNEGO authentication. Shows the raw negoti
 
 ## OIDC / Keycloak-Compatible Endpoints
 
-> **Deprecated:** The OIDC/Keycloak-compatible endpoints are deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id` and `client_secret` are accepted but not validated.
+> **Deprecated:** The OIDC/Keycloak-compatible endpoints are deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id` and `client_secret` are accepted but not validated. **All official SDKs (Go, JavaScript, Python, .NET) now use the direct API endpoints by default** (`POST /api/auth/login`, `POST /api/auth/refresh`, `GET /.well-known/jwks.json`, `GET /api/auth/userinfo`) and no longer use these OIDC realm URLs.
 
 All OIDC endpoints follow the Keycloak URL pattern: `/realms/{realm}/protocol/openid-connect/...`
 
