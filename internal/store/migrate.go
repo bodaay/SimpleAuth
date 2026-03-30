@@ -1,11 +1,15 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -336,11 +340,91 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 }
 
 // TestPostgresConnection tests if a Postgres DSN is reachable.
+// If the target database doesn't exist, it auto-creates it.
 func TestPostgresConnection(dsn string) error {
+	// First try connecting directly
 	pg, err := OpenPostgres(dsn)
+	if err == nil {
+		pg.Close()
+		return nil
+	}
+
+	// If it failed, try to auto-create the database
+	if createErr := autoCreateDatabase(dsn); createErr != nil {
+		return fmt.Errorf("%v (auto-create also failed: %v)", err, createErr)
+	}
+
+	// Retry after creation
+	pg, err = OpenPostgres(dsn)
 	if err != nil {
 		return err
 	}
 	pg.Close()
+	return nil
+}
+
+// autoCreateDatabase connects to the "postgres" maintenance DB and creates
+// the target database if it doesn't exist.
+func autoCreateDatabase(dsn string) error {
+	// Parse the DSN to extract the database name
+	// Supports: postgres://user:pass@host:port/dbname?params
+	dbName := ""
+	maintDSN := dsn
+
+	if idx := strings.LastIndex(dsn, "/"); idx > 0 {
+		rest := dsn[idx+1:]
+		// Strip query params
+		if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
+			dbName = rest[:qIdx]
+			maintDSN = dsn[:idx] + "/postgres" + rest[qIdx:]
+		} else {
+			dbName = rest
+			maintDSN = dsn[:idx] + "/postgres"
+		}
+	}
+	if dbName == "" || dbName == "postgres" {
+		return fmt.Errorf("cannot determine database name from DSN")
+	}
+
+	db, err := sql.Open("pgx", maintDSN)
+	if err != nil {
+		return fmt.Errorf("connect to postgres maintenance db: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping postgres: %w", err)
+	}
+
+	// Check if database exists
+	var exists bool
+	err = db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName,
+	).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("check database existence: %w", err)
+	}
+
+	if exists {
+		return fmt.Errorf("database %q exists but connection failed", dbName)
+	}
+
+	// Create the database
+	// Note: database names can't be parameterized, but we validate it's alphanumeric
+	for _, c := range dbName {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return fmt.Errorf("invalid database name %q (only alphanumeric, underscore, hyphen allowed)", dbName)
+		}
+	}
+
+	_, err = db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %q", dbName))
+	if err != nil {
+		return fmt.Errorf("create database %q: %w", dbName, err)
+	}
+
+	log.Printf("[store] Auto-created PostgreSQL database %q", dbName)
 	return nil
 }
