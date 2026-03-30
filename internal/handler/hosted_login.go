@@ -191,10 +191,19 @@ func isAllowedRedirect(allowedList []string, uri string) bool {
 }
 
 func (h *Handler) redirectToLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {
-	u := h.url("/login") + "?error=" + url.QueryEscape(msg)
+	// If redirect_uri is set and allowed, send the error back to the app
+	// so it can handle it (e.g. show password fallback modal).
+	// redirect_uri is already validated by the caller before reaching here.
 	if redirectURI != "" {
-		u += "&redirect_uri=" + url.QueryEscape(redirectURI)
+		sep := "?"
+		if strings.Contains(redirectURI, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, redirectURI+sep+"error="+url.QueryEscape(msg), http.StatusFound)
+		return
 	}
+	// No redirect_uri — show SimpleAuth's own login page with error
+	u := h.url("/login") + "?error=" + url.QueryEscape(msg)
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
