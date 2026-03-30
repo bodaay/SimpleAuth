@@ -317,21 +317,34 @@ configure_firefox "firefox" "/etc/firefox/policies"
 [[ -d "/usr/lib/firefox/distribution" ]] && configure_firefox "firefox" "/usr/lib/firefox/distribution"
 [[ -d "/usr/lib64/firefox/distribution" ]] && configure_firefox "firefox" "/usr/lib64/firefox/distribution"
 
-# Firefox Snap
-if [[ -d "/snap/firefox" ]]; then
+# Firefox Snap (Ubuntu default)
+if [[ -d "/snap/firefox" ]] || snap list firefox &>/dev/null; then
+  info "Firefox Snap detected (Ubuntu default)"
   SNAP_POLICY="/etc/firefox/policies"
-  mkdir -p "$SNAP_POLICY"
-  if [[ ! -f "${SNAP_POLICY}/policies.json" ]]; then
-    configure_firefox "firefox-snap" "$SNAP_POLICY"
+  configure_firefox "firefox-snap" "$SNAP_POLICY"
+
+  # Snap Firefox needs the system-configuration-files interface to read /etc/firefox/policies
+  if snap connections firefox 2>/dev/null | grep -q "system-configuration-files.*-$"; then
+    info "Connecting Snap Firefox to system-configuration-files..."
+    if snap connect firefox:system-configuration-files 2>/dev/null; then
+      ok "Firefox Snap: interface connected — policies will be readable"
+    else
+      warn "Firefox Snap: failed to connect interface. Run manually:"
+      warn "  ${CYAN}sudo snap connect firefox:system-configuration-files${NC}"
+    fi
+  else
+    ok "Firefox Snap: system-configuration-files interface already connected"
   fi
-  ok "Firefox Snap: policy dir created (may need snap restart)"
+  warn "Note: restart Firefox after policy changes: ${CYAN}snap restart firefox${NC}"
 fi
 
 # Firefox Flatpak
 FLATPAK_FF="/var/lib/flatpak/app/org.mozilla.firefox"
 if [[ -d "$FLATPAK_FF" ]]; then
   warn "Firefox Flatpak detected — Kerberos SSO may not work in sandboxed Flatpak"
-  warn "  Consider using the system Firefox package instead"
+  warn "  Consider switching to the APT/deb or Snap version:"
+  warn "  ${CYAN}flatpak uninstall org.mozilla.firefox${NC}"
+  warn "  ${CYAN}sudo apt install firefox${NC}  (or use Snap)"
 fi
 
 # Firefox ESR
@@ -434,6 +447,75 @@ else
 fi
 
 # ═══════════════════════════════════════════
+#  Step 5: Auto-ticket (optional)
+# ═══════════════════════════════════════════
+step "5/5" "Automatic Kerberos tickets (optional)"
+
+echo -e "  By default, users must run ${CYAN}kinit user@${REALM}${NC} once per session."
+echo -e "  There are ways to make this automatic:"
+echo ""
+echo -e "  ${BOLD}Option A: Domain join with SSSD (recommended for enterprise)${NC}"
+echo -e "    Fully joins this machine to AD. Users get tickets automatically at login."
+echo -e "    No manual kinit ever needed."
+echo ""
+echo -e "  ${BOLD}Option B: PAM Kerberos module (already installed)${NC}"
+echo -e "    If the user's Linux password matches their AD password, a ticket is"
+echo -e "    obtained automatically at Linux login."
+echo ""
+echo -e "  ${BOLD}Option C: Manual kinit${NC}"
+echo -e "    Users run ${CYAN}kinit user@${REALM}${NC} once per session (24h ticket)."
+echo ""
+
+read -p "  Set up SSSD domain join? [y/N] " SETUP_SSSD
+SETUP_SSSD=${SETUP_SSSD:-N}
+
+if [[ "$SETUP_SSSD" =~ ^[Yy]$ ]]; then
+  echo ""
+  info "Installing SSSD and realmd..."
+
+  if command -v apt-get &>/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y sssd realmd adcli samba-common-bin 2>/dev/null
+  elif command -v dnf &>/dev/null; then
+    dnf install -y sssd realmd adcli samba-common-tools 2>/dev/null
+  elif command -v yum &>/dev/null; then
+    yum install -y sssd realmd adcli samba-common-tools 2>/dev/null
+  else
+    warn "Unknown package manager — install sssd, realmd, adcli manually"
+  fi
+
+  if command -v realm &>/dev/null; then
+    echo ""
+    info "Discovering domain ${DOMAIN}..."
+    if realm discover "$DOMAIN" 2>/dev/null; then
+      echo ""
+      read -p "  AD admin username for domain join (e.g. Administrator): " JOIN_USER
+      if [[ -n "$JOIN_USER" ]]; then
+        echo ""
+        info "Joining domain ${DOMAIN} as ${JOIN_USER}..."
+        if realm join -U "$JOIN_USER" "$DOMAIN"; then
+          ok "Domain joined successfully!"
+          ok "Users can now log in with: ${JOIN_USER}@${DOMAIN}"
+          ok "Kerberos tickets will be obtained automatically at login"
+
+          # Enable home directory creation
+          if command -v pam-auth-update &>/dev/null; then
+            pam-auth-update --enable mkhomedir 2>/dev/null
+          fi
+        else
+          fail "Domain join failed — check the password and admin permissions"
+        fi
+      fi
+    else
+      fail "Could not discover domain ${DOMAIN} — check DNS"
+    fi
+  else
+    warn "realmd not available — install it and retry"
+  fi
+else
+  info "Skipped domain join. Users will use manual kinit."
+fi
+
+# ═══════════════════════════════════════════
 #  Summary
 # ═══════════════════════════════════════════
 echo ""
@@ -446,20 +528,23 @@ echo -e "    • /etc/krb5.conf — Kerberos realm ${REALM}"
 echo -e "    • Browser policies — negotiate-auth for ${AUTH_URI}"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "    1. Each user runs: ${CYAN}kinit user@${REALM}${NC}"
-echo -e "    2. Open browser → ${CYAN}https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/login${NC}"
-echo -e "    3. Click ${BOLD}Sign in with SSO${NC} — should log in automatically"
+echo -e "    1. Restart your browser"
+echo -e "    2. Get a ticket: ${CYAN}kinit user@${REALM}${NC} (not needed if domain-joined)"
+echo -e "    3. Open browser → ${CYAN}https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/login${NC}"
+echo -e "    4. Click ${BOLD}Sign in with SSO${NC} — should log in automatically"
 echo ""
 echo -e "  ${BOLD}Troubleshooting:${NC}"
 echo -e "    • ${CYAN}klist${NC} — verify you have a valid ticket"
 echo -e "    • ${CYAN}kinit -V user@${REALM}${NC} — verbose kinit for debugging"
-echo -e "    • ${CYAN}KRB5_TRACE=/dev/stderr curl --negotiate -u : https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/api/auth/negotiate${NC}"
+echo -e "    • ${CYAN}KRB5_TRACE=/dev/stderr curl -sk --negotiate -u : https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/api/auth/negotiate${NC}"
 echo -e "    • Restart browser after policy changes"
-echo -e "    • Flatpak browsers may not support system Kerberos tickets"
+echo -e "    • Snap Firefox: ${CYAN}sudo snap connect firefox:system-configuration-files${NC}"
+echo -e "    • Flatpak Firefox: switch to APT/Snap version"
 echo ""
 echo -e "  ${BOLD}To undo:${NC}"
 echo -e "    • Restore /etc/krb5.conf from backup (ls /etc/krb5.conf.backup.*)"
 echo -e "    • Delete browser policy files (see paths above)"
+echo -e "    • Leave domain: ${CYAN}sudo realm leave ${DOMAIN}${NC}"
 echo ""
 `
 }
