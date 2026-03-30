@@ -115,6 +115,7 @@ type TableInfo struct {
 // RuntimeSettings holds configuration managed via the Admin UI.
 // Stored in the DB config bucket under "runtime_settings".
 type RuntimeSettings struct {
+	DeploymentName           string   `json:"deployment_name"`
 	RedirectURIs             []string `json:"redirect_uris"`
 	CORSOrigins              string   `json:"cors_origins"`
 	PasswordMinLength        int      `json:"password_min_length"`

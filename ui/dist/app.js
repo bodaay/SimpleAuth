@@ -1604,6 +1604,14 @@ function SettingsPage() {
     </div>
 
     <div class="card">
+      <div class="card-header"><h3>General</h3></div>
+      <div class="card-body">
+        ${field('Deployment Name', 'deployment_name', 'text')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">Short identifier (1-6 letters). Used in script filenames, browser policies, and SPN naming.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
       <div class="card-header"><h3>Redirect URIs</h3></div>
       <div class="card-body">
         <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">Allowed Redirect URIs (one per line)</label>

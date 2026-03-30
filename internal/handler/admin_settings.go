@@ -37,6 +37,7 @@ func (h *Handler) initRuntimeSettings() {
 
 	// First run — seed from config
 	rs := &store.RuntimeSettings{
+		DeploymentName:           h.cfg.DeploymentName,
 		RedirectURIs:             h.cfg.RedirectURIs,
 		CORSOrigins:              h.cfg.CORSOrigins,
 		PasswordMinLength:        h.cfg.PasswordMinLength,
