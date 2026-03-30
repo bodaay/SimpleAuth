@@ -3,7 +3,7 @@
   <p align="center">
     <strong>The simplest way to add Active Directory authentication to any app.</strong><br>
     Single binary. Zero dependencies. Full Kerberos SSO. Keycloak-compatible OIDC.<br>
-    From "I need AD auth" to "it's working" in under 10 minutes.
+    BoltDB or PostgreSQL. Admin UI for everything. Embeddable as a Go library.
   </p>
 </p>
 
@@ -11,9 +11,7 @@
 
 **SimpleAuth** is a single-instance identity server that replaces Keycloak, ADFS, and custom LDAP code with a single Go binary. It connects to your Active Directory, handles Kerberos/SPNEGO for transparent Windows SSO, provides a clean REST API, and issues RS256 JWTs -- all with zero external dependencies and an embedded admin UI.
 
-Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. Since SimpleAuth is single-app, single-instance, OIDC client credentials (`client_id`, `client_secret`) are deprecated and not validated. They are accepted for backward compatibility but will be removed in v1.0.
-
-Every user gets a stable GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
+Each SimpleAuth instance serves one application. Roles and permissions are global to the instance. Every user gets a stable GUID. AD is just another identity provider. Users are auto-created on first login. No import. No sync. No migration.
 
 ## Why SimpleAuth?
 
@@ -39,15 +37,13 @@ docker run -d -p 9090:9090 -p 80:80 \
   simpleauth
 ```
 
-> **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated. They are accepted for backward compatibility but not validated. They will be removed in v1.0.
-
-> **Multiple redirect URIs:** Use `AUTH_REDIRECT_URIS` (plural) to allow multiple redirect URIs, e.g. `AUTH_REDIRECT_URIS=https://app2.corp.local/callback,https://app3.corp.local/*`. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged into one deduplicated list. Wildcard `*` suffix is supported. If neither is set, any redirect URI is allowed.
+**Multiple redirect URIs:** Use `AUTH_REDIRECT_URIS` (plural) to allow multiple redirect URIs, e.g. `AUTH_REDIRECT_URIS=https://app2.corp.local/callback,https://app3.corp.local/*`. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged into one deduplicated list. Wildcard `*` suffix is supported. If neither is set, all redirects are **rejected**.
 
 ### Option 2: Binary
 
 ```bash
 ./simpleauth init-config          # generates simpleauth.yaml
-vim simpleauth.yaml               # set hostname, client config (admin_key auto-generates if empty)
+vim simpleauth.yaml               # set hostname, config (admin_key auto-generates if empty)
 ./simpleauth                      # that's it
 ```
 
@@ -57,11 +53,11 @@ On first run, SimpleAuth will:
 3. Auto-generate an admin key if none configured (printed to stdout)
 4. Start HTTPS on port 9090 and HTTP redirect on port 80
 
-The root URL `/` redirects to `/login`. The admin UI is at `/admin` -- open `https://<hostname>:9090/admin` and sign in with your admin key.
+The default base path is `/sauth`. The admin UI is at `https://<hostname>:9090/sauth/admin`. The hosted login page is at `/sauth/login`.
 
 ### Admin Access
 
-Admin access is controlled exclusively by the **ADMIN_KEY** -- a secret set via config or environment variable. Include it as `Authorization: Bearer <admin-key>` in API requests or enter it in the admin UI at `/admin`.
+Admin access is controlled exclusively by the **ADMIN_KEY** -- a secret set via config or environment variable. Include it as `Authorization: Bearer <admin-key>` in API requests or enter it in the admin UI.
 
 ## The AD Setup That Changes Everything
 
@@ -166,7 +162,33 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 
 ## Features
 
+### Database
+
+- **BoltDB** (default) -- zero config, embedded, no external dependencies
+- **PostgreSQL** (optional) -- set `AUTH_POSTGRES_URL` to enable; auto-creates the database if it doesn't exist
+- **Migrate between backends** from the Admin UI -- move data from BoltDB to Postgres or vice versa
+- **Automatic fallback** -- if Postgres is unreachable on startup, falls back to BoltDB
+
+### Admin UI
+
+Full management dashboard at `/sauth/admin` with dark mode:
+
+- **Dashboard** -- system overview and stats
+- **Users** -- CRUD, disable, merge/unmerge, force password change, unlock
+- **Roles & Permissions** -- define and assign roles, permissions, and role-permission mappings
+- **LDAP Settings** -- provider management, auto-discovery, import/export, AD setup script
+- **Identity Mappings** -- view and manage `(provider, external_id) -> GUID` links
+- **Impersonation** -- generate tokens as any user, fully audited
+- **Audit Log** -- searchable event log with configurable retention
+- **Settings** -- runtime configuration: redirect URIs, CORS, password policy, account lockout, rate limiting, default roles, audit retention
+- **Database** -- backend stats, test connection, migrate data, switch backends
+
+### Settings from UI
+
+Most configuration is manageable from the Admin UI at runtime. Environment variables seed the database on first run, then the database owns the values. Changes take effect immediately without restart.
+
 ### Authentication
+
 - **Kerberos/SPNEGO** -- transparent Windows SSO, auto-configured keytab
 - **LDAP bind** -- form-based login with fallback user filter detection (sAMAccountName, userPrincipalName, uid)
 - **Local passwords** -- bcrypt-hashed, for non-AD users
@@ -179,6 +201,7 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Impersonation** -- admins generate tokens as any user, fully audited
 
 ### Identity
+
 - **GUID-based users** -- stable identity across all systems, usernames are just attributes
 - **Zero-import onboarding** -- users auto-created on first login from any provider
 - **Identity mappings** -- `(provider, external_id) -> GUID` across LDAP, Kerberos
@@ -186,22 +209,27 @@ No orphaned accounts. No mystery SPNs. Full lifecycle management.
 - **Rich profiles** -- name, email, department, company, job title, groups synced from AD on every login
 
 ### Authorization
-- **Global roles and permissions** -- define roles and permissions at the instance level, assigned to users. SimpleAuth is the authority: roles and permissions must be defined before they can be assigned.
+
+- **Global roles and permissions** -- define roles and permissions at the instance level, assigned to users
 - **Default roles** -- auto-assigned to new users on first login
 - **Role-permission mapping** -- associate permissions with roles for structured access control
 - **RS256 JWTs** -- auto-generated RSA-2048 keys, JWKS endpoint, all claims in the token
 - **Refresh token rotation** -- family-based replay detection with automatic revocation
+- **Token revocation blacklist** -- access tokens revoked immediately on demand
 
 ### Operations
+
 - **Single binary** -- zero external dependencies, ~15MB, runs anywhere
 - **Embedded admin UI** -- Preact SPA with dark mode, no build step
 - **HTTPS or reverse proxy** -- auto-generates self-signed certs, or HTTP-only mode behind nginx/Traefik
 - **User self-service** -- `/account` page for profile view and password change
 - **LDAP/AD integration** -- connect to Active Directory or LDAP with auto-discovery
-- **Auto-discovery** -- point at a domain, SimpleAuth figures out DCs, base DN, and filters
 - **Backup/restore** -- live BoltDB snapshots via API
 - **Audit logging** -- every action logged with configurable retention
-- **Rate limiting** -- per-IP, configurable window and threshold
+- **Rate limiting** -- per-IP, configurable window and threshold, with trusted proxy support
+- **Graceful restart from UI** -- `POST /api/admin/restart` for zero-downtime restarts
+- **Linux SSO setup script** -- auto-generated bash script configures krb5.conf + browser policies (Firefox, Chrome, Edge, Brave, Vivaldi, Opera) + optional SSSD domain join
+- **Embeddable** -- `pkg/server` package for embedding SimpleAuth in any Go application
 
 ### Keycloak Compatibility
 
@@ -219,6 +247,20 @@ SimpleAuth exposes Keycloak-compatible OIDC endpoints so existing apps can switc
 
 JWT claims include Keycloak-compatible fields: `preferred_username`, `realm_access.roles`, `azp`, `scope`, `session_state`.
 
+## Security
+
+| Area | Implementation |
+|------|---------------|
+| **JWT signing** | RS256 with auto-generated RSA-2048 keys, JWKS endpoint for public key distribution |
+| **Token revocation** | Access token blacklist with immediate effect; refresh token family-based replay detection |
+| **Password storage** | Bcrypt hashing, configurable policy (length, complexity), password history |
+| **Account protection** | Lockout after N failed attempts, configurable threshold and duration |
+| **CSRF** | Token-based CSRF protection on all login forms |
+| **Admin authentication** | Timing-safe comparison of admin key |
+| **Encryption at rest** | AES-256-GCM encryption for secrets (LDAP bind passwords, Postgres URL) |
+| **Rate limiting** | Per-IP with configurable window/threshold, trusted proxy CIDR support |
+| **Redirect validation** | Scheme validation + allowlist; empty allowlist = reject all |
+
 ## Client SDKs
 
 Official SDKs with JWKS-cached token validation, middleware, and role/permission helpers:
@@ -234,7 +276,7 @@ Every SDK supports:
 - Login (`POST /api/auth/login`), refresh (`POST /api/auth/refresh`) via direct JSON API
 - **Offline token verification** -- JWKS keys fetched from `GET /.well-known/jwks.json`, cached, RS256 signature verified locally
 - UserInfo (`GET /api/auth/userinfo`)
-- Admin operations via `AdminKey` (replaces `ClientSecret`)
+- Admin operations via `AdminKey`
 - Role and permission helpers (`HasRole`, `HasPermission`, `HasAnyRole`)
 - Framework middleware (Express, net/http, FastAPI/Flask/Django, ASP.NET Core)
 
@@ -242,7 +284,7 @@ See [examples/](examples/) for copy-paste ready integration code.
 
 ## Embed in Your Go App
 
-SimpleAuth can be embedded directly into any Go application as a library. It runs as a full auth server inside your process — same REST API, same admin UI, same JWT issuance — no separate binary needed.
+SimpleAuth can be embedded directly into any Go application as a library. It runs as a full auth server inside your process -- same REST API, same admin UI, same JWT issuance, same database backend support (BoltDB or PostgreSQL) -- no separate binary needed.
 
 ```go
 package main
@@ -256,7 +298,7 @@ import (
 )
 
 func main() {
-    // Option 1: Programmatic config — full control, no env vars read
+    // Option 1: Programmatic config -- full control, no env vars read
     cfg := server.Defaults()
     cfg.Hostname = "myapp.example.com"
     cfg.AdminKey = "my-secret-key"
@@ -285,12 +327,12 @@ func main() {
 ```
 
 **How it works:**
-- `server.Defaults()` returns a config with sensible defaults — modify only what you need
-- `server.New(cfg, uiFS)` — pass a config for full programmatic control (no env vars read)
-- `server.New(nil, uiFS)` — pass nil to load from `AUTH_*` env vars / config file (same as standalone)
+- `server.Defaults()` returns a config with sensible defaults -- modify only what you need
+- `server.New(cfg, uiFS)` -- pass a config for full programmatic control (no env vars read)
+- `server.New(nil, uiFS)` -- pass nil to load from `AUTH_*` env vars / config file (same as standalone)
 - `sa.Handler()` returns a standard `http.Handler` you mount on your router
 - `ui.FS()` provides the embedded admin UI; pass `nil` to run without a UI (API only)
-- `server.Config` is the same struct used by the standalone binary — every field is available
+- `server.Config` is the same struct used by the standalone binary -- every field is available
 - Your app communicates with SimpleAuth via its REST API at whatever path you mount it on
 
 ### Bootstrap Pattern (Recommended)
@@ -391,7 +433,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 2. `simpleauth.yaml` or `simpleauth.yml` in current directory
 3. `/etc/simpleauth/config.yaml` or `/etc/simpleauth/config.yml`
 
-**Priority:** defaults < config file < environment variables (env always wins)
+**Priority:** defaults < config file < environment variables (env always wins on first run; then DB owns settings manageable from the Admin UI)
 
 ### Environment Variables
 
@@ -402,20 +444,19 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_HTTP_PORT` | `80` | HTTP redirect port (empty = disabled) |
 | `AUTH_DATA_DIR` | `./data` | Data directory for DB, certs, keytabs |
 | `AUTH_ADMIN_KEY` | auto-generated | Bootstrap admin API key |
-| `AUTH_CLIENT_ID` | | **(Deprecated)** OIDC client ID. Accepted but not validated. Will be removed in v1.0. |
-| `AUTH_CLIENT_SECRET` | | **(Deprecated)** OIDC client secret. Accepted but not validated. Will be removed in v1.0. |
+| `AUTH_BASE_PATH` | `/sauth` | URL path prefix for sub-path mounting |
+| `AUTH_POSTGRES_URL` | | PostgreSQL connection URL (optional; enables Postgres backend) |
 | `AUTH_REDIRECT_URI` | | Allowed OIDC redirect URI (single value; backward compatible) |
 | `AUTH_REDIRECT_URIS` | | Allowed OIDC redirect URIs (comma-separated list for multiple apps) |
 | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only; for service account naming) |
 | `AUTH_JWT_ISSUER` | `simpleauth` | JWT `iss` claim |
-| `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime |
+| `AUTH_JWT_ACCESS_TTL` | `15m` | Access token lifetime |
 | `AUTH_JWT_REFRESH_TTL` | `720h` | Refresh token lifetime (30 days) |
 | `AUTH_IMPERSONATE_TTL` | `1h` | Impersonation token lifetime |
 | `AUTH_TLS_CERT` | auto-generated | TLS certificate path |
 | `AUTH_TLS_KEY` | auto-generated | TLS private key path |
 | `AUTH_TLS_DISABLED` | `false` | Disable TLS for reverse proxy mode (plain HTTP) |
-| `AUTH_TRUSTED_PROXIES` | | Trusted proxy CIDRs for X-Forwarded-For (comma-separated) |
-| `AUTH_BASE_PATH` | | URL path prefix for sub-path mounting (e.g., `/auth`) |
+| `AUTH_TRUSTED_PROXIES` | | Trusted proxy CIDRs for X-Forwarded-For (comma-separated; required if behind a reverse proxy) |
 | `AUTH_KRB5_KEYTAB` | | Kerberos keytab path (usually auto-configured) |
 | `AUTH_KRB5_REALM` | | Kerberos realm (usually auto-configured) |
 | `AUTH_AUDIT_RETENTION` | `2160h` | Audit log retention (90 days) |
@@ -432,6 +473,8 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Failed login attempts before lockout (0 = disabled) |
 | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | Duration of account lockout |
 
+> **Note:** If neither `AUTH_REDIRECT_URI` nor `AUTH_REDIRECT_URIS` is set, all redirect URIs are **rejected**.
+
 ### Reverse Proxy (nginx / Traefik / Caddy)
 
 When running behind a reverse proxy, disable TLS and configure trusted proxies:
@@ -441,7 +484,7 @@ AUTH_TLS_DISABLED=true
 AUTH_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8"
 ```
 
-To mount SimpleAuth at a sub-path (e.g., `https://example.com/auth/`):
+To mount SimpleAuth at a custom sub-path:
 
 ```bash
 AUTH_BASE_PATH=/auth
@@ -501,7 +544,7 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 | **Roles** | `GET/PUT /api/admin/users/{guid}/roles`, `GET/PUT /api/admin/users/{guid}/permissions` |
 | **Default Roles** | `GET/PUT /api/admin/defaults/roles` |
 | **Role-Permissions** | `GET/PUT /api/admin/role-permissions` |
-| **All Roles/Perms** | `GET /api/admin/roles`, `GET /api/admin/permissions`, `PUT /api/admin/permissions` (define available permissions) |
+| **All Roles/Perms** | `GET /api/admin/roles`, `GET /api/admin/permissions`, `PUT /api/admin/permissions` |
 | **LDAP** | CRUD `/api/admin/ldap`, auto-discover, import/export, test connection |
 | **AD Sync** | `POST /api/admin/ldap/:id/sync-user`, `POST /api/admin/ldap/:id/sync-all` |
 | **AD Setup Script** | `GET /api/admin/setup-script` (interactive PowerShell with hostname pre-injected) |
@@ -509,6 +552,10 @@ All admin endpoints require `Authorization: Bearer <admin-key>`.
 | **Mappings** | Identity mappings CRUD, resolve |
 | **Password Policy** | `GET /api/admin/password-policy` |
 | **Account Unlock** | `PUT /api/admin/users/{guid}/unlock` |
+| **Settings** | `GET/PUT /api/admin/settings` -- runtime configuration |
+| **Restart** | `POST /api/admin/restart` -- graceful server restart |
+| **Database** | `GET /api/admin/database/info`, `POST /api/admin/database/test`, `POST /api/admin/database/migrate`, `GET /api/admin/database/migrate/status`, `POST /api/admin/database/switch` |
+| **Linux SSO** | `GET /api/admin/linux-setup-script` -- auto-generated bash script for Linux SSO setup |
 | **Operations** | Backup, restore, audit log, server info |
 
 See [docs/API.md](docs/API.md) for the complete API reference with request/response examples.
@@ -560,11 +607,17 @@ simpleauth
 ├── docker-compose.yml             # Full stack with nginx
 ├── internal/
 │   ├── config/config.go           # YAML + env config, auto TLS cert generation
-│   ├── store/store.go             # BoltDB storage (users, sessions, audit...)
+│   ├── store/
+│   │   ├── interface.go           # Storage interface (BoltDB / PostgreSQL)
+│   │   ├── bolt.go                # BoltDB storage implementation
+│   │   ├── postgres.go            # PostgreSQL storage implementation
+│   │   ├── migrate.go             # Data migration between backends
+│   │   └── dbconfig.go            # Database configuration and switching
 │   ├── auth/
 │   │   ├── jwt.go                 # RSA keys, JWT signing/validation, JWKS, OIDC tokens
 │   │   ├── ldap.go                # LDAP search, bind, groups, attribute sync
-│   │   └── local.go               # bcrypt password hashing
+│   │   ├── local.go               # bcrypt password hashing
+│   │   └── encrypt.go             # AES-256-GCM encryption at rest for secrets
 │   └── handler/
 │       ├── handler.go             # Route registration, CORS, helpers
 │       ├── auth.go                # Login, refresh, negotiate, SPNEGO, impersonate
@@ -574,6 +627,11 @@ simpleauth
 │       ├── admin.go               # User CRUD, roles, backup/restore, audit
 │       ├── admin_ldap.go          # LDAP management, auto-discover, import/export
 │       ├── admin_kerberos.go      # Kerberos setup, keytab generation, SPN mgmt
+│       ├── admin_settings.go      # Runtime settings management
+│       ├── admin_migration.go     # Database migration and switching
+│       ├── admin_restart.go       # Graceful restart endpoint
+│       ├── admin_linux_sso.go     # Linux SSO setup script generation
+│       ├── secrets.go             # Secret management (encrypted storage)
 │       └── middleware.go          # Admin auth, rate limiting
 ├── sdk/                           # Client SDKs
 │   ├── js/                        # JavaScript/TypeScript
@@ -599,7 +657,7 @@ simpleauth
     ├── embed.go                   # ui.FS() for embedding in Go apps
     └── dist/
         ├── index.html
-        ├── app.js                 # SPA: Dashboard, Users, LDAP, Mappings, Audit
+        ├── app.js                 # SPA: Dashboard, Users, Roles, LDAP, Mappings, Settings, Database, Audit
         └── vendor/                # Preact, htm (offline, no CDN)
 ```
 

@@ -784,7 +784,7 @@ List active sessions (non-expired, non-used refresh tokens) for a user.
 
 **Auth:** Admin Key
 
-Revoke all sessions for a user. Forces them to log in again everywhere.
+Revoke all sessions for a user. This revokes **both** refresh tokens and access tokens. Active access tokens are added to a blacklist and checked on every authenticated request, so revocation is immediate -- there is no waiting for token expiry. Forces the user to log in again everywhere.
 
 ---
 
@@ -1630,3 +1630,285 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 | `account_locked` | Account locked due to too many failed login attempts |
 | `account_unlocked` | Account unlocked (by admin) |
 | `impersonation` | Admin impersonated a user |
+
+---
+
+## Admin: Settings
+
+### `GET /api/admin/settings`
+
+**Auth:** Admin Key
+
+Returns the current runtime settings.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/settings
+```
+
+**Response (200):**
+
+```json
+{
+  "redirect_uris": ["https://myapp.example.com/callback"],
+  "cors_origins": ["https://myapp.example.com"],
+  "password_policy": {
+    "min_length": 8,
+    "require_uppercase": true,
+    "require_lowercase": true,
+    "require_digit": true,
+    "require_special": false,
+    "history_count": 5
+  },
+  "lockout": {
+    "max_attempts": 5,
+    "duration_minutes": 15
+  },
+  "rate_limiting": {
+    "enabled": true,
+    "requests_per_second": 10
+  },
+  "default_roles": ["user"],
+  "audit_retention_days": 90,
+  "deployment_name": "sauth"
+}
+```
+
+---
+
+### `PUT /api/admin/settings`
+
+**Auth:** Admin Key
+
+Update runtime settings. Only provided fields are updated.
+
+**Request:**
+
+```json
+{
+  "redirect_uris": ["https://myapp.example.com/callback", "https://other.example.com/callback"],
+  "cors_origins": ["https://myapp.example.com"],
+  "password_policy": {
+    "min_length": 12,
+    "require_uppercase": true,
+    "require_lowercase": true,
+    "require_digit": true,
+    "require_special": true,
+    "history_count": 10
+  },
+  "lockout": {
+    "max_attempts": 3,
+    "duration_minutes": 30
+  },
+  "rate_limiting": {
+    "enabled": true,
+    "requests_per_second": 5
+  },
+  "default_roles": ["user", "viewer"],
+  "audit_retention_days": 180,
+  "deployment_name": "prod-auth"
+}
+```
+
+**Response (200):** Returns the full updated `RuntimeSettings` JSON (same shape as `GET`).
+
+---
+
+## Admin: Server
+
+### `POST /api/admin/restart`
+
+**Auth:** Admin Key
+
+Triggers a graceful server restart. Active connections are allowed to complete before the server restarts.
+
+```bash
+curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/restart
+```
+
+**Response (200):**
+
+```json
+{"status": "restarting"}
+```
+
+---
+
+## Admin: Database
+
+### `GET /api/admin/database/info`
+
+**Auth:** Admin Key
+
+Returns information about the current database backend.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/database/info
+```
+
+**Response (200):**
+
+```json
+{
+  "backend": "boltdb",
+  "health": "ok",
+  "size": 1048576,
+  "rows": 350,
+  "tables": {
+    "users": 120,
+    "sessions": 80,
+    "audit": 150
+  },
+  "connection_stats": {}
+}
+```
+
+---
+
+### `POST /api/admin/database/test`
+
+**Auth:** Admin Key
+
+Test connectivity to a Postgres database. If the specified database does not exist, it is automatically created.
+
+**Request:**
+
+```json
+{
+  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
+}
+```
+
+**Response (200):**
+
+```json
+{"status": "ok"}
+```
+
+---
+
+### `POST /api/admin/database/migrate`
+
+**Auth:** Admin Key
+
+Start a database migration between backends.
+
+**Request (migrate to Postgres):**
+
+```json
+{
+  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable",
+  "direction": "to_postgres"
+}
+```
+
+**Request (migrate to BoltDB):**
+
+```json
+{
+  "direction": "to_boltdb"
+}
+```
+
+**Response (200):**
+
+```json
+{"status": "migration_started"}
+```
+
+---
+
+### `GET /api/admin/database/migrate/status`
+
+**Auth:** Admin Key
+
+Returns the current migration progress.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/database/migrate/status
+```
+
+**Response (200):**
+
+```json
+{
+  "state": "migrating",
+  "progress": {
+    "users": {"total": 120, "migrated": 80},
+    "sessions": {"total": 80, "migrated": 80},
+    "audit": {"total": 150, "migrated": 45}
+  },
+  "items": {
+    "total": 350,
+    "migrated": 205
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `state` | `idle`, `migrating`, `completed`, or `failed` |
+| `progress` | Per-table migration counts |
+| `items` | Aggregate item counts across all tables |
+
+---
+
+### `POST /api/admin/database/switch`
+
+**Auth:** Admin Key
+
+Switch the active database backend. Saves the backend choice to `db.json` and automatically triggers a server restart.
+
+**Request (switch to Postgres):**
+
+```json
+{
+  "backend": "postgres",
+  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
+}
+```
+
+**Request (switch to BoltDB):**
+
+```json
+{
+  "backend": "boltdb"
+}
+```
+
+**Response (200):**
+
+```json
+{"status": "switched", "backend": "postgres"}
+```
+
+The server will restart automatically after responding.
+
+---
+
+## Admin: Linux SSO
+
+### `GET /api/admin/linux-setup-script`
+
+**Auth:** Admin Key
+
+Download a bash script for setting up Linux Kerberos SSO. The script has the SimpleAuth hostname pre-injected and handles Kerberos client configuration, keytab setup, and SPN registration on Linux hosts.
+
+Returns a `.sh` file.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://localhost:8080/api/admin/linux-setup-script -o linux-sso-setup.sh
+```
+
+---
+
+## Security Notes
+
+- **Timing-safe admin key comparison** -- The admin key is compared using a constant-time comparison function to prevent timing side-channel attacks.
+- **CSRF protection on login forms** -- Login form submissions include CSRF tokens to prevent cross-site request forgery.
+- **Rate limiting behind reverse proxies** -- If SimpleAuth is deployed behind a reverse proxy (nginx, Caddy, etc.), configure `AUTH_TRUSTED_PROXIES` so that rate limiting uses the real client IP from `X-Forwarded-For` headers instead of the proxy's IP.
+- **Redirect URI validation** -- If the configured redirect URI list is empty, all redirect requests are rejected. This is a secure default -- you must explicitly allow at least one redirect URI for OAuth/OIDC flows to work.

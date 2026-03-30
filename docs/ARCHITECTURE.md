@@ -35,19 +35,25 @@ How SimpleAuth works under the hood. Read this if you want to extend SimpleAuth,
                     |             |                    |
                     |             v                    |
                     |  +----------------------------+  |
-                    |  |    BoltDB Store             |  |
-                    |  | (users, tokens, roles, etc.)|  |
-                    |  +----------------------------+  |
-                    |             |                    |
-                    +------------|--------------------+
-                                 |
-                    +------------+------------+
-                    |                         |
-               +----+----+            +------+------+
-               |  Active  |            |   Kerberos  |
-               |Directory |            |    KDC      |
-               | (LDAP)   |            |  (SPNEGO)   |
-               +----------+            +-------------+
+                    |  |    Store Interface           |  |
+                    |  |  (59 methods, interface.go)  |  |
+                    |  +------+-------------+--------+  |
+                    |         |             |            |
+                    |         v             v            |
+                    |  +----------+  +-------------+    |
+                    |  | BoltDB   |  | PostgreSQL  |    |
+                    |  | (auth.db)|  | (sa_* tables)|    |
+                    |  +----------+  +-------------+    |
+                    |         |             |            |
+                    +---------|-------------|------------+
+                              |             |
+                    +---------+------+------+------+
+                    |                |              |
+               +----+----+   +------+------+  +----+---+
+               |  Active  |   |   Kerberos  |  |Postgres|
+               |Directory |   |    KDC      |  |Server  |
+               | (LDAP)   |   |  (SPNEGO)   |  |(opt.)  |
+               +----------+   +-------------+  +--------+
 ```
 
 ---
@@ -163,7 +169,7 @@ When a login request comes in:
 ### Access Tokens
 
 - **Type:** RS256-signed JWTs
-- **Default TTL:** 8 hours
+- **Default TTL:** 15 minutes
 - **Verification:** Offline using JWKS public keys (no server roundtrip)
 - **Contents:** User GUID, name, email, roles, permissions, groups, department, company, job title
 
@@ -297,15 +303,17 @@ Browser             Your App              SimpleAuth
 
 ---
 
-## Data Model (BoltDB)
+## Data Model
 
-SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, embedded key-value database. No external database server needed.
+SimpleAuth supports two storage backends with identical semantics. The `Store` interface (`internal/store/interface.go`) defines 59 methods; both `BoltStore` and `PostgresStore` implement all of them.
 
-### Buckets
+### BoltDB Buckets
+
+[BoltDB](https://github.com/etcd-io/bbolt) is a single-file, embedded key-value database (`{data_dir}/auth.db`). No external database server needed.
 
 | Bucket | Key | Value | Purpose |
 |---|---|---|---|
-| `config` | arbitrary string | arbitrary bytes | Generic config store (default roles, role-permissions, etc.) |
+| `config` | arbitrary string | arbitrary bytes | Generic config store (default roles, role-permissions, runtime settings, etc.) |
 | `users` | GUID (UUID) | JSON `User` | User records |
 | `ldap_providers` | Provider ID | JSON `LDAPProvider` | LDAP/AD configuration (single provider) |
 | `identity_mappings` | `provider:external_id` | GUID string | Maps external IDs to users |
@@ -315,6 +323,25 @@ SimpleAuth uses [BoltDB](https://github.com/etcd-io/bbolt) -- a single-file, emb
 | `refresh_tokens` | Token ID (UUID) | JSON `RefreshToken` | Active refresh tokens |
 | `audit_log` | `timestamp:uuid` | JSON `AuditEntry` | Audit log (time-ordered) |
 | `oidc_auth_codes` | Code (hex string) | JSON `OIDCAuthCode` | Short-lived auth codes (10 min) |
+| `revoked_tokens` | JTI string | expiry time | Blacklisted access tokens (checked on every auth request) |
+| `revoked_users` | User GUID | expiry time | Users whose access tokens are force-revoked (checked on every auth request) |
+
+### PostgreSQL Tables
+
+When using the Postgres backend, all tables are prefixed with `sa_` and auto-created on first connection.
+
+| Table | Primary Key | Columns | Purpose |
+|---|---|---|---|
+| `sa_users` | `guid TEXT` | `data JSONB` | User records |
+| `sa_identity_mappings` | `(provider, external_id)` | `user_guid TEXT` | Identity mappings (indexed on `user_guid`) |
+| `sa_user_roles` | `guid TEXT` | `roles JSONB` | Roles per user |
+| `sa_user_permissions` | `guid TEXT` | `permissions JSONB` | Permissions per user |
+| `sa_config` | `key TEXT` | `value BYTEA` | Config key-value (runtime settings, default roles, etc.) |
+| `sa_refresh_tokens` | `token_id TEXT` | `data JSONB` | Active refresh tokens |
+| `sa_audit_log` | `id TEXT` | `timestamp TIMESTAMPTZ`, `data JSONB` | Audit log (indexed on `timestamp DESC`) |
+| `sa_oidc_auth_codes` | `code TEXT` | `data JSONB`, `expires_at TIMESTAMPTZ` | Short-lived auth codes |
+| `sa_revoked_tokens` | `jti TEXT` | `expires_at TIMESTAMPTZ` | Blacklisted access tokens |
+| `sa_revoked_users` | `user_guid TEXT` | `expires_at TIMESTAMPTZ` | Force-revoked users |
 
 ### Data Types
 
@@ -343,6 +370,70 @@ The identity mapping system is the heart of SimpleAuth's authentication support.
 - `kerberos:jsmith@CORP.LOCAL` -- Kerberos principal
 
 When a user authenticates, SimpleAuth resolves their identity mapping to find (or create) their user record. This means the same person can authenticate via LDAP, Kerberos, or a local password and end up as the same user.
+
+---
+
+## Store Interface and Database Selection
+
+### Store Interface
+
+`internal/store/interface.go` defines the `Store` interface with 59 methods covering users, LDAP config, identity mappings, roles/permissions, config key-value, refresh tokens, audit log, backup/restore, OIDC auth codes, runtime settings, database info, and token revocation. Both `BoltStore` (`internal/store/bolt.go`) and `PostgresStore` (`internal/store/postgres.go`) implement the full interface.
+
+### Database Selection (`OpenSmart`)
+
+`store.OpenSmart(dataDir, postgresURL)` determines which backend to open:
+
+1. Read `db.json` from the data directory. If it exists and specifies `"backend": "postgres"` with a connection URL, open Postgres (decrypting the URL with `encrypt.key` if needed).
+2. Otherwise, if `postgresURL` was passed (from `AUTH_POSTGRES_URL` env var or config file), try Postgres. On success, write `db.json` so the Admin UI knows the active backend.
+3. If neither is set, or if Postgres fails at any step, fall back to BoltDB with a warning in the logs.
+
+### Migration Engine
+
+SimpleAuth provides bidirectional data migration between BoltDB and PostgreSQL (`internal/store/migrate.go`):
+
+- **BoltDB to Postgres (`MigrateToPostgres`):** truncates all `sa_*` target tables, iterates every key in each BoltDB bucket, inserts into the corresponding Postgres table using `ON CONFLICT` upserts, then verifies row counts match.
+- **Postgres to BoltDB (`MigrateFromPostgres`):** queries each `sa_*` table, writes key-value pairs into BoltDB buckets, then verifies row counts.
+- **Auto-create database:** `TestPostgresConnection` connects to the `postgres` maintenance database and issues `CREATE DATABASE` if the target database does not exist.
+- Progress is streamed via a status channel (state: `running` -> `verifying` -> `completed` or `failed`).
+
+---
+
+## Runtime Settings
+
+Some configuration values are "runtime settings" -- they are seeded from environment variables / config file on first run, then owned by the database. After the initial seed, changes must be made through the Admin UI or `PUT /api/admin/settings`.
+
+Runtime settings include: deployment name, redirect URIs, CORS origins, password policy, account lockout, and default roles. They are stored as a JSON blob under the `runtime_settings` key in the config bucket/table.
+
+The handler caches runtime settings in memory (`runtimeSettingsCache`) and reloads from DB on `PUT /api/admin/settings`.
+
+---
+
+## Token Revocation
+
+SimpleAuth maintains two blacklists checked on every authenticated request:
+
+- **`revoked_tokens`** (BoltDB bucket) / **`sa_revoked_tokens`** (Postgres table) -- individual access tokens blacklisted by JTI. Used when an admin revokes a specific session.
+- **`revoked_users`** (BoltDB bucket) / **`sa_revoked_users`** (Postgres table) -- user GUIDs whose access tokens should be rejected regardless of JTI. Used when a user is disabled or all their sessions are revoked.
+
+Both have an `expires_at` timestamp. Expired entries are cleaned up by `CleanExpiredRevocations()` (called by the audit log pruner).
+
+---
+
+## Encryption at Rest
+
+SimpleAuth generates a 256-bit AES key at `{data_dir}/encrypt.key` on first startup (32 random bytes, hex-encoded to 64 characters, file permissions `0600`).
+
+Encryption uses AES-256-GCM (`internal/auth/encrypt.go`). Encrypted values are prefixed with `enc::` followed by base64-encoded `nonce || ciphertext`. The key is independent of the admin key -- changing `AUTH_ADMIN_KEY` does not break encrypted secrets.
+
+Currently used to encrypt: the PostgreSQL connection string stored in `db.json`, and LDAP service account passwords.
+
+---
+
+## Graceful Restart
+
+`main.go` runs the server in a `for` loop. When the Admin UI triggers a restart (e.g., after switching database backends), it sends on a `restartCh` channel. A goroutine receives from that channel and calls `http.Server.Shutdown()` with a 10-second timeout. `ListenAndServe` returns `http.ErrServerClosed`, which causes `runServer()` to return `false` (not exit). The loop sleeps 500ms and calls `runServer()` again, re-loading config and re-opening the store.
+
+If the server exits for any other reason (fatal error, normal shutdown), the loop breaks and the process exits.
 
 ---
 
@@ -393,4 +484,6 @@ SimpleAuth includes several configurable password security features:
 - BoltDB file has `0600` permissions
 - Data directory has `0700` permissions
 - TLS private keys have `0600` permissions
+- Encryption key (`encrypt.key`) has `0600` permissions
+- Sensitive secrets (Postgres URL, LDAP bind password) encrypted with AES-256-GCM using `encrypt.key`
 - Docker container runs as non-root user (`simpleauth`)

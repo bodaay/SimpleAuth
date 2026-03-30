@@ -27,7 +27,7 @@ import (
 
 func main() {
     client := sa.New(sa.Options{
-        URL: "https://auth.example.com",
+        URL: "https://auth.example.com/sauth",
     })
 
     // Password login
@@ -45,6 +45,8 @@ func main() {
     fmt.Println("Hello,", user.PreferredUsername)
 }
 ```
+
+> **Note:** The default access token TTL is **15 minutes**. Applications should implement proper token refresh using the `Refresh` method before the access token expires, rather than relying on long-lived tokens.
 
 ## Authentication flows
 
@@ -154,7 +156,7 @@ For development environments with self-signed TLS certificates:
 
 ```go
 client := sa.New(sa.Options{
-    URL:                "https://localhost:8443",
+    URL:                "https://localhost:8443/sauth",
     InsecureSkipVerify: true,
 })
 ```
@@ -196,7 +198,7 @@ mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
 
 | Field | Description | Default |
 |---|---|---|
-| `URL` | SimpleAuth server base URL | *(required)* |
+| `URL` | SimpleAuth server base URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) | *(required)* |
 | `AdminKey` | Admin key for admin API operations (sent as Bearer token) | `""` |
 | `ClientID` | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. | `""` |
 | `ClientSecret` | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. | `""` |

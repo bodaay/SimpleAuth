@@ -14,9 +14,11 @@ npm install @simpleauth/js
 import { SimpleAuth } from '@simpleauth/js';
 
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090',
+  url: 'https://auth.corp.local:9090/sauth',
 });
 ```
+
+> **Note:** The default access token TTL is **15 minutes**. Applications should implement proper token refresh using the `refresh` method before the access token expires, rather than relying on long-lived tokens.
 
 ## Authentication
 
@@ -96,7 +98,7 @@ import { SimpleAuth } from '@simpleauth/js';
 
 const app = express();
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090',
+  url: 'https://auth.corp.local:9090/sauth',
 });
 
 // Require authentication (returns 401 if no valid token)
@@ -191,7 +193,7 @@ try {
 
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
-| `url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
+| `url`          | `string` | Yes      | --              | SimpleAuth server URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) |
 | `adminKey`     | `string` | No       | --              | Admin key for admin API operations (sent as Bearer token) |
 | `clientId`     | `string` | No       | `''`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
 | `clientSecret` | `string` | No       | --              | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |
@@ -206,7 +208,7 @@ The SDK works in browsers without any bundler configuration. It uses the native 
 import { SimpleAuth } from './index.js';
 
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090',
+  url: 'https://auth.corp.local:9090/sauth',
 });
 
 const tokens = await auth.login('username', 'password');

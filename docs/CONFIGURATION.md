@@ -37,22 +37,23 @@ SimpleAuth looks for a config file in this order:
 | `hostname` | `AUTH_HOSTNAME` | OS hostname | FQDN clients use to access SimpleAuth. Used in TLS certificate SANs and Kerberos SPN. |
 | `port` | `AUTH_PORT` | `9090` | HTTPS listening port. |
 | `http_port` | `AUTH_HTTP_PORT` | `80` | HTTP port for automatic redirect to HTTPS. Set to `""` to disable. |
-| `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the BoltDB database, TLS certificates, and keytabs. |
+| `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the database, TLS certificates, encryption key, and keytabs. |
+| `postgres_url` | `AUTH_POSTGRES_URL` | (none) | PostgreSQL connection string (e.g. `postgres://user:pass@host:5432/dbname?sslmode=disable`). When set, SimpleAuth uses Postgres instead of BoltDB. The target database is auto-created if it does not exist. Optional -- omit to use the embedded BoltDB backend. |
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
 | `client_id` | `AUTH_CLIENT_ID` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
 | `client_secret` | `AUTH_CLIENT_SECRET` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
 | `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (single value). Backward compatible. |
-| `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Allowed OIDC redirect URIs (comma-separated list). Use this to allow multiple apps to share one SimpleAuth instance. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged and deduplicated. Wildcard `*` suffix supported (e.g. `https://app.corp.local/*`). If neither is set, any redirect URI is allowed. |
+| `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Allowed OIDC redirect URIs (comma-separated list). Use this to allow multiple apps to share one SimpleAuth instance. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged and deduplicated. Wildcard `*` suffix supported (e.g. `https://app.corp.local/*`). If neither is set, all redirects are **rejected** (only the hosted login page works). |
 | `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
 | `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
-| `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `8h` | Access token lifetime. Go duration format (e.g., `30m`, `8h`, `24h`). |
+| `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `15m` | Access token lifetime. Go duration format (e.g., `15m`, `1h`, `8h`). |
 | `refresh_ttl` | `AUTH_JWT_REFRESH_TTL` | `720h` | Refresh token lifetime (default 30 days). |
 | `impersonate_ttl` | `AUTH_IMPERSONATE_TTL` | `1h` | Token lifetime for impersonation tokens. |
 | `tls_cert` | `AUTH_TLS_CERT` | (auto-generated) | Path to TLS certificate file. If not set, SimpleAuth generates a self-signed cert in `data_dir`. |
 | `tls_key` | `AUTH_TLS_KEY` | (auto-generated) | Path to TLS private key file. |
 | `tls_disabled` | `AUTH_TLS_DISABLED` | `false` | Disable TLS and serve plain HTTP. Use when behind a reverse proxy (nginx, Traefik, etc.) that handles TLS termination. |
-| `trusted_proxies` | `AUTH_TRUSTED_PROXIES` | (none) | Comma-separated list of trusted proxy IPs/CIDRs. `X-Forwarded-For` and `X-Real-IP` headers are only trusted from these addresses. If empty, headers are trusted from any source. Example: `172.16.0.0/12,10.0.0.0/8` |
-| `base_path` | `AUTH_BASE_PATH` | (none) | URL path prefix for sub-path deployments behind a reverse proxy. Example: `/auth` makes all routes available at `/auth/login`, `/auth/api/...`, `/auth/realms/...`. Leave empty when SimpleAuth is at the root path. |
+| `trusted_proxies` | `AUTH_TRUSTED_PROXIES` | (none) | Comma-separated list of trusted proxy IPs/CIDRs. `X-Forwarded-For` and `X-Real-IP` headers are only trusted from these addresses. If empty, forwarded headers are **ignored** and rate limiting uses the direct connection IP. **REQUIRED** when behind a reverse proxy. Example: `172.16.0.0/12,10.0.0.0/8` |
+| `base_path` | `AUTH_BASE_PATH` | `/sauth` | URL path prefix. All routes are served under this prefix (e.g. `/sauth/login`, `/sauth/api/...`, `/sauth/realms/...`). Set to `""` to serve from the root path. |
 | `krb5_keytab` | `AUTH_KRB5_KEYTAB` | (none) | Path to Kerberos keytab file for SPNEGO authentication. Usually auto-configured via the admin UI. |
 | `krb5_realm` | `AUTH_KRB5_REALM` | (none) | Kerberos realm (e.g., `CORP.LOCAL`). |
 | `audit_retention` | `AUTH_AUDIT_RETENTION` | `2160h` | How long to keep audit log entries (default 90 days). Pruned daily. |
@@ -104,7 +105,7 @@ deployment_name: "prod"
 
 # JWT settings
 jwt_issuer: "simpleauth"
-access_ttl: "8h"
+access_ttl: "15m"
 refresh_ttl: "720h"
 impersonate_ttl: "1h"
 
@@ -242,7 +243,7 @@ openssl rand -hex 16
 - `redirect_uris` sets multiple allowed redirect URIs as a comma-separated list (env var) or YAML list (config file). This lets multiple applications on different domains share one SimpleAuth instance.
 - Both can be set simultaneously -- they are merged into one deduplicated allow-list.
 - Wildcard `*` suffix is supported (e.g. `https://app.corp.local/*` matches any path under that origin).
-- If neither is set, any redirect URI is allowed.
+- If neither is set, all redirect URIs are **rejected**. The hosted login page still works (it redirects to the built-in account page), but OIDC authorization-code flows that supply a `redirect_uri` parameter will fail.
 
 **Example (env vars):**
 
@@ -262,12 +263,12 @@ The full OIDC issuer URL is: `https://{hostname}:{port}/realms/{jwt_issuer}`
 ### `access_ttl` / `refresh_ttl`
 
 These control how long tokens last. Uses Go duration format:
-- `30m` = 30 minutes
-- `8h` = 8 hours
-- `720h` = 30 days
+- `15m` = 15 minutes (default access TTL)
+- `1h` = 1 hour
+- `720h` = 30 days (default refresh TTL)
 - `2160h` = 90 days
 
-Shorter access TTLs are more secure (less time for a stolen token to be used) but require more frequent refreshes.
+Shorter access TTLs are more secure (less time for a stolen token to be used) but require more frequent refreshes. The 15-minute default is a deliberate security choice -- increase it if your clients cannot handle frequent token refreshes.
 
 ### `cors_origins`
 
@@ -288,15 +289,80 @@ Controls brute-force protection on the login endpoint. The default of 10 attempt
 
 ---
 
+## Runtime Settings vs. Environment Variables
+
+Environment variables and config file values **seed the database on first run only**. After that, the Admin UI (or `PUT /api/admin/settings`) owns these values and they are stored in the database under `runtime_settings`. Changing an env var after first run has no effect on settings that are already stored in the DB.
+
+Settings managed this way include: `deployment_name`, `redirect_uris`, `cors_origins`, password policy, account lockout, and `default_roles`.
+
+To reset a runtime setting to its env-var value, delete the `runtime_settings` key from the database (or delete the database and let SimpleAuth re-seed).
+
+---
+
+## Database Backend
+
+SimpleAuth supports two storage backends:
+
+### BoltDB (default)
+
+An embedded, single-file key-value database. No external server needed. Data is stored in `{data_dir}/auth.db`.
+
+### PostgreSQL (optional)
+
+Set `AUTH_POSTGRES_URL` to a PostgreSQL connection string to use Postgres instead. SimpleAuth auto-creates the target database if it does not exist (it connects to the `postgres` maintenance database and issues `CREATE DATABASE`). All tables are prefixed with `sa_` and are auto-migrated on startup.
+
+### How the backend is selected (`OpenSmart`)
+
+1. **`db.json`** in the data directory -- if it exists and specifies `"backend": "postgres"`, that wins. This file is written by the Admin UI when you switch backends.
+2. **`AUTH_POSTGRES_URL`** env var / config -- if `db.json` does not exist but the env var is set, Postgres is used and a `db.json` is written so the UI knows the active backend.
+3. **Fallback** -- if neither is set, BoltDB is used.
+
+If Postgres is configured but the connection fails at startup, SimpleAuth **falls back to BoltDB** with a warning in the logs.
+
+### `db.json`
+
+A small JSON file in the data directory that records the active backend choice:
+
+```json
+{
+  "backend": "postgres",
+  "postgres_url": "enc::base64-ciphertext..."
+}
+```
+
+The `postgres_url` value is encrypted at rest using the `encrypt.key` (see below). This file is managed by the Admin UI migration/switch endpoints -- you do not need to create it manually.
+
+### Migration
+
+The Admin UI provides bidirectional migration between BoltDB and PostgreSQL:
+
+- `POST /api/admin/database/migrate` with `direction: "to_postgres"` or `"to_boltdb"`
+- The target is truncated before copy (idempotent)
+- Row counts are verified after migration
+- `POST /api/admin/database/switch` saves the backend choice to `db.json` and triggers a graceful restart
+
+---
+
+## Encryption at Rest
+
+SimpleAuth automatically generates an encryption key at `{data_dir}/encrypt.key` on first startup. This is a 256-bit AES key stored as 64 hex characters with `0600` permissions.
+
+The key is used to encrypt sensitive values (currently the PostgreSQL connection string in `db.json`) using AES-256-GCM. Encrypted values are prefixed with `enc::` followed by base64-encoded ciphertext.
+
+The encryption key is independent of the admin key -- changing `AUTH_ADMIN_KEY` does not break encrypted secrets. If you lose `encrypt.key`, you will need to re-enter any encrypted values (e.g., re-configure the Postgres URL via the Admin UI).
+
+---
+
 ## Auto-Generated Resources
 
 On first startup, SimpleAuth auto-generates several things if they don't already exist:
 
 1. **Data directory** -- Created at `data_dir` with mode `0700`
-2. **BoltDB database** -- `{data_dir}/auth.db`
+2. **BoltDB database** -- `{data_dir}/auth.db` (unless Postgres is configured)
 3. **TLS certificate** -- `{data_dir}/tls.crt` and `{data_dir}/tls.key` (self-signed, 10-year validity, includes all local IPs in SANs)
 4. **RSA signing keys** -- Stored in the database, used for JWT signing (RS256)
-5. **Admin key** -- Printed to logs if not configured
+5. **Encryption key** -- `{data_dir}/encrypt.key` (AES-256, hex-encoded, `0600` permissions)
+6. **Admin key** -- Printed to logs if not configured
 
 ---
 
@@ -322,9 +388,9 @@ AUTH_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 
 ### Why trusted proxies matter
 
-When behind a reverse proxy, the client's real IP comes from `X-Forwarded-For` or `X-Real-IP` headers set by the proxy. Without `trusted_proxies`, anyone can spoof these headers and bypass IP-based rate limiting or pollute audit logs with fake IPs.
+When behind a reverse proxy, the client's real IP comes from `X-Forwarded-For` or `X-Real-IP` headers set by the proxy. If `trusted_proxies` is empty, SimpleAuth ignores these headers entirely and uses the direct TCP connection IP for rate limiting and audit logs. This means rate limiting will see your proxy's IP, not the client's IP -- effectively breaking per-client rate limiting.
 
-Set `trusted_proxies` to your proxy's network range so SimpleAuth only trusts forwarded headers from known proxies. For Docker networks, `172.16.0.0/12` covers the default bridge range.
+Set `trusted_proxies` to your proxy's network range so SimpleAuth trusts forwarded headers only from known proxies. For Docker networks, `172.16.0.0/12` covers the default bridge range.
 
 ### Nginx example
 

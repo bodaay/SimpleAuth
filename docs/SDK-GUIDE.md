@@ -36,7 +36,7 @@ Works in Node.js 18+ and modern browsers. Zero external dependencies.
 import { createSimpleAuth } from '@simpleauth/js';
 
 const auth = createSimpleAuth({
-  url: 'https://auth.corp.local:8080',
+  url: 'https://auth.corp.local:8080/sauth',
 });
 ```
 
@@ -110,7 +110,7 @@ app.get('/public/info', (req, res) => {
 ```typescript
 // Initialize with admin key for admin operations
 const adminAuth = createSimpleAuth({
-  url: 'https://auth.corp.local:8080',
+  url: 'https://auth.corp.local:8080/sauth',
   adminKey: 'YOUR_ADMIN_KEY',
 });
 
@@ -150,7 +150,7 @@ Zero external dependencies. Uses only the Go standard library.
 import simpleauth "simpleauth/sdk/go"
 
 client := simpleauth.New(simpleauth.Options{
-    URL:                "https://auth.corp.local:8080",
+    URL:                "https://auth.corp.local:8080/sauth",
     InsecureSkipVerify: true,            // for self-signed certs
 })
 ```
@@ -263,7 +263,7 @@ Requires `requests` and `cryptography` (both are widely used, stable dependencie
 from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
-    url="https://auth.corp.local:8080",
+    url="https://auth.corp.local:8080/sauth",
     verify_ssl=False,        # for self-signed certs
 )
 ```
@@ -306,7 +306,7 @@ from fastapi import Depends, FastAPI
 from simpleauth import SimpleAuth, User
 from simpleauth.middleware import SimpleAuthDep
 
-auth = SimpleAuth(url="https://auth.corp.local:8080")
+auth = SimpleAuth(url="https://auth.corp.local:8080/sauth")
 get_user = SimpleAuthDep(auth)
 
 app = FastAPI()
@@ -337,7 +337,7 @@ from flask import Flask, g, jsonify
 from simpleauth import SimpleAuth
 from simpleauth.middleware import flask_middleware
 
-auth = SimpleAuth(url="https://auth.corp.local:8080")
+auth = SimpleAuth(url="https://auth.corp.local:8080/sauth")
 app = Flask(__name__)
 
 @app.route("/profile")
@@ -361,7 +361,7 @@ MIDDLEWARE = [
     "simpleauth.middleware.SimpleAuthMiddleware",
 ]
 
-SIMPLEAUTH_URL = "https://auth.corp.local:8080"
+SIMPLEAUTH_URL = "https://auth.corp.local:8080/sauth"
 SIMPLEAUTH_VERIFY_SSL = True
 
 # views.py
@@ -381,7 +381,7 @@ def admin_view(request):
 
 ```python
 admin_auth = SimpleAuth(
-    url="https://auth.corp.local:8080",
+    url="https://auth.corp.local:8080/sauth",
     admin_key="YOUR_ADMIN_KEY",
 )
 
@@ -410,7 +410,7 @@ using SimpleAuth;
 
 var options = new SimpleAuthOptions
 {
-    Url = "https://auth.corp.local:8080",
+    Url = "https://auth.corp.local:8080/sauth",
     ValidateSsl = false,     // for self-signed certs
 };
 
@@ -453,7 +453,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSimpleAuth(opts =>
 {
-    opts.Url = "https://auth.corp.local:8080";
+    opts.Url = "https://auth.corp.local:8080/sauth";
     opts.ValidateSsl = false;
 });
 
@@ -504,7 +504,7 @@ public class AdminController : ControllerBase
 ```csharp
 var adminClient = new SimpleAuthClient(new SimpleAuthOptions
 {
-    Url = "https://auth.corp.local:8080",
+    Url = "https://auth.corp.local:8080/sauth",
     AdminKey = "YOUR_ADMIN_KEY",
 });
 
@@ -515,6 +515,26 @@ await adminClient.SetUserRolesAsync("user-guid", new List<string> { "admin", "us
 var perms = await adminClient.GetUserPermissionsAsync("user-guid");
 await adminClient.SetUserPermissionsAsync("user-guid", new List<string> { "read:all" });
 ```
+
+---
+
+## Important Notes
+
+### Access Token TTL
+
+The default access token TTL is **15 minutes**. Applications should not assume long-lived access tokens. Instead, implement a proper token refresh cycle: check the token's remaining lifetime before each API call and call `refresh` proactively when the token is close to expiring.
+
+### Immediate Token Revocation
+
+Token revocation now takes effect immediately. When an access token is revoked (e.g. via logout or admin action), it is blacklisted server-side and will be rejected on subsequent use. This applies to access tokens as well as refresh tokens.
+
+### Base Path
+
+The default base path is `/sauth`. All SDK URLs should include it -- for example, `https://auth.example.com/sauth` rather than just `https://auth.example.com`.
+
+### Linux SSO Setup
+
+For Linux environments that need SSO (Kerberos/SPNEGO), administrators can download a setup script directly from the SimpleAuth Admin UI. The script configures the necessary Kerberos client settings on the target machine.
 
 ---
 
@@ -574,7 +594,7 @@ Use the admin key to manage roles and permissions. SimpleAuth acts as the author
 
 ```typescript
 const adminAuth = createSimpleAuth({
-  url: 'https://auth.corp.local:8080',
+  url: 'https://auth.corp.local:8080/sauth',
   adminKey: 'YOUR_ADMIN_KEY',
 });
 

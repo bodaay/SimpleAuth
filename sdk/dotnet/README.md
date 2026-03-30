@@ -19,7 +19,7 @@ using SimpleAuth;
 
 var client = new SimpleAuthClient(new SimpleAuthOptions
 {
-    Url = "https://auth.corp.local:9090",
+    Url = "https://auth.corp.local:9090/sauth",
     Realm = "simpleauth",
 });
 
@@ -43,7 +43,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddSimpleAuth(options =>
 {
-    options.Url = "https://auth.corp.local:9090";
+    options.Url = "https://auth.corp.local:9090/sauth";
 });
 
 var app = builder.Build();
@@ -89,6 +89,8 @@ public class ProfileController : ControllerBase
     }
 }
 ```
+
+> **Note:** The default access token TTL is **15 minutes**. Applications should implement proper token refresh using the `RefreshAsync` method before the access token expires, rather than relying on long-lived tokens.
 
 ## Authentication Flows
 
@@ -170,7 +172,7 @@ To disable SSL certificate validation (development only):
 ```csharp
 var client = new SimpleAuthClient(new SimpleAuthOptions
 {
-    Url = "https://localhost:9090",
+    Url = "https://localhost:9090/sauth",
     ValidateSsl = false,
 });
 ```
@@ -179,7 +181,7 @@ var client = new SimpleAuthClient(new SimpleAuthOptions
 
 | Option         | Type     | Required | Default         | Description                              |
 |----------------|----------|----------|-----------------|------------------------------------------|
-| `Url`          | `string` | Yes      | --              | SimpleAuth server URL                    |
+| `Url`          | `string` | Yes      | --              | SimpleAuth server URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) |
 | `AdminKey`     | `string` | No       | `""`            | Admin key for admin API operations (sent as Bearer token) |
 | `ClientId`     | `string` | No       | `""`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
 | `ClientSecret` | `string` | No       | `""`            | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |

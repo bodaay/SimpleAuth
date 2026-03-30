@@ -6,6 +6,8 @@ SimpleAuth is a lightweight authentication server that connects to Active Direct
 
 One SimpleAuth instance serves one application. Need multiple apps? Run multiple instances -- they're tiny.
 
+> **Base path:** SimpleAuth serves all routes under `/sauth` by default. All URLs in this guide include this prefix.
+
 ---
 
 ## 1. Start SimpleAuth
@@ -23,7 +25,7 @@ docker run -d \
 
 > **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and optional. They are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value. They will be removed in v1.0.
 
-That's it. SimpleAuth is running at `https://localhost:8080` with a self-signed TLS certificate.
+That's it. SimpleAuth is running at `https://localhost:8080/sauth` with a self-signed TLS certificate. The admin UI is available at `https://localhost:8080/sauth/admin`.
 
 Grab the auto-generated admin key from the logs:
 
@@ -43,7 +45,7 @@ Save that key. You'll need it for admin operations.
 ./simpleauth
 ```
 
-SimpleAuth listens on HTTPS port 9090 by default and auto-generates a self-signed TLS cert.
+SimpleAuth listens on HTTPS port 9090 by default and auto-generates a self-signed TLS cert. The admin UI is available at `https://hostname:9090/sauth/admin`.
 
 ---
 
@@ -53,7 +55,7 @@ Skip this if you just want local users.
 
 ```bash
 # Replace with your AD details
-curl -k -X POST https://localhost:8080/api/admin/ldap \
+curl -k -X POST https://localhost:8080/sauth/api/admin/ldap \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -76,9 +78,11 @@ curl -k -X POST https://localhost:8080/api/admin/ldap \
 Test the connection:
 
 ```bash
-curl -k -X POST https://localhost:8080/api/admin/ldap/test \
+curl -k -X POST https://localhost:8080/sauth/api/admin/ldap/test \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
+
+> **Linux SSO:** After configuring LDAP, you can download a Linux SSO script from the admin UI (`/sauth/admin`) to configure Linux clients for single sign-on against your directory.
 
 ---
 
@@ -91,7 +95,7 @@ OIDC settings are configured at the instance level using environment variables o
 - `AUTH_REDIRECT_URI` -- Allowed redirect URI (single value)
 - `AUTH_REDIRECT_URIS` -- Allowed redirect URIs (comma-separated list, for multiple apps sharing one instance)
 
-Both can be set -- they are merged and deduplicated. Wildcard `*` suffix is supported. If neither is set, any redirect URI is allowed.
+Both can be set -- they are merged and deduplicated. Wildcard `*` suffix is supported. If neither is set, all redirect URIs are rejected.
 
 These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) for details.
 
@@ -102,7 +106,7 @@ These are set when you start SimpleAuth. See [Configuration](CONFIGURATION.md) f
 ### Option A: Direct API login
 
 ```bash
-curl -k -X POST https://localhost:8080/api/auth/login \
+curl -k -X POST https://localhost:8080/sauth/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "username": "jsmith",
@@ -116,7 +120,7 @@ curl -k -X POST https://localhost:8080/api/auth/login \
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
+  https://localhost:8080/sauth/realms/simpleauth/protocol/openid-connect/token \
   -d "grant_type=password&username=jsmith&password=their-ad-password&scope=openid"
 ```
 
@@ -128,7 +132,7 @@ Both return JWT tokens:
   "refresh_token": "eyJhbGciOiJSUzI1NiIs...",
   "id_token": "eyJhbGciOiJSUzI1NiIs...",
   "token_type": "Bearer",
-  "expires_in": 28800
+  "expires_in": 900
 }
 ```
 
@@ -138,7 +142,7 @@ Both return JWT tokens:
 
 ### Using JWKS (any language)
 
-Fetch the public keys from `/.well-known/jwks.json` and verify RS256 signatures locally. No network call needed per request.
+Fetch the public keys from `/sauth/.well-known/jwks.json` and verify RS256 signatures locally. No network call needed per request.
 
 ### Using an SDK
 
@@ -215,6 +219,13 @@ That's it. You have:
 - OIDC configured at the instance level
 - Users logging in and getting JWTs
 - Your app verifying those JWTs locally using JWKS
+
+### Admin UI features
+
+The admin UI at `/sauth/admin` also provides:
+
+- **Settings page** -- Runtime configuration without restarting the server
+- **Database page** -- Migrate from the embedded BoltDB to PostgreSQL for production deployments
 
 ### What's next?
 

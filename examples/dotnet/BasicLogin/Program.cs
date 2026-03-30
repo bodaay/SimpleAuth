@@ -23,7 +23,7 @@ using SimpleAuth;
 
 var options = new SimpleAuthOptions
 {
-    Url = "https://auth.example.com",
+    Url = "https://auth.example.com/sauth",
     Realm = "simpleauth", // Deprecated: accepted but not validated, will be removed in v1.0
     ValidateSsl = true, // set false for self-signed certs in development
 };

@@ -19,9 +19,11 @@ pip install simpleauth[django]
 from simpleauth import SimpleAuth
 
 auth = SimpleAuth(
-    url="https://auth.example.com",
+    url="https://auth.example.com/sauth",
 )
 ```
+
+> **Note:** The default access token TTL is **15 minutes**. Applications should implement proper token refresh using the `refresh` method before the access token expires, rather than relying on long-lived tokens.
 
 ## Authentication
 
@@ -114,7 +116,7 @@ from fastapi import Depends, FastAPI
 from simpleauth import SimpleAuth, User
 from simpleauth.middleware import SimpleAuthDep
 
-auth = SimpleAuth(url="https://auth.example.com")
+auth = SimpleAuth(url="https://auth.example.com/sauth")
 
 # Create a dependency
 get_user = SimpleAuthDep(auth)
@@ -140,7 +142,7 @@ from flask import Flask, g, jsonify
 from simpleauth import SimpleAuth
 from simpleauth.middleware import flask_middleware
 
-auth = SimpleAuth(url="https://auth.example.com")
+auth = SimpleAuth(url="https://auth.example.com/sauth")
 app = Flask(__name__)
 
 @app.route("/me")
@@ -166,7 +168,7 @@ MIDDLEWARE = [
     "simpleauth.middleware.SimpleAuthMiddleware",
 ]
 
-SIMPLEAUTH_URL = "https://auth.example.com"
+SIMPLEAUTH_URL = "https://auth.example.com/sauth"
 SIMPLEAUTH_ADMIN_KEY = ""           # optional — only needed for admin operations
 SIMPLEAUTH_VERIFY_SSL = True        # optional
 ```
@@ -192,7 +194,7 @@ For development with self-signed TLS certificates:
 
 ```python
 auth = SimpleAuth(
-    url="https://localhost:8443",
+    url="https://localhost:8443/sauth",
     verify_ssl=False,
 )
 ```
@@ -202,7 +204,7 @@ auth = SimpleAuth(
 ```python
 from simpleauth import SimpleAuth, AuthenticationError, TokenVerificationError, SimpleAuthError
 
-auth = SimpleAuth(url="https://auth.example.com")
+auth = SimpleAuth(url="https://auth.example.com/sauth")  # include /sauth base path
 
 try:
     tokens = auth.login("alice", "wrong-password")

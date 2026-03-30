@@ -4,6 +4,8 @@
 
 You're running Keycloak. It works, but it's a lot of infrastructure for what you actually need: authenticate users against AD and issue JWTs. This guide gets you migrated.
 
+> **Base path:** SimpleAuth serves all routes under `/sauth` by default. All URLs in this guide include this prefix.
+
 ---
 
 ## Why Migrate
@@ -11,7 +13,7 @@ You're running Keycloak. It works, but it's a lot of infrastructure for what you
 | | Keycloak | SimpleAuth |
 |---|---|---|
 | **Runtime** | JVM, PostgreSQL, 512MB+ RAM | Single Go binary, ~20MB RAM |
-| **Database** | PostgreSQL/MySQL required | Embedded BoltDB (single file) |
+| **Database** | PostgreSQL/MySQL required | Embedded BoltDB (single file), with optional PostgreSQL migration |
 | **Config** | Admin console with hundreds of options | YAML file with ~20 options |
 | **Deployment** | Multiple containers, DB migrations | One container, one volume |
 | **LDAP setup** | Realm > User Federation > LDAP > attribute mapping wizards | One API call |
@@ -38,8 +40,8 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Client | Instance-level config | `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated (accepted but not validated). Use `AUTH_REDIRECT_URI` (single) or `AUTH_REDIRECT_URIS` (multiple, comma-separated) to configure allowed redirect URIs. |
 | Client ID | `AUTH_CLIENT_ID` | Deprecated: accepted but not validated. Will be removed in v1.0. |
 | Client Secret | `AUTH_CLIENT_SECRET` | Deprecated: accepted but not validated. Will be removed in v1.0. |
-| User Federation (LDAP) | LDAP Provider | Created via `POST /api/admin/ldap` |
-| Realm Roles | Roles | Set per-user via `PUT /api/admin/users/{guid}/roles` (global per instance) |
+| User Federation (LDAP) | LDAP Provider | Created via `POST /sauth/api/admin/ldap` |
+| Realm Roles | Roles | Set per-user via `PUT /sauth/api/admin/users/{guid}/roles` (global per instance) |
 | Client Roles | Also Roles | SimpleAuth doesn't distinguish; roles are global per instance |
 | Client Scopes | Not needed | Claims are always included in tokens |
 | Protocol Mappers | Not needed | Standard claims are always mapped |
@@ -51,19 +53,30 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 
 ## URL Mapping
 
-SimpleAuth uses Keycloak-compatible URLs. In most cases, you just change the base URL.
+SDKs now use direct `/api/auth/*` endpoints. The OIDC realm endpoints (`/realms/{realm}/...`) still work for backward compatibility, so existing OIDC libraries will continue to function during migration.
+
+**Recommended (direct API) endpoints:**
+
+| Purpose | SimpleAuth URL |
+|---|---|
+| Login | `https://simpleauth.example.com/sauth/api/auth/login` |
+| Token refresh | `https://simpleauth.example.com/sauth/api/auth/refresh` |
+| Logout | `https://simpleauth.example.com/sauth/api/auth/logout` |
+| JWKS | `https://simpleauth.example.com/sauth/.well-known/jwks.json` |
+
+**OIDC realm endpoints (backward-compatible):**
 
 | Keycloak URL | SimpleAuth URL |
 |---|---|
-| `https://keycloak.example.com/realms/myrealm/.well-known/openid-configuration` | `https://simpleauth.example.com/realms/simpleauth/.well-known/openid-configuration` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/token` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/auth` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/auth` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/userinfo` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/userinfo` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/certs` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/certs` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token/introspect` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/token/introspect` |
-| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/logout` | `https://simpleauth.example.com/realms/simpleauth/protocol/openid-connect/logout` |
+| `https://keycloak.example.com/realms/myrealm/.well-known/openid-configuration` | `https://simpleauth.example.com/sauth/realms/simpleauth/.well-known/openid-configuration` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/auth` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/auth` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/userinfo` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/userinfo` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/certs` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/certs` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token/introspect` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token/introspect` |
+| `https://keycloak.example.com/realms/myrealm/protocol/openid-connect/logout` | `https://simpleauth.example.com/sauth/realms/simpleauth/protocol/openid-connect/logout` |
 
-If you set `jwt_issuer: "myrealm"` in SimpleAuth's config, the URLs become identical except for the hostname.
+If you set `jwt_issuer: "myrealm"` in SimpleAuth's config, the OIDC realm URLs become identical except for the hostname and `/sauth` prefix.
 
 ---
 
@@ -91,7 +104,7 @@ Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. `AUTH_CL
 Take your Keycloak LDAP User Federation settings and translate them:
 
 ```bash
-curl -k -X POST https://simpleauth:8080/api/admin/ldap \
+curl -k -X POST https://simpleauth:8080/sauth/api/admin/ldap \
   -H "Authorization: Bearer your-admin-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -118,7 +131,7 @@ If you used Keycloak roles, set default roles for new users:
 ```bash
 # Set default roles
 curl -k -X PUT \
-  https://simpleauth:8080/api/admin/defaults/roles \
+  https://simpleauth:8080/sauth/api/admin/defaults/roles \
   -H "Authorization: Bearer your-admin-key" \
   -H "Content-Type: application/json" \
   -d '["user"]'
@@ -128,7 +141,7 @@ For existing users who need specific roles, set them after they first log in, or
 
 ```bash
 curl -k -X PUT \
-  https://simpleauth:8080/api/admin/users/{guid}/roles \
+  https://simpleauth:8080/sauth/api/admin/users/{guid}/roles \
   -H "Authorization: Bearer your-admin-key" \
   -H "Content-Type: application/json" \
   -d '["admin", "user"]'
@@ -189,11 +202,12 @@ curl -X POST https://keycloak.example.com/realms/myrealm/protocol/openid-connect
 **SimpleAuth (after):**
 
 ```bash
-curl -k -X POST https://simpleauth.example.com/realms/myrealm/protocol/openid-connect/token \
-  -d "client_id=my-app&client_secret=my-client-secret&grant_type=password&username=user&password=pass"
+curl -k -X POST https://simpleauth.example.com/sauth/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "user", "password": "pass"}'
 ```
 
-Same endpoint path. Just change the hostname and credentials.
+Uses the direct API endpoint. The OIDC realm endpoint (`/sauth/realms/myrealm/protocol/openid-connect/token`) also still works for backward compatibility.
 
 ### Client Credentials Grant
 
@@ -207,7 +221,7 @@ curl -X POST https://keycloak.example.com/realms/myrealm/protocol/openid-connect
 **SimpleAuth (after):**
 
 ```bash
-curl -k -X POST https://simpleauth.example.com/realms/myrealm/protocol/openid-connect/token \
+curl -k -X POST https://simpleauth.example.com/sauth/realms/myrealm/protocol/openid-connect/token \
   -d "client_id=my-app&client_secret=my-client-secret&grant_type=client_credentials"
 ```
 
@@ -305,7 +319,7 @@ Once your app is working with SimpleAuth:
   "exp": 1700000000,
   "iat": 1699971200,
   "jti": "uuid",
-  "iss": "https://simpleauth.example.com/realms/myrealm",
+  "iss": "https://simpleauth.example.com/sauth/realms/myrealm",
   "aud": ["my-app"],
   "sub": "simpleauth-user-guid",
   "typ": "Bearer",
@@ -362,6 +376,10 @@ SimpleAuth doesn't do social login. If you need it, keep Keycloak for those apps
 ### What about user federation sync?
 
 Keycloak has a "sync all users" feature. SimpleAuth doesn't. Users are created on first login. This is simpler and means you don't have stale users in your database. If you need to pre-populate users, use the admin API.
+
+### What about PostgreSQL?
+
+Keycloak requires PostgreSQL (or MySQL). SimpleAuth starts with an embedded BoltDB for simplicity, but if you need PostgreSQL (for backups, replication, or operational familiarity), you can migrate to it from the Database page in the admin UI (`/sauth/admin`).
 
 ### What about multiple Keycloak clients?
 
