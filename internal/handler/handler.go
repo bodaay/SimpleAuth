@@ -22,8 +22,10 @@ type Handler struct {
 	jwt          *auth.JWTManager
 	loginLimiter *rateLimiter
 	mux          *http.ServeMux
-	version      string
-	migration    *migrationState
+	version         string
+	migration       *migrationState
+	runtimeSettings runtimeSettingsCache
+	restartCh       chan<- struct{}
 }
 
 func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
@@ -39,13 +41,20 @@ func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS,
 	trustedCIDRs = cfg.TrustedProxyCIDRs
 
 	h.initMigrationState()
+	h.initRuntimeSettings()
 	h.registerRoutes(uiFS)
 	return h
 }
 
+// SetRestartChannel sets the channel used to trigger graceful restarts.
+func (h *Handler) SetRestartChannel(ch chan<- struct{}) {
+	h.restartCh = ch
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-SimpleAuth-Version", h.version)
-	if h.cfg.CORSOrigins != "" {
+	corsOrigins := h.getCORSOrigins()
+	if corsOrigins != "" {
 		origin := r.Header.Get("Origin")
 		if origin != "" && h.isAllowedOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -82,10 +91,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) isAllowedOrigin(origin string) bool {
-	if h.cfg.CORSOrigins == "*" {
+	cors := h.getCORSOrigins()
+	if cors == "*" {
 		return true
 	}
-	for _, allowed := range strings.Split(h.cfg.CORSOrigins, ",") {
+	for _, allowed := range strings.Split(cors, ",") {
 		if strings.TrimSpace(allowed) == origin {
 			return true
 		}
@@ -201,6 +211,13 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/admin/password-policy", h.requireMasterAdmin(h.handleGetPasswordPolicy))
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/unlock", h.requireMasterAdmin(h.handleUnlockAccount))
 
+	// Admin: Restart
+	h.mux.HandleFunc("POST /api/admin/restart", h.requireMasterAdmin(h.handleRestart))
+
+	// Admin: Settings (runtime config)
+	h.mux.HandleFunc("GET /api/admin/settings", h.requireMasterAdmin(h.handleGetSettings))
+	h.mux.HandleFunc("PUT /api/admin/settings", h.requireMasterAdmin(h.handleUpdateSettings))
+
 	// Admin: Database / Migration
 	h.mux.HandleFunc("GET /api/admin/database/info", h.requireMasterAdmin(h.handleDatabaseInfo))
 	h.mux.HandleFunc("POST /api/admin/database/test", h.requireMasterAdmin(h.handleMigrateTest))
@@ -268,7 +285,7 @@ func (h *Handler) StartAuditPruner() {
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		for range ticker.C {
-			if err := h.store.PruneAuditLog(h.cfg.AuditRetention); err != nil {
+			if err := h.store.PruneAuditLog(h.getAuditRetention()); err != nil {
 				log.Printf("audit prune error: %v", err)
 			}
 		}

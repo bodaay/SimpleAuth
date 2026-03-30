@@ -89,3 +89,22 @@ type OIDCAuthCode struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// RuntimeSettings holds configuration managed via the Admin UI.
+// Stored in the DB config bucket under "runtime_settings".
+type RuntimeSettings struct {
+	RedirectURIs             []string `json:"redirect_uris"`
+	CORSOrigins              string   `json:"cors_origins"`
+	PasswordMinLength        int      `json:"password_min_length"`
+	PasswordRequireUppercase bool     `json:"password_require_uppercase"`
+	PasswordRequireLowercase bool     `json:"password_require_lowercase"`
+	PasswordRequireDigit     bool     `json:"password_require_digit"`
+	PasswordRequireSpecial   bool     `json:"password_require_special"`
+	PasswordHistoryCount     int      `json:"password_history_count"`
+	AccountLockoutThreshold  int      `json:"account_lockout_threshold"`
+	AccountLockoutDurationS  int      `json:"account_lockout_duration_s"` // seconds
+	DefaultRoles             []string `json:"default_roles"`
+	RateLimitMax             int      `json:"rate_limit_max"`
+	RateLimitWindowS         int      `json:"rate_limit_window_s"` // seconds
+	AuditRetentionDays       int      `json:"audit_retention_days"`
+}

@@ -77,4 +77,8 @@ type Store interface {
 	// OIDC
 	SaveOIDCAuthCode(code *OIDCAuthCode) error
 	ConsumeOIDCAuthCode(code string) (*OIDCAuthCode, error)
+
+	// Runtime Settings
+	GetRuntimeSettings() (*RuntimeSettings, error)
+	SaveRuntimeSettings(s *RuntimeSettings) error
 }

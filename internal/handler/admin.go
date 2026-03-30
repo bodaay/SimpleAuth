@@ -177,8 +177,8 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check password history
-	if h.cfg.PasswordHistoryCount > 0 && auth.CheckPasswordHistory(req.Password, user.PasswordHistory) {
-		jsonError(w, fmt.Sprintf("password was recently used (last %d passwords are remembered)", h.cfg.PasswordHistoryCount), http.StatusBadRequest)
+	if h.getPasswordHistoryCount() > 0 && auth.CheckPasswordHistory(req.Password, user.PasswordHistory) {
+		jsonError(w, fmt.Sprintf("password was recently used (last %d passwords are remembered)", h.getPasswordHistoryCount()), http.StatusBadRequest)
 		return
 	}
 
@@ -189,8 +189,8 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password history
-	if h.cfg.PasswordHistoryCount > 0 && user.PasswordHash != "" {
-		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.cfg.PasswordHistoryCount)
+	if h.getPasswordHistoryCount() > 0 && user.PasswordHash != "" {
+		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.getPasswordHistoryCount())
 	}
 
 	user.PasswordHash = hash
@@ -244,15 +244,16 @@ func (h *Handler) handleSetDisabled(w http.ResponseWriter, r *http.Request) {
 // --- Password Policy ---
 
 func (h *Handler) handleGetPasswordPolicy(w http.ResponseWriter, r *http.Request) {
+	pp := h.passwordPolicy()
 	jsonResp(w, map[string]interface{}{
-		"min_length":         h.cfg.PasswordMinLength,
-		"require_uppercase":  h.cfg.PasswordRequireUppercase,
-		"require_lowercase":  h.cfg.PasswordRequireLowercase,
-		"require_digit":      h.cfg.PasswordRequireDigit,
-		"require_special":    h.cfg.PasswordRequireSpecial,
-		"history_count":      h.cfg.PasswordHistoryCount,
-		"lockout_threshold":  h.cfg.AccountLockoutThreshold,
-		"lockout_duration":   h.cfg.AccountLockoutDuration.String(),
+		"min_length":         pp.MinLength,
+		"require_uppercase":  pp.RequireUppercase,
+		"require_lowercase":  pp.RequireLowercase,
+		"require_digit":      pp.RequireDigit,
+		"require_special":    pp.RequireSpecial,
+		"history_count":      h.getPasswordHistoryCount(),
+		"lockout_threshold":  h.getAccountLockoutThreshold(),
+		"lockout_duration":   h.getAccountLockoutDuration().String(),
 	}, http.StatusOK)
 }
 

@@ -198,7 +198,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 
 // isAccountLocked checks if a user account is currently locked due to failed login attempts.
 func (h *Handler) isAccountLocked(user *store.User) bool {
-	if h.cfg.AccountLockoutThreshold <= 0 {
+	if h.getAccountLockoutThreshold() <= 0 {
 		return false
 	}
 	if user.LockedUntil == nil {
@@ -217,16 +217,26 @@ func (h *Handler) isAccountLocked(user *store.User) bool {
 // recordFailedLogin increments the failed login counter and locks the account if threshold is reached.
 func (h *Handler) recordFailedLogin(user *store.User) {
 	user.FailedLoginAttempts++
-	if h.cfg.AccountLockoutThreshold > 0 && user.FailedLoginAttempts >= h.cfg.AccountLockoutThreshold {
-		lockUntil := time.Now().Add(h.cfg.AccountLockoutDuration)
+	threshold := h.getAccountLockoutThreshold()
+	if threshold > 0 && user.FailedLoginAttempts >= threshold {
+		lockUntil := time.Now().Add(h.getAccountLockoutDuration())
 		user.LockedUntil = &lockUntil
-		log.Printf("[auth] Account locked guid=%s until=%s (threshold=%d)", user.GUID, lockUntil.Format(time.RFC3339), h.cfg.AccountLockoutThreshold)
+		log.Printf("[auth] Account locked guid=%s until=%s (threshold=%d)", user.GUID, lockUntil.Format(time.RFC3339), threshold)
 	}
 	h.store.UpdateUser(user)
 }
 
 // passwordPolicy returns the auth.PasswordPolicy derived from config.
 func (h *Handler) passwordPolicy() auth.PasswordPolicy {
+	if rs := h.runtimeSettings.get(); rs != nil {
+		return auth.PasswordPolicy{
+			MinLength:        rs.PasswordMinLength,
+			RequireUppercase: rs.PasswordRequireUppercase,
+			RequireLowercase: rs.PasswordRequireLowercase,
+			RequireDigit:     rs.PasswordRequireDigit,
+			RequireSpecial:   rs.PasswordRequireSpecial,
+		}
+	}
 	return auth.PasswordPolicy{
 		MinLength:        h.cfg.PasswordMinLength,
 		RequireUppercase: h.cfg.PasswordRequireUppercase,
@@ -647,8 +657,8 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check password history
-	if h.cfg.PasswordHistoryCount > 0 && auth.CheckPasswordHistory(req.NewPassword, user.PasswordHistory) {
-		jsonError(w, fmt.Sprintf("password was recently used — choose a different password (last %d passwords are remembered)", h.cfg.PasswordHistoryCount), http.StatusBadRequest)
+	if h.getPasswordHistoryCount() > 0 && auth.CheckPasswordHistory(req.NewPassword, user.PasswordHistory) {
+		jsonError(w, fmt.Sprintf("password was recently used — choose a different password (last %d passwords are remembered)", h.getPasswordHistoryCount()), http.StatusBadRequest)
 		return
 	}
 
@@ -659,8 +669,8 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password history
-	if h.cfg.PasswordHistoryCount > 0 && user.PasswordHash != "" {
-		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.cfg.PasswordHistoryCount)
+	if h.getPasswordHistoryCount() > 0 && user.PasswordHash != "" {
+		user.PasswordHistory = auth.AddToPasswordHistory(user.PasswordHistory, user.PasswordHash, h.getPasswordHistoryCount())
 	}
 
 	user.PasswordHash = hash
@@ -955,7 +965,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	redirectURI := r.URL.Query().Get("redirect_uri")
 
 	// Validate redirect_uri
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.getRedirectURIs(), redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}

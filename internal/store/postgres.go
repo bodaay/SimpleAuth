@@ -859,3 +859,22 @@ func (s *PostgresStore) ConsumeOIDCAuthCode(code string) (*OIDCAuthCode, error) 
 	}
 	return &ac, nil
 }
+
+// --- Runtime Settings ---
+
+func (s *PostgresStore) GetRuntimeSettings() (*RuntimeSettings, error) {
+	val, err := s.GetConfigValue("runtime_settings")
+	if err != nil || val == nil {
+		return nil, err
+	}
+	var rs RuntimeSettings
+	return &rs, json.Unmarshal(val, &rs)
+}
+
+func (s *PostgresStore) SaveRuntimeSettings(rs *RuntimeSettings) error {
+	data, err := json.Marshal(rs)
+	if err != nil {
+		return err
+	}
+	return s.SetConfigValue("runtime_settings", data)
+}

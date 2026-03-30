@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"simpleauth/internal/auth"
 	"simpleauth/internal/config"
@@ -41,6 +43,16 @@ func main() {
 		}
 	}
 
+	for {
+		if exit := runServer(); exit {
+			break
+		}
+		log.Println("Restarting SimpleAuth...")
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func runServer() (exit bool) {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config error: %v", err)
@@ -77,17 +89,25 @@ func main() {
 	// Create handler
 	h := handler.New(cfg, s, jwtMgr, saui.FS(), Version)
 
+	// Set up restart channel
+	restartCh := make(chan struct{}, 1)
+	h.SetRestartChannel(restartCh)
+
 	// Start audit log pruner
 	h.StartAuditPruner()
 
 	log.Printf("SimpleAuth %s starting", Version)
 	log.Printf("Hostname: %s", cfg.Hostname)
 	log.Printf("Data directory: %s", cfg.DataDir)
+	if cfg.PostgresURL != "" {
+		log.Printf("Database: PostgreSQL")
+	} else {
+		log.Printf("Database: BoltDB (%s/auth.db)", cfg.DataDir)
+	}
 	log.Printf("Admin UI: %s/admin", cfg.BasePath)
 
 	// Print access URLs
 	if cfg.TLSDisabled {
-		// Behind reverse proxy — show the public URL and internal Docker/container URL
 		log.Printf("Public URL:   https://%s%s", cfg.Hostname, cfg.BasePath)
 		internalHost, _ := os.Hostname()
 		if internalHost == "" {
@@ -110,13 +130,12 @@ func main() {
 		}
 	}
 
+	var srv *http.Server
+
 	if cfg.TLSDisabled {
-		// HTTP-only mode (behind reverse proxy)
 		addr := ":" + cfg.Port
 		log.Printf("HTTP listening on %s (TLS disabled — reverse proxy mode)", addr)
-		if err := http.ListenAndServe(addr, h); err != nil {
-			log.Fatalf("Server failed: %v", err)
-		}
+		srv = &http.Server{Addr: addr, Handler: h}
 	} else {
 		// Start HTTP → HTTPS redirect server
 		if cfg.HTTPPort != "" {
@@ -126,7 +145,6 @@ func main() {
 				log.Printf("HTTP redirect :%s → HTTPS :%s", cfg.HTTPPort, httpsPort)
 				redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					host := r.Host
-					// Strip port from host if present
 					if h, _, err := net.SplitHostPort(host); err == nil {
 						host = h
 					}
@@ -137,19 +155,39 @@ func main() {
 					target += r.URL.RequestURI()
 					http.Redirect(w, r, target, http.StatusMovedPermanently)
 				})
-				if err := http.ListenAndServe(httpAddr, redirectHandler); err != nil {
-					log.Printf("HTTP redirect server failed: %v (non-fatal)", err)
-				}
+				http.ListenAndServe(httpAddr, redirectHandler)
 			}()
 		}
 
-		// Serve HTTPS
-		tlsAddr := ":" + cfg.Port
-		log.Printf("HTTPS listening on %s", tlsAddr)
-		if err := http.ListenAndServeTLS(tlsAddr, cfg.TLSCert, cfg.TLSKey, h); err != nil {
-			log.Fatalf("Server failed: %v", err)
-		}
+		addr := ":" + cfg.Port
+		log.Printf("HTTPS listening on %s", addr)
+		srv = &http.Server{Addr: addr, Handler: h}
 	}
+
+	// Listen for restart signal
+	go func() {
+		<-restartCh
+		log.Println("Graceful shutdown initiated by admin...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+
+	// Start serving
+	if cfg.TLSDisabled {
+		err = srv.ListenAndServe()
+	} else {
+		err = srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+	}
+
+	if err == http.ErrServerClosed {
+		// Graceful shutdown — restart
+		return false
+	}
+	if err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+	return true
 }
 
 func generateAdminKey() string {

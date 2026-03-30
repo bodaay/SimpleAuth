@@ -38,6 +38,7 @@ const icons = {
   copy: html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
   roles: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
   database: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+  settings: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
 };
 
 // === Toast ===
@@ -1532,6 +1533,127 @@ function LoginSetup({ onLogin }) {
   `;
 }
 
+// === Settings ===
+function SettingsPage() {
+  const [settings, setSettings] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api('GET', '/api/admin/settings').then(s => setSettings(s));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await api('PUT', '/api/admin/settings', settings);
+      setSettings(result);
+      setToast({ message: 'Settings saved', type: 'success' });
+    } catch (e) {
+      setToast({ message: 'Failed to save: ' + e.message, type: 'error' });
+    }
+    setSaving(false);
+  };
+
+  const restart = async () => {
+    if (!confirm('Restart SimpleAuth? Active connections will be briefly interrupted.')) return;
+    await api('POST', '/api/admin/restart');
+    setToast({ message: 'Restarting... page will reload in a few seconds.', type: 'success' });
+    setTimeout(() => location.reload(), 3000);
+  };
+
+  if (!settings) return html`<p>Loading...</p>`;
+
+  const field = (label, key, type) => html`
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">${label}</label>
+      ${type === 'boolean' ? html`
+        <input type="checkbox" checked=${settings[key]} onChange=${e => setSettings({...settings, [key]: e.target.checked})} />
+      ` : html`
+        <input type="${type === 'number' ? 'number' : 'text'}" value=${settings[key] || ''}
+          onInput=${e => setSettings({...settings, [key]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value})}
+          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; background: var(--card); color: var(--text);" />
+      `}
+    </div>
+  `;
+
+  return html`
+    <${Toast} message=${toast?.message} type=${toast?.type} />
+    <div class="page-header">
+      <h2>Settings</h2>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-primary" onClick=${save} disabled=${saving}>Save Settings</button>
+        <button class="btn btn-secondary" onClick=${restart}>Restart Server</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h3>Redirect URIs</h3></div>
+      <div class="card-body">
+        <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">Allowed Redirect URIs (one per line)</label>
+        <textarea rows="4" value=${(settings.redirect_uris || []).join('\n')}
+          onInput=${e => setSettings({...settings, redirect_uris: e.target.value.split('\n').filter(u => u.trim())})}
+          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; font-family: monospace; background: var(--card); color: var(--text);"
+          placeholder="https://app.example.com/callback"></textarea>
+        <p style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Wildcards supported: https://app.example.com/*</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>CORS Origins</h3></div>
+      <div class="card-body">
+        ${field('Allowed Origins (comma-separated, or * for all)', 'cors_origins', 'text')}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Password Policy</h3></div>
+      <div class="card-body">
+        ${field('Minimum Length', 'password_min_length', 'number')}
+        ${field('Require Uppercase', 'password_require_uppercase', 'boolean')}
+        ${field('Require Lowercase', 'password_require_lowercase', 'boolean')}
+        ${field('Require Digit', 'password_require_digit', 'boolean')}
+        ${field('Require Special Character', 'password_require_special', 'boolean')}
+        ${field('Password History Count', 'password_history_count', 'number')}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Account Lockout</h3></div>
+      <div class="card-body">
+        ${field('Lockout Threshold (0 = disabled)', 'account_lockout_threshold', 'number')}
+        ${field('Lockout Duration (seconds)', 'account_lockout_duration_s', 'number')}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Rate Limiting</h3></div>
+      <div class="card-body">
+        ${field('Max Requests', 'rate_limit_max', 'number')}
+        ${field('Window (seconds)', 'rate_limit_window_s', 'number')}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Default Roles</h3></div>
+      <div class="card-body">
+        <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">Roles assigned to new users (one per line)</label>
+        <textarea rows="3" value=${(settings.default_roles || []).join('\n')}
+          onInput=${e => setSettings({...settings, default_roles: e.target.value.split('\n').filter(r => r.trim())})}
+          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; background: var(--card); color: var(--text);"
+          placeholder="user"></textarea>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Audit Log</h3></div>
+      <div class="card-body">
+        ${field('Retention (days)', 'audit_retention_days', 'number')}
+      </div>
+    </div>
+  `;
+}
+
 // === Database ===
 function DatabasePage() {
   const [dbInfo, setDbInfo] = useState(null);
@@ -1705,6 +1827,7 @@ function App() {
     { id: 'mappings', label: 'Mappings', icon: icons.mappings },
     { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
     { id: 'audit', label: 'Audit Log', icon: icons.audit },
+    { id: 'settings', label: 'Settings', icon: icons.settings },
     { id: 'database', label: 'Database', icon: icons.database },
   ];
 
@@ -1716,6 +1839,7 @@ function App() {
     mappings: MappingsPage,
     impersonate: ImpersonatePage,
     audit: AuditPage,
+    settings: SettingsPage,
     database: DatabasePage,
   };
 

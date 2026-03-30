@@ -134,7 +134,7 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.getRedirectURIs(), redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
@@ -210,7 +210,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	_ = r.URL.Query().Get("client_id") // accepted for backward compat, not validated
 
 	redirectURI := r.URL.Query().Get("redirect_uri")
-	if redirectURI != "" && !isAllowedRedirect(h.cfg.RedirectURIs, redirectURI) {
+	if redirectURI != "" && !isAllowedRedirect(h.getRedirectURIs(), redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
