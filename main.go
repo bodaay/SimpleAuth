@@ -52,8 +52,8 @@ func main() {
 		log.Printf("Set admin_key in config file or AUTH_ADMIN_KEY env var to make it permanent")
 	}
 
-	// Open BoltDB store
-	s, err := store.Open(cfg.DataDir)
+	// Open store (PostgreSQL if configured, otherwise BoltDB)
+	s, err := store.OpenWithConfig(cfg.DataDir, cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("Failed to open store: %v", err)
 	}

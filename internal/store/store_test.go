@@ -7,7 +7,7 @@ import (
 )
 
 // helper opens a store in a temporary directory and returns it with a cleanup.
-func openTestStore(t *testing.T) *Store {
+func openTestStore(t *testing.T) Store {
 	t.Helper()
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -635,7 +635,7 @@ func TestBackupToFile(t *testing.T) {
 	}
 
 	// The backup file should be a valid BoltDB. Open it directly.
-	s3 := &Store{}
+	s3 := &BoltStore{}
 	if err := s3.reopen(backupPath); err != nil {
 		t.Fatalf("reopen backup: %v", err)
 	}

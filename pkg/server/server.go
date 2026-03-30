@@ -78,7 +78,7 @@ func Defaults() *Config {
 // Server is an embedded SimpleAuth instance.
 type Server struct {
 	handler *handler.Handler
-	store   *store.Store
+	store   store.Store
 }
 
 // New creates a new embedded SimpleAuth server.
@@ -110,7 +110,7 @@ func New(cfg *Config, uiFS fs.FS) (*Server, error) {
 		log.Printf("[simpleauth] No admin_key configured — generated temporary key: %s", cfg.AdminKey)
 	}
 
-	s, err := store.Open(cfg.DataDir)
+	s, err := store.OpenWithConfig(cfg.DataDir, cfg.PostgresURL)
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: open store: %w", err)
 	}

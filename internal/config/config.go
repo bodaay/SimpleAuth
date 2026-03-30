@@ -62,6 +62,9 @@ type Config struct {
 	PasswordHistoryCount     int           `yaml:"password_history_count"`
 	AccountLockoutThreshold  int           `yaml:"account_lockout_threshold"`
 	AccountLockoutDuration   time.Duration `yaml:"account_lockout_duration"`
+
+	// Database
+	PostgresURL string `yaml:"postgres_url"`
 }
 
 // configFile is an intermediate struct for YAML parsing with string durations.
@@ -613,6 +616,9 @@ func applyEnvOverrides(cfg *Config) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.AccountLockoutDuration = d
 		}
+	}
+	if v := os.Getenv("AUTH_POSTGRES_URL"); v != "" {
+		cfg.PostgresURL = v
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 	"simpleauth/internal/store"
 )
 
-func testSetup(t *testing.T) (*Handler, *store.Store) {
+func testSetup(t *testing.T) (*Handler, store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := store.Open(dir)

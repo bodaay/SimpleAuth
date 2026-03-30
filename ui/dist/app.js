@@ -37,6 +37,7 @@ const icons = {
   plus: html`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
   copy: html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
   roles: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+  database: html`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
 };
 
 // === Toast ===
@@ -1531,6 +1532,139 @@ function LoginSetup({ onLogin }) {
   `;
 }
 
+// === Database ===
+function DatabasePage() {
+  const [dbInfo, setDbInfo] = useState(null);
+  const [pgUrl, setPgUrl] = useState('');
+  const [testResult, setTestResult] = useState(null);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    api('GET', '/api/admin/database/info').then(setDbInfo);
+    // Check if migration is running
+    api('GET', '/api/admin/database/migrate/status').then(s => {
+      if (s.state === 'running') {
+        setMigrating(true);
+        setMigrationStatus(s);
+        pollStatus();
+      } else if (s.state === 'completed' || s.state === 'failed') {
+        setMigrationStatus(s);
+      }
+    });
+  }, []);
+
+  const pollStatus = () => {
+    const interval = setInterval(async () => {
+      const s = await api('GET', '/api/admin/database/migrate/status');
+      setMigrationStatus(s);
+      if (s.state !== 'running') {
+        clearInterval(interval);
+        setMigrating(false);
+        if (s.state === 'completed') {
+          setToast({ message: 'Migration completed successfully!', type: 'success' });
+        } else if (s.state === 'failed') {
+          setToast({ message: 'Migration failed: ' + s.error, type: 'error' });
+        }
+      }
+    }, 2000);
+  };
+
+  const testConnection = async () => {
+    setTestResult(null);
+    const result = await api('POST', '/api/admin/database/test', { postgres_url: pgUrl });
+    setTestResult(result);
+  };
+
+  const startMigration = async () => {
+    if (!confirm('Start migration from BoltDB to PostgreSQL? This may take a while for large databases.')) return;
+    setMigrating(true);
+    setMigrationStatus({ state: 'running', progress: {} });
+    await api('POST', '/api/admin/database/migrate', { postgres_url: pgUrl });
+    pollStatus();
+  };
+
+  const progressPercent = migrationStatus && migrationStatus.total_items > 0
+    ? Math.round((migrationStatus.migrated_items / migrationStatus.total_items) * 100)
+    : 0;
+
+  return html`
+    <${Toast} message=${toast?.message} type=${toast?.type} />
+    <div class="page-header"><h2>Database</h2></div>
+
+    <div class="card">
+      <div class="card-header"><h3>Current Backend</h3></div>
+      <div class="card-body">
+        <p><strong>Backend:</strong> ${dbInfo?.backend || 'loading...'}</p>
+      </div>
+    </div>
+
+    ${dbInfo?.backend === 'boltdb' && html`
+      <div class="card" style="margin-top: 16px;">
+        <div class="card-header"><h3>Migrate to PostgreSQL</h3></div>
+        <div class="card-body">
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 8px;">PostgreSQL Connection URL</label>
+            <input type="text" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
+              placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
+              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; font-family: monospace; background: var(--card); color: var(--text);" />
+          </div>
+          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <button class="btn btn-secondary" onClick=${testConnection} disabled=${!pgUrl || migrating}>Test Connection</button>
+            <button class="btn btn-primary" onClick=${startMigration} disabled=${!pgUrl || migrating || !testResult?.ok}>Start Migration</button>
+          </div>
+
+          ${testResult && html`
+            <div class="alert ${testResult.ok ? 'alert-success' : 'alert-error'}">
+              ${testResult.ok ? 'Connection successful!' : 'Connection failed: ' + testResult.error}
+            </div>
+          `}
+
+          ${migrationStatus && migrationStatus.state !== 'idle' && html`
+            <div style="margin-top: 16px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span style="font-size: 0.875rem; font-weight: 600;">Migration ${migrationStatus.state}</span>
+                <span style="font-size: 0.875rem; color: var(--muted);">
+                  ${migrationStatus.migrated_items} / ${migrationStatus.total_items} items (${progressPercent}%)
+                </span>
+              </div>
+              <div style="background: var(--border); border-radius: 4px; height: 8px; overflow: hidden;">
+                <div style="background: var(--burgundy); height: 100%; width: ${progressPercent}%; transition: width 0.3s;"></div>
+              </div>
+              ${migrationStatus.progress && Object.keys(migrationStatus.progress).length > 0 && html`
+                <div style="margin-top: 8px; font-size: 0.8rem; color: var(--muted);">
+                  ${Object.entries(migrationStatus.progress).map(([table, status]) => html`
+                    <span style="margin-right: 12px;">${table}: <strong>${status}</strong></span>
+                  `)}
+                </div>
+              `}
+              ${migrationStatus.state === 'completed' && html`
+                <div class="alert alert-success" style="margin-top: 12px;">
+                  Migration completed! Set <code>AUTH_POSTGRES_URL</code> in your environment and restart SimpleAuth to switch to PostgreSQL.
+                </div>
+              `}
+              ${migrationStatus.state === 'failed' && html`
+                <div class="alert alert-error" style="margin-top: 12px;">
+                  Migration failed: ${migrationStatus.error}
+                </div>
+              `}
+            </div>
+          `}
+        </div>
+      </div>
+    `}
+
+    ${dbInfo?.backend === 'postgres' && html`
+      <div class="card" style="margin-top: 16px;">
+        <div class="card-body">
+          <div class="alert alert-success">Running on PostgreSQL.</div>
+        </div>
+      </div>
+    `}
+  `;
+}
+
 // === App Shell ===
 function App() {
   const [page, setPage] = useState('dashboard');
@@ -1571,6 +1705,7 @@ function App() {
     { id: 'mappings', label: 'Mappings', icon: icons.mappings },
     { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
     { id: 'audit', label: 'Audit Log', icon: icons.audit },
+    { id: 'database', label: 'Database', icon: icons.database },
   ];
 
   const pages = {
@@ -1581,6 +1716,7 @@ function App() {
     mappings: MappingsPage,
     impersonate: ImpersonatePage,
     audit: AuditPage,
+    database: DatabasePage,
   };
 
   const PageComponent = pages[page] || Dashboard;

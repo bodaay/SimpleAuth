@@ -17,15 +17,16 @@ import (
 )
 
 type Handler struct {
-	cfg         *config.Config
-	store       *store.Store
-	jwt         *auth.JWTManager
+	cfg          *config.Config
+	store        store.Store
+	jwt          *auth.JWTManager
 	loginLimiter *rateLimiter
-	mux         *http.ServeMux
-	version     string
+	mux          *http.ServeMux
+	version      string
+	migration    *migrationState
 }
 
-func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
+func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
 	h := &Handler{
 		cfg:          cfg,
 		store:        s,
@@ -37,6 +38,7 @@ func New(cfg *config.Config, s *store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS
 	// Set trusted proxy CIDRs for getClientIP
 	trustedCIDRs = cfg.TrustedProxyCIDRs
 
+	h.initMigrationState()
 	h.registerRoutes(uiFS)
 	return h
 }
@@ -198,6 +200,12 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	// Admin: Password Policy & Account Unlock
 	h.mux.HandleFunc("GET /api/admin/password-policy", h.requireMasterAdmin(h.handleGetPasswordPolicy))
 	h.mux.HandleFunc("PUT /api/admin/users/{guid}/unlock", h.requireMasterAdmin(h.handleUnlockAccount))
+
+	// Admin: Database / Migration
+	h.mux.HandleFunc("GET /api/admin/database/info", h.requireMasterAdmin(h.handleDatabaseInfo))
+	h.mux.HandleFunc("POST /api/admin/database/test", h.requireMasterAdmin(h.handleMigrateTest))
+	h.mux.HandleFunc("POST /api/admin/database/migrate", h.requireMasterAdmin(h.handleMigrateStart))
+	h.mux.HandleFunc("GET /api/admin/database/migrate/status", h.requireMasterAdmin(h.handleMigrateStatus))
 
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))

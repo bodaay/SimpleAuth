@@ -4,7 +4,8 @@
       "Read(//Users/mhalsuwaidi/.docker/run/**)",
       "Bash(pkill -9 -f \"Docker Desktop\")",
       "Bash(pkill -9 -f \"com.docker\")",
-      "Bash(./docker-build.sh)"
+      "Bash(./docker-build.sh)",
+      "Bash(find /Users/mhalsuwaidi/Projects/NewFanan/web/src -type f \\\\\\(-name *.svelte -o -name *.ts -o -name *.js \\\\\\))"
     ]
   }
 }

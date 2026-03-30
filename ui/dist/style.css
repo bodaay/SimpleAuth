@@ -685,6 +685,14 @@ tr:hover td { background: var(--bg-hover); }
   font-size: 0.875rem;
 }
 
+/* === Alerts === */
+.alert { padding: 12px 16px; border-radius: 8px; font-size: 0.875rem; margin-bottom: 8px; }
+.alert code { background: rgba(0,0,0,0.1); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
+.alert-success { background: rgba(16,185,129,0.15); color: #065f46; border: 1px solid rgba(16,185,129,0.3); }
+.alert-error { background: rgba(239,68,68,0.15); color: #991b1b; border: 1px solid rgba(239,68,68,0.3); }
+[data-theme="dark"] .alert-success { color: #6ee7b7; }
+[data-theme="dark"] .alert-error { color: #fca5a5; }
+
 /* === Responsive === */
 @media (max-width: 768px) {
   .sidebar { width: 60px; }
