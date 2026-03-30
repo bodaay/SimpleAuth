@@ -665,7 +665,9 @@ func (h *Handler) handleUnmergeUser(w http.ResponseWriter, r *http.Request) {
 // --- Backup & Restore ---
 
 func (h *Handler) handleBackup(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[admin] Database backup requested ip=%s", getClientIP(r))
+	ip := getClientIP(r)
+	log.Printf("[admin] Database backup requested ip=%s", ip)
+	h.audit("database_backup", "admin", ip, nil)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="auth-backup-%s.db"`, time.Now().Format("2006-01-02")))
 
@@ -742,7 +744,7 @@ func (h *Handler) handleQueryAudit(w http.ResponseWriter, r *http.Request) {
 // POST /api/admin/ldap/sync-user
 // Body: {"username": "alice"}
 func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -797,7 +799,7 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 // handleSyncAll syncs all users that have LDAP mappings.
 // POST /api/admin/ldap/sync-all
 func (h *Handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return

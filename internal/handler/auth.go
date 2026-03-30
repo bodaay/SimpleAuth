@@ -128,7 +128,7 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 
 	// Step 2: Fallback — try LDAP authentication (if configured and local didn't match)
 	if !authenticated {
-		ldapCfg, ldapErr := h.store.GetLDAPConfig()
+		ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 		if ldapErr == nil {
 			cfg := ldapConfigFromStore(ldapCfg)
 			result, err := auth.LDAPAuthenticate(cfg, username, password)
@@ -1188,31 +1188,40 @@ func (h *Handler) extractKerberosUsername(tokenBytes []byte, kt *keytab.Keytab) 
 // resolveKerberosUser looks up a Kerberos-authenticated user by sAMAccountName,
 // creates via JIT provisioning if needed, and returns the user GUID and LDAP groups.
 func (h *Handler) resolveKerberosUser(username string) (string, []string, error) {
-	ldapCfg, ldapErr := h.store.GetLDAPConfig()
+	ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 	if ldapErr != nil {
 		return "", nil, fmt.Errorf("ldap not configured")
 	}
 	cfg := ldapConfigFromStore(ldapCfg)
 
-	// Check existing identity mapping
-	if guid, err := h.store.ResolveMapping("local", username); err == nil {
-		user, err := h.store.ResolveUser(guid)
-		if err == nil {
-			var groups []string
-			result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+	// Check existing identity mappings (ldap first, then local)
+	for _, provider := range []string{"ldap", "local"} {
+		if guid, err := h.store.ResolveMapping(provider, username); err == nil {
+			user, err := h.store.ResolveUser(guid)
 			if err == nil {
-				groups = result.Groups
-				h.syncUserFromLDAP(user, result)
+				var groups []string
+				result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
+				if err == nil {
+					groups = result.Groups
+					h.syncUserFromLDAP(user, result)
+				}
+				return user.GUID, groups, nil
 			}
-			return user.GUID, groups, nil
 		}
 	}
 
-	// JIT provisioning: search LDAP, create user, set mappings
+	// JIT provisioning: search LDAP by sAMAccountName (unique per domain)
 	result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
 	if err != nil {
 		return "", nil, fmt.Errorf("user %q not found in LDAP: %v", username, err)
 	}
+
+	// Double-check: ensure no existing user with this LDAP identity before creating
+	if existingGUID, err := h.store.ResolveMapping("ldap", username); err == nil {
+		log.Printf("[sso] JIT: user %q already mapped to %s via ldap, reusing", username, existingGUID)
+		return existingGUID, result.Groups, nil
+	}
+
 	newUser := &store.User{
 		DisplayName: result.DisplayName,
 		Email:       result.Email,
@@ -1243,7 +1252,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 	}
 
 	// Try LDAP authentication
-	ldapCfg, ldapErr := h.store.GetLDAPConfig()
+	ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 	if ldapErr != nil {
 		log.Printf("[test-negotiate] No LDAP configured")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1325,7 +1334,7 @@ func patchKeytabKVNO(kt *keytab.Keytab, ticketKVNO int) {
 
 // enrichUserInfoFromLDAP looks up a username in the LDAP config.
 func (h *Handler) enrichUserInfoFromLDAP(userInfo map[string]string, username string) {
-	ldapCfg, err := h.store.GetLDAPConfig()
+	ldapCfg, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		return
 	}

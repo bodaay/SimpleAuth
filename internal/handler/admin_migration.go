@@ -125,7 +125,7 @@ func (h *Handler) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		}
 		target, err := store.OpenPostgres(req.PostgresURL)
 		if err != nil {
-			jsonError(w, "failed to connect to postgres: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, "failed to connect to postgres", http.StatusBadRequest)
 			return
 		}
 
@@ -156,7 +156,7 @@ func (h *Handler) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		}
 		target, err := store.OpenBolt(h.cfg.DataDir)
 		if err != nil {
-			jsonError(w, "failed to open BoltDB: "+err.Error(), http.StatusInternalServerError)
+			jsonError(w, "failed to open BoltDB", http.StatusInternalServerError)
 			return
 		}
 
@@ -214,7 +214,7 @@ func (h *Handler) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 	switch req.Backend {
 	case "boltdb":
 		if err := store.SaveDBConfig(h.cfg.DataDir, &store.DBConfig{Backend: "boltdb"}); err != nil {
-			jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			jsonError(w, "failed to save config", http.StatusInternalServerError)
 			return
 		}
 	case "postgres":
@@ -223,11 +223,11 @@ func (h *Handler) handleSwitchBackend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := store.TestPostgresConnection(req.PostgresURL); err != nil {
-			jsonError(w, "postgres connection failed: "+err.Error(), http.StatusBadRequest)
+			jsonError(w, "postgres connection failed", http.StatusBadRequest)
 			return
 		}
 		if err := store.SaveDBConfig(h.cfg.DataDir, &store.DBConfig{Backend: "postgres", PostgresURL: req.PostgresURL}); err != nil {
-			jsonError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			jsonError(w, "failed to save config", http.StatusInternalServerError)
 			return
 		}
 	default:

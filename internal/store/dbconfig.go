@@ -1,11 +1,16 @@
 package store
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DBConfig persists the active backend choice in a local JSON file.
@@ -50,6 +55,48 @@ func SaveDBConfig(dataDir string, cfg *DBConfig) error {
 	return os.WriteFile(DBConfigPath(dataDir), data, 0600)
 }
 
+// readEncryptionKey reads the encryption key from data_dir/encrypt.key if it exists.
+func readEncryptionKey(dataDir string) []byte {
+	data, err := os.ReadFile(filepath.Join(dataDir, "encrypt.key"))
+	if err != nil || len(data) != 64 {
+		return nil
+	}
+	key, err := hex.DecodeString(string(data))
+	if err != nil || len(key) != 32 {
+		return nil
+	}
+	return key
+}
+
+// decryptIfNeeded decrypts a string if it starts with "enc::".
+func decryptIfNeeded(s string, key []byte) string {
+	if key == nil || !strings.HasPrefix(s, "enc::") {
+		return s
+	}
+	b64 := s[5:]
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return s
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return s
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return s
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return s
+	}
+	plaintext, err := gcm.Open(nil, data[:nonceSize], data[nonceSize:], nil)
+	if err != nil {
+		return s
+	}
+	return string(plaintext)
+}
+
 // OpenSmart opens the appropriate store based on:
 // 1. db.json in dataDir (if exists — UI-managed backend choice)
 // 2. postgresURL from env/config (backward compat)
@@ -61,10 +108,13 @@ func OpenSmart(dataDir, envPostgresURL string) (Store, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
+	encKey := readEncryptionKey(dataDir)
+
 	// Check db.json first (UI-managed)
 	dbCfg, _ := LoadDBConfig(dataDir)
 	if dbCfg != nil && dbCfg.Backend == "postgres" && dbCfg.PostgresURL != "" {
-		s, err := OpenPostgres(dbCfg.PostgresURL)
+		pgURL := decryptIfNeeded(dbCfg.PostgresURL, encKey)
+		s, err := OpenPostgres(pgURL)
 		if err != nil {
 			log.Printf("[store] WARNING: Postgres failed (%v) — falling back to BoltDB", err)
 			return OpenBolt(dataDir)

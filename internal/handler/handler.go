@@ -26,6 +26,7 @@ type Handler struct {
 	migration       *migrationState
 	runtimeSettings runtimeSettingsCache
 	restartCh       chan<- struct{}
+	encKey          []byte
 }
 
 func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
@@ -40,6 +41,7 @@ func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS,
 	// Set trusted proxy CIDRs for getClientIP
 	trustedCIDRs = cfg.TrustedProxyCIDRs
 
+	h.initEncryptionKey()
 	h.initMigrationState()
 	h.initRuntimeSettings()
 	h.registerRoutes(uiFS)

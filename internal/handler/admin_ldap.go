@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 // handleGetLDAPConfig returns the current LDAP configuration (or null if not configured).
 // GET /api/admin/ldap
 func (h *Handler) handleGetLDAPConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.store.GetLDAPConfig()
+	cfg, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonResp(w, nil, http.StatusOK)
 		return
@@ -42,19 +43,19 @@ func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 
 	// If password is masked, preserve existing password
 	if cfg.BindPassword == "••••••••" {
-		existing, err := h.store.GetLDAPConfig()
+		existing, err := h.getLDAPConfigDecrypted()
 		if err == nil {
 			cfg.BindPassword = existing.BindPassword
 		}
 	}
 
 	// Preserve configured_at if updating
-	existing, err := h.store.GetLDAPConfig()
+	existing, err := h.getLDAPConfigDecrypted()
 	if err == nil {
 		cfg.ConfiguredAt = existing.ConfiguredAt
 	}
 
-	if err := h.store.SaveLDAPConfig(&cfg); err != nil {
+	if err := h.saveLDAPConfigEncrypted(&cfg); err != nil {
 		jsonError(w, "failed to save ldap config", http.StatusInternalServerError)
 		return
 	}
@@ -78,7 +79,7 @@ func (h *Handler) handleDeleteLDAPConfig(w http.ResponseWriter, r *http.Request)
 // handleTestLDAPConfig tests connection to the configured LDAP server.
 // POST /api/admin/ldap/test
 func (h *Handler) handleTestLDAPConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.store.GetLDAPConfig()
+	cfg, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -99,7 +100,7 @@ func (h *Handler) handleTestLDAPConfig(w http.ResponseWriter, r *http.Request) {
 // POST /api/admin/ldap/test-user
 // Body: {"username": "alice"}
 func (h *Handler) handleTestLDAPUser(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.store.GetLDAPConfig()
+	cfg, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -206,8 +207,9 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		Domain:          req.Domain,
 	}
 
-	if err := h.store.SaveLDAPConfig(cfg); err != nil {
-		jsonError(w, "failed to save ldap config: "+err.Error(), http.StatusInternalServerError)
+	if err := h.saveLDAPConfigEncrypted(cfg); err != nil {
+		log.Printf("[admin] Failed to save LDAP config: %v", err)
+		jsonError(w, "failed to save ldap config", http.StatusInternalServerError)
 		return
 	}
 
@@ -353,8 +355,9 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		Domain:          domain,
 	}
 
-	if err := h.store.SaveLDAPConfig(cfg); err != nil {
-		jsonError(w, "auto-discover succeeded but save failed: "+err.Error(), http.StatusInternalServerError)
+	if err := h.saveLDAPConfigEncrypted(cfg); err != nil {
+		log.Printf("[admin] Auto-discover save failed: %v", err)
+		jsonError(w, "auto-discover succeeded but save failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -372,7 +375,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 // POST /api/admin/ldap/search-users
 // Body: {"query": "john", "limit": 50}
 func (h *Handler) handleSearchLDAPUsers(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -435,7 +438,7 @@ func (h *Handler) handleSearchLDAPUsers(w http.ResponseWriter, r *http.Request) 
 // POST /api/admin/ldap/import-users
 // Body: {"usernames": ["alice", "bob"]}
 func (h *Handler) handleImportLDAPUsers(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return

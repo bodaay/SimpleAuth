@@ -1,12 +1,39 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 )
+
+func generateCSRFToken() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func setCSRFCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "__csrf",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   true,
+	})
+}
+
+func validateCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie("__csrf")
+	if err != nil {
+		return false
+	}
+	return timingSafeEqual(cookie.Value, r.FormValue("_csrf"))
+}
 
 // handleHostedLoginPage serves the hosted login form.
 // Apps redirect users here: GET /login?redirect_uri=Y
@@ -34,14 +61,21 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
 	}
 
+	csrfToken := generateCSRFToken()
+	setCSRFCookie(w, csrfToken)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoHTML)
+	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoHTML, csrfToken)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
 func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form data", http.StatusBadRequest)
+		return
+	}
+	if !validateCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
 
@@ -210,6 +244,7 @@ button:hover{background:var(--burgundy-hover)}
   %[3]s
   <form method="POST" action="{{BASE_PATH}}/login">
     <input type="hidden" name="redirect_uri" value="%[1]s">
+    <input type="hidden" name="_csrf" value="%[4]s">
     <label>Username</label>
     <input type="text" name="username" placeholder="Enter your username" autofocus required>
     <label>Password</label>

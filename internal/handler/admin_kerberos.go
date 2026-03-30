@@ -79,7 +79,7 @@ func (h *Handler) handleKerberosStatus(w http.ResponseWriter, r *http.Request) {
 // handleSetupKerberos configures Kerberos/SPNEGO using the single LDAP config.
 // POST /api/admin/ldap/setup-kerberos
 func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -192,7 +192,7 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 // handleCleanupKerberos removes Kerberos config and optionally revokes SPN from AD.
 // POST /api/admin/ldap/cleanup-kerberos
 func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
@@ -317,7 +317,7 @@ func unregisterSPN(conn *ldaplib.Conn, accountDN, spn string) error {
 
 // autoSetupKerberos generates a keytab using the single LDAP config (called during import).
 func (h *Handler) autoSetupKerberos(serviceHostname string, r *http.Request) (map[string]interface{}, error) {
-	p, err := h.store.GetLDAPConfig()
+	p, err := h.getLDAPConfigDecrypted()
 	if err != nil {
 		return nil, fmt.Errorf("ldap not configured: %v", err)
 	}
