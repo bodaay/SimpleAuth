@@ -313,17 +313,7 @@ configure_chromium_based "opera" "/etc/opt/opera/policies/managed"
 # ═══════════════════════════════════════════
 step "4/4" "Test Kerberos configuration"
 
-echo ""
-echo -e "  ${BOLD}To complete setup, each user needs to obtain a Kerberos ticket:${NC}"
-echo ""
-echo -e "    ${CYAN}kinit username@${REALM}${NC}"
-echo ""
-echo -e "  Then verify with:"
-echo ""
-echo -e "    ${CYAN}klist${NC}"
-echo ""
-
-# Try to test if we can reach the KDC
+# DNS check
 if command -v nslookup &>/dev/null; then
   if nslookup "$KDC" &>/dev/null; then
     ok "KDC ($KDC) is reachable via DNS"
@@ -338,36 +328,58 @@ elif command -v host &>/dev/null; then
   fi
 fi
 
-# Test kinit if running as a regular user via sudo
-if [[ -n "$ACTUAL_USER" && "$ACTUAL_USER" != "root" ]]; then
-  echo ""
-  read -p "  Test kinit for ${ACTUAL_USER}@${REALM}? [Y/n] " REPLY
-  REPLY=${REPLY:-Y}
-  if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-    echo ""
-    if su - "$ACTUAL_USER" -c "kinit ${ACTUAL_USER}@${REALM}" 2>/dev/null; then
-      ok "kinit succeeded for ${ACTUAL_USER}@${REALM}"
-      su - "$ACTUAL_USER" -c "klist" 2>/dev/null && ok "Ticket cache verified"
+# Interactive test
+echo ""
+echo -e "  ${BOLD}Test Kerberos login${NC}"
+echo ""
+echo -e "  Enter your Active Directory username (sAMAccountName)."
+echo -e "  This is the username you use to log into Windows (e.g. ${CYAN}jsmith${NC})."
+echo ""
+read -p "  AD username (or press Enter to skip): " AD_USER
 
-      # Test SSO against SimpleAuth
-      echo ""
-      info "Testing SSO against SimpleAuth..."
-      HTTP_CODE=$(su - "$ACTUAL_USER" -c "curl -s -o /dev/null -w '%{http_code}' --negotiate -u : 'https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/api/auth/negotiate'" 2>/dev/null || echo "000")
+if [[ -n "$AD_USER" ]]; then
+  KRB_PRINCIPAL="${AD_USER}@${REALM}"
+  echo ""
+  info "Running: kinit ${KRB_PRINCIPAL}"
+  echo ""
+
+  if kinit "$KRB_PRINCIPAL"; then
+    echo ""
+    ok "kinit succeeded for ${KRB_PRINCIPAL}"
+    klist && ok "Ticket cache verified"
+
+    # Test SSO against SimpleAuth
+    echo ""
+    info "Testing SSO against SimpleAuth..."
+    if command -v curl &>/dev/null; then
+      HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --negotiate -u : "https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/api/auth/negotiate" 2>/dev/null || echo "000")
       if [[ "$HTTP_CODE" == "200" ]]; then
         ok "SSO authentication successful!"
       elif [[ "$HTTP_CODE" == "401" ]]; then
-        warn "SSO returned 401 — Kerberos ticket may not match the service principal"
-        warn "  Check that SPN HTTP/${AUTH_HOSTNAME} is registered in AD"
+        warn "SSO returned 401 — ticket may not match the SPN"
+        warn "  Expected SPN: HTTP/${AUTH_HOSTNAME}"
+        warn "  Run: ${CYAN}KRB5_TRACE=/dev/stderr curl -k --negotiate -u : https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}/api/auth/negotiate${NC}"
       elif [[ "$HTTP_CODE" == "000" ]]; then
         warn "Could not reach SimpleAuth at https://${AUTH_HOSTNAME}${AUTH_BASE_PATH}"
-        warn "  Check network connectivity and DNS"
       else
         warn "SSO returned HTTP $HTTP_CODE"
       fi
     else
-      fail "kinit failed — check your password and that the KDC is reachable"
+      warn "curl not installed — cannot test SSO endpoint"
     fi
+  else
+    echo ""
+    fail "kinit failed for ${KRB_PRINCIPAL}"
+    echo ""
+    echo -e "  ${BOLD}Troubleshooting:${NC}"
+    echo -e "    • Check the password is correct"
+    echo -e "    • Check KDC is reachable: ${CYAN}ping ${KDC}${NC}"
+    echo -e "    • Check DNS: ${CYAN}nslookup ${KDC}${NC}"
+    echo -e "    • Verbose kinit: ${CYAN}KRB5_TRACE=/dev/stderr kinit ${KRB_PRINCIPAL}${NC}"
   fi
+else
+  info "Skipped — you can test later with:"
+  echo -e "    ${CYAN}kinit your_ad_username@${REALM}${NC}"
 fi
 
 # ═══════════════════════════════════════════
