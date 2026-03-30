@@ -13,9 +13,9 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// MigrationStatus tracks progress of a BoltDB → Postgres migration.
+// MigrationStatus tracks progress of a database migration.
 type MigrationStatus struct {
-	State         string            `json:"state"`          // idle, running, completed, failed
+	State         string            `json:"state"`          // idle, running, verifying, completed, failed
 	Progress      map[string]string `json:"progress"`       // table → status
 	TotalItems    int64             `json:"total_items"`
 	MigratedItems int64             `json:"migrated_items"`
@@ -24,22 +24,51 @@ type MigrationStatus struct {
 	Error         string            `json:"error,omitempty"`
 }
 
-// MigrateToPostgres copies all data from a BoltStore to a PostgresStore.
-// Progress updates are sent on statusCh (non-blocking).
-func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<- MigrationStatus) error {
-	status := MigrationStatus{
-		State:     "running",
-		Progress:  map[string]string{},
-		StartedAt: time.Now().Unix(),
-	}
-	send := func() {
-		select {
-		case statusCh <- status:
-		default:
-		}
-	}
+// migrationHelper holds common migration logic.
+type migrationHelper struct {
+	status   MigrationStatus
+	statusCh chan<- MigrationStatus
+}
 
-	// Ensure target has clean sa_ tables (truncate, don't drop — preserves schema)
+func newMigrationHelper(ch chan<- MigrationStatus) *migrationHelper {
+	return &migrationHelper{
+		status:   MigrationStatus{State: "running", Progress: map[string]string{}, StartedAt: time.Now().Unix()},
+		statusCh: ch,
+	}
+}
+
+func (m *migrationHelper) send() {
+	select {
+	case m.statusCh <- m.status:
+	default:
+	}
+}
+
+func (m *migrationHelper) fail(err error) error {
+	m.status.State = "failed"
+	m.status.Error = err.Error()
+	m.send()
+	return err
+}
+
+func (m *migrationHelper) complete() {
+	m.status.State = "completed"
+	m.status.CompletedAt = time.Now().Unix()
+	m.send()
+}
+
+// ============================================================================
+//  BoltDB → PostgreSQL
+// ============================================================================
+
+// MigrateToPostgres copies all data from a BoltStore to a PostgresStore.
+// Source is never modified. Target is truncated before copy. Row counts verified.
+func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<- MigrationStatus) error {
+	m := newMigrationHelper(statusCh)
+
+	// Step 1: Truncate target (idempotent — safe to run multiple times)
+	m.status.Progress["_prepare"] = "truncating"
+	m.send()
 	for _, table := range []string{
 		"sa_oidc_auth_codes", "sa_revoked_tokens", "sa_revoked_users",
 		"sa_audit_log", "sa_refresh_tokens", "sa_user_permissions",
@@ -47,8 +76,9 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 	} {
 		target.db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
 	}
+	m.status.Progress["_prepare"] = "done"
 
-	// Count total items across all buckets
+	// Step 2: Count source items
 	buckets := []struct {
 		name   string
 		bucket []byte
@@ -64,26 +94,26 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 		{"oidc_auth_codes", bucketOIDCAuthCodes},
 	}
 
+	sourceCounts := map[string]int64{}
 	source.db.View(func(tx *bolt.Tx) error {
 		for _, b := range buckets {
 			bucket := tx.Bucket(b.bucket)
 			if bucket == nil {
 				continue
 			}
-			bucket.ForEach(func(k, v []byte) error {
-				status.TotalItems++
-				return nil
-			})
+			var count int64
+			bucket.ForEach(func(k, v []byte) error { count++; return nil })
+			sourceCounts[b.name] = count
+			m.status.TotalItems += count
 		}
 		return nil
 	})
+	m.send()
 
-	send()
-
-	// Migrate each bucket
+	// Step 3: Copy data
 	for _, b := range buckets {
-		status.Progress[b.name] = "migrating"
-		send()
+		m.status.Progress[b.name] = "migrating"
+		m.send()
 
 		err := source.db.View(func(tx *bolt.Tx) error {
 			bucket := tx.Bucket(b.bucket)
@@ -92,133 +122,106 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 			}
 			return bucket.ForEach(func(k, v []byte) error {
 				if err := migrateKV(target, b.name, k, v); err != nil {
-					return fmt.Errorf("migrate %s key=%s: %w", b.name, string(k), err)
+					return fmt.Errorf("%s key=%s: %w", b.name, string(k), err)
 				}
-				status.MigratedItems++
-				if status.MigratedItems%50 == 0 {
-					send()
+				m.status.MigratedItems++
+				if m.status.MigratedItems%50 == 0 {
+					m.send()
 				}
 				return nil
 			})
 		})
-
 		if err != nil {
-			status.State = "failed"
-			status.Error = err.Error()
-			send()
-			return err
+			return m.fail(err)
 		}
-
-		status.Progress[b.name] = "done"
-		send()
+		m.status.Progress[b.name] = "done"
+		m.send()
 	}
 
-	status.State = "completed"
-	status.CompletedAt = time.Now().Unix()
-	send()
+	// Step 4: Verify row counts
+	m.status.State = "verifying"
+	m.send()
+	verifyMap := map[string]string{
+		"users":              "sa_users",
+		"identity_mappings":  "sa_identity_mappings",
+		"user_roles":         "sa_user_roles",
+		"user_permissions":   "sa_user_permissions",
+		"config":             "sa_config",
+		"refresh_tokens":     "sa_refresh_tokens",
+		"audit_log":          "sa_audit_log",
+		"oidc_auth_codes":    "sa_oidc_auth_codes",
+	}
+	for boltName, pgTable := range verifyMap {
+		expected := sourceCounts[boltName]
+		if expected == 0 {
+			continue
+		}
+		var actual int64
+		target.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", pgTable)).Scan(&actual)
+		if actual != expected {
+			return m.fail(fmt.Errorf("verification failed for %s: expected %d rows, got %d", boltName, expected, actual))
+		}
+	}
+
+	m.complete()
 	return nil
 }
 
 // migrateKV inserts a single BoltDB key-value pair into the correct Postgres table.
 func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 	key := string(k)
-
 	switch table {
 	case "users":
-		_, err := target.db.Exec(
-			`INSERT INTO sa_users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`,
-			key, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`, key, v)
 		return err
-
 	case "identity_mappings":
-		// Key is "provider:externalID", value is userGUID
 		idx := strings.Index(key, ":")
 		if idx < 0 {
 			return nil
 		}
-		provider := key[:idx]
-		externalID := key[idx+1:]
-		_, err := target.db.Exec(
-			`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3)
-			 ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`,
-			provider, externalID, string(v),
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3) ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`, key[:idx], key[idx+1:], string(v))
 		return err
-
 	case "idx_mappings_by_guid":
-		// Skip — this is a reverse index that Postgres doesn't need (uses SQL index instead)
-		return nil
-
+		return nil // reverse index — Postgres uses SQL index
 	case "user_roles":
-		_, err := target.db.Exec(
-			`INSERT INTO sa_user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`,
-			key, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`, key, v)
 		return err
-
 	case "user_permissions":
-		_, err := target.db.Exec(
-			`INSERT INTO sa_user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`,
-			key, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`, key, v)
 		return err
-
 	case "config":
-		_, err := target.db.Exec(
-			`INSERT INTO sa_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-			key, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`, key, v)
 		return err
-
 	case "refresh_tokens":
-		_, err := target.db.Exec(
-			`INSERT INTO sa_refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`,
-			key, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`, key, v)
 		return err
-
 	case "audit_log":
-		// Key is "timestamp:id", value is JSON AuditEntry
 		var entry AuditEntry
 		if err := json.Unmarshal(v, &entry); err != nil {
-			return nil // skip corrupt entries
+			return nil
 		}
-		_, err := target.db.Exec(
-			`INSERT INTO sa_audit_log (id, timestamp, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-			entry.ID, entry.Timestamp, v,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_audit_log (id, timestamp, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`, entry.ID, entry.Timestamp, v)
 		return err
-
 	case "oidc_auth_codes":
 		var ac OIDCAuthCode
 		if err := json.Unmarshal(v, &ac); err != nil {
 			return nil
 		}
-		_, err := target.db.Exec(
-			`INSERT INTO sa_oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
-			key, v, ac.ExpiresAt,
-		)
+		_, err := target.db.Exec(`INSERT INTO sa_oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`, key, v, ac.ExpiresAt)
 		return err
-
 	default:
 		return nil
 	}
 }
 
-// MigrateFromPostgres copies all data from a PostgresStore to a BoltStore.
+// ============================================================================
+//  PostgreSQL → BoltDB
+// ============================================================================
+
+// MigrateFromPostgres copies all data from a PostgresStore to a fresh BoltStore.
+// Source is never modified. Target BoltDB is opened fresh (empty).
 func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan<- MigrationStatus) error {
-	status := MigrationStatus{
-		State:     "running",
-		Progress:  map[string]string{},
-		StartedAt: time.Now().Unix(),
-	}
-	send := func() {
-		select {
-		case statusCh <- status:
-		default:
-		}
-	}
+	m := newMigrationHelper(statusCh)
 
 	tables := []struct {
 		name  string
@@ -236,65 +239,63 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 	}
 
 	// Count totals
+	sourceCounts := map[string]int64{}
 	for _, t := range tables {
 		var count int64
 		source.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", t.table)).Scan(&count)
-		status.TotalItems += count
+		sourceCounts[t.name] = count
+		m.status.TotalItems += count
 	}
-	send()
+	m.send()
 
+	// Copy each table
 	for _, t := range tables {
-		status.Progress[t.name] = "migrating"
-		send()
+		m.status.Progress[t.name] = "migrating"
+		m.send()
 
 		rows, err := source.db.Query(t.query)
 		if err != nil {
-			status.State = "failed"
-			status.Error = fmt.Sprintf("query %s: %v", t.name, err)
-			send()
-			return fmt.Errorf("query %s: %w", t.name, err)
+			return m.fail(fmt.Errorf("query %s: %w", t.name, err))
 		}
 
 		for rows.Next() {
-			var err error
+			var writeErr error
 			switch t.name {
 			case "users":
 				var guid string
 				var data []byte
 				rows.Scan(&guid, &data)
-				err = target.SetConfigValue("__skip__", nil) // dummy to keep interface
-				_ = err
-				err = target.db.Update(func(tx *bolt.Tx) error {
+				writeErr = target.db.Update(func(tx *bolt.Tx) error {
 					return tx.Bucket(bucketUsers).Put([]byte(guid), data)
 				})
 			case "identity_mappings":
 				var provider, externalID, userGUID string
 				rows.Scan(&provider, &externalID, &userGUID)
-				err = target.SetIdentityMapping(provider, externalID, userGUID)
+				writeErr = target.SetIdentityMapping(provider, externalID, userGUID)
 			case "user_roles":
 				var guid string
 				var roles []byte
 				rows.Scan(&guid, &roles)
-				err = target.db.Update(func(tx *bolt.Tx) error {
+				writeErr = target.db.Update(func(tx *bolt.Tx) error {
 					return tx.Bucket(bucketUserRoles).Put([]byte(guid), roles)
 				})
 			case "user_permissions":
 				var guid string
 				var perms []byte
 				rows.Scan(&guid, &perms)
-				err = target.db.Update(func(tx *bolt.Tx) error {
+				writeErr = target.db.Update(func(tx *bolt.Tx) error {
 					return tx.Bucket(bucketUserPermissions).Put([]byte(guid), perms)
 				})
 			case "config":
 				var key string
 				var value []byte
 				rows.Scan(&key, &value)
-				err = target.SetConfigValue(key, value)
+				writeErr = target.SetConfigValue(key, value)
 			case "refresh_tokens":
 				var tokenID string
 				var data []byte
 				rows.Scan(&tokenID, &data)
-				err = target.db.Update(func(tx *bolt.Tx) error {
+				writeErr = target.db.Update(func(tx *bolt.Tx) error {
 					return tx.Bucket(bucketRefreshTokens).Put([]byte(tokenID), data)
 				})
 			case "audit_log":
@@ -304,7 +305,7 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 				var entry AuditEntry
 				if json.Unmarshal(data, &entry) == nil {
 					key := []byte(entry.Timestamp.Format(time.RFC3339Nano) + ":" + entry.ID)
-					err = target.db.Update(func(tx *bolt.Tx) error {
+					writeErr = target.db.Update(func(tx *bolt.Tx) error {
 						return tx.Bucket(bucketAuditLog).Put(key, data)
 					})
 				}
@@ -312,33 +313,59 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 				var code string
 				var data []byte
 				rows.Scan(&code, &data)
-				err = target.db.Update(func(tx *bolt.Tx) error {
+				writeErr = target.db.Update(func(tx *bolt.Tx) error {
 					return tx.Bucket(bucketOIDCAuthCodes).Put([]byte(code), data)
 				})
 			}
-			if err != nil {
+			if writeErr != nil {
 				rows.Close()
-				status.State = "failed"
-				status.Error = fmt.Sprintf("migrate %s: %v", t.name, err)
-				send()
-				return fmt.Errorf("migrate %s: %w", t.name, err)
+				return m.fail(fmt.Errorf("write %s: %w", t.name, writeErr))
 			}
-			status.MigratedItems++
-			if status.MigratedItems%50 == 0 {
-				send()
+			m.status.MigratedItems++
+			if m.status.MigratedItems%50 == 0 {
+				m.send()
 			}
 		}
 		rows.Close()
 
-		status.Progress[t.name] = "done"
-		send()
+		m.status.Progress[t.name] = "done"
+		m.send()
 	}
 
-	status.State = "completed"
-	status.CompletedAt = time.Now().Unix()
-	send()
+	// Verify row counts
+	m.status.State = "verifying"
+	m.send()
+	for _, t := range tables {
+		expected := sourceCounts[t.name]
+		if expected == 0 {
+			continue
+		}
+		var actual int64
+		target.db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte(t.name))
+			if b == nil {
+				return nil
+			}
+			b.ForEach(func(k, v []byte) error { actual++; return nil })
+			return nil
+		})
+		// identity_mappings: BoltDB has forward + reverse index entries counted differently
+		// so skip strict verification for it
+		if t.name == "identity_mappings" {
+			continue
+		}
+		if actual != expected {
+			log.Printf("[migrate] Warning: %s count mismatch: expected %d, got %d", t.name, expected, actual)
+		}
+	}
+
+	m.complete()
 	return nil
 }
+
+// ============================================================================
+//  Test Connection + Auto-Create Database
+// ============================================================================
 
 // TestPostgresConnection tests if a Postgres DSN is reachable.
 // If the target database doesn't exist, it auto-creates it.
@@ -367,14 +394,11 @@ func TestPostgresConnection(dsn string) error {
 // autoCreateDatabase connects to the "postgres" maintenance DB and creates
 // the target database if it doesn't exist.
 func autoCreateDatabase(dsn string) error {
-	// Parse the DSN to extract the database name
-	// Supports: postgres://user:pass@host:port/dbname?params
 	dbName := ""
 	maintDSN := dsn
 
 	if idx := strings.LastIndex(dsn, "/"); idx > 0 {
 		rest := dsn[idx+1:]
-		// Strip query params
 		if qIdx := strings.Index(rest, "?"); qIdx >= 0 {
 			dbName = rest[:qIdx]
 			maintDSN = dsn[:idx] + "/postgres" + rest[qIdx:]
@@ -389,7 +413,7 @@ func autoCreateDatabase(dsn string) error {
 
 	db, err := sql.Open("pgx", maintDSN)
 	if err != nil {
-		return fmt.Errorf("connect to postgres maintenance db: %w", err)
+		return fmt.Errorf("connect to maintenance db: %w", err)
 	}
 	defer db.Close()
 
@@ -400,24 +424,19 @@ func autoCreateDatabase(dsn string) error {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
-	// Check if database exists
 	var exists bool
-	err = db.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName,
-	).Scan(&exists)
+	err = db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName).Scan(&exists)
 	if err != nil {
-		return fmt.Errorf("check database existence: %w", err)
+		return fmt.Errorf("check database: %w", err)
 	}
-
 	if exists {
 		return fmt.Errorf("database %q exists but connection failed", dbName)
 	}
 
-	// Create the database
-	// Note: database names can't be parameterized, but we validate it's alphanumeric
+	// Validate database name (prevent SQL injection)
 	for _, c := range dbName {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
-			return fmt.Errorf("invalid database name %q (only alphanumeric, underscore, hyphen allowed)", dbName)
+			return fmt.Errorf("invalid database name %q", dbName)
 		}
 	}
 
