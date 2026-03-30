@@ -35,6 +35,14 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 		}
 	}
 
+	// Reset target schema (drop + recreate) to ensure clean migration
+	if err := target.ResetSchema(); err != nil {
+		status.State = "failed"
+		status.Error = fmt.Sprintf("reset target schema: %v", err)
+		send()
+		return err
+	}
+
 	// Count total items across all buckets
 	buckets := []struct {
 		name   string

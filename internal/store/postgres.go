@@ -98,6 +98,27 @@ func (s *PostgresStore) migrate() error {
 	return err
 }
 
+// ResetSchema drops and recreates all tables. Used before migration to ensure
+// a clean target. Do NOT call this on a running Postgres store with live data.
+func (s *PostgresStore) ResetSchema() error {
+	drops := `
+	DROP TABLE IF EXISTS revoked_users CASCADE;
+	DROP TABLE IF EXISTS revoked_tokens CASCADE;
+	DROP TABLE IF EXISTS oidc_auth_codes CASCADE;
+	DROP TABLE IF EXISTS audit_log CASCADE;
+	DROP TABLE IF EXISTS refresh_tokens CASCADE;
+	DROP TABLE IF EXISTS config CASCADE;
+	DROP TABLE IF EXISTS user_permissions CASCADE;
+	DROP TABLE IF EXISTS user_roles CASCADE;
+	DROP TABLE IF EXISTS identity_mappings CASCADE;
+	DROP TABLE IF EXISTS users CASCADE;
+	`
+	if _, err := s.db.Exec(drops); err != nil {
+		return err
+	}
+	return s.migrate()
+}
+
 func (s *PostgresStore) Close() error {
 	return s.db.Close()
 }
