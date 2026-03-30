@@ -223,6 +223,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/database/test", h.requireMasterAdmin(h.handleMigrateTest))
 	h.mux.HandleFunc("POST /api/admin/database/migrate", h.requireMasterAdmin(h.handleMigrateStart))
 	h.mux.HandleFunc("GET /api/admin/database/migrate/status", h.requireMasterAdmin(h.handleMigrateStatus))
+	h.mux.HandleFunc("POST /api/admin/database/switch", h.requireMasterAdmin(h.handleSwitchBackend))
 
 	// Admin: Backup/Restore
 	h.mux.HandleFunc("GET /api/admin/backup", h.requireMasterAdmin(h.handleBackup))

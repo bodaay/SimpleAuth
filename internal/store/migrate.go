@@ -193,6 +193,139 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 	}
 }
 
+// MigrateFromPostgres copies all data from a PostgresStore to a BoltStore.
+func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan<- MigrationStatus) error {
+	status := MigrationStatus{
+		State:     "running",
+		Progress:  map[string]string{},
+		StartedAt: time.Now().Unix(),
+	}
+	send := func() {
+		select {
+		case statusCh <- status:
+		default:
+		}
+	}
+
+	tables := []struct {
+		name  string
+		query string
+	}{
+		{"users", `SELECT guid, data FROM users`},
+		{"identity_mappings", `SELECT provider, external_id, user_guid FROM identity_mappings`},
+		{"user_roles", `SELECT guid, roles FROM user_roles`},
+		{"user_permissions", `SELECT guid, permissions FROM user_permissions`},
+		{"config", `SELECT key, value FROM config`},
+		{"refresh_tokens", `SELECT token_id, data FROM refresh_tokens`},
+		{"audit_log", `SELECT id, data FROM audit_log`},
+		{"oidc_auth_codes", `SELECT code, data FROM oidc_auth_codes`},
+	}
+
+	// Count totals
+	for _, t := range tables {
+		var count int64
+		source.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", t.name)).Scan(&count)
+		status.TotalItems += count
+	}
+	send()
+
+	for _, t := range tables {
+		status.Progress[t.name] = "migrating"
+		send()
+
+		rows, err := source.db.Query(t.query)
+		if err != nil {
+			status.State = "failed"
+			status.Error = fmt.Sprintf("query %s: %v", t.name, err)
+			send()
+			return fmt.Errorf("query %s: %w", t.name, err)
+		}
+
+		for rows.Next() {
+			var err error
+			switch t.name {
+			case "users":
+				var guid string
+				var data []byte
+				rows.Scan(&guid, &data)
+				err = target.SetConfigValue("__skip__", nil) // dummy to keep interface
+				_ = err
+				err = target.db.Update(func(tx *bolt.Tx) error {
+					return tx.Bucket(bucketUsers).Put([]byte(guid), data)
+				})
+			case "identity_mappings":
+				var provider, externalID, userGUID string
+				rows.Scan(&provider, &externalID, &userGUID)
+				err = target.SetIdentityMapping(provider, externalID, userGUID)
+			case "user_roles":
+				var guid string
+				var roles []byte
+				rows.Scan(&guid, &roles)
+				err = target.db.Update(func(tx *bolt.Tx) error {
+					return tx.Bucket(bucketUserRoles).Put([]byte(guid), roles)
+				})
+			case "user_permissions":
+				var guid string
+				var perms []byte
+				rows.Scan(&guid, &perms)
+				err = target.db.Update(func(tx *bolt.Tx) error {
+					return tx.Bucket(bucketUserPermissions).Put([]byte(guid), perms)
+				})
+			case "config":
+				var key string
+				var value []byte
+				rows.Scan(&key, &value)
+				err = target.SetConfigValue(key, value)
+			case "refresh_tokens":
+				var tokenID string
+				var data []byte
+				rows.Scan(&tokenID, &data)
+				err = target.db.Update(func(tx *bolt.Tx) error {
+					return tx.Bucket(bucketRefreshTokens).Put([]byte(tokenID), data)
+				})
+			case "audit_log":
+				var id string
+				var data []byte
+				rows.Scan(&id, &data)
+				var entry AuditEntry
+				if json.Unmarshal(data, &entry) == nil {
+					key := []byte(entry.Timestamp.Format(time.RFC3339Nano) + ":" + entry.ID)
+					err = target.db.Update(func(tx *bolt.Tx) error {
+						return tx.Bucket(bucketAuditLog).Put(key, data)
+					})
+				}
+			case "oidc_auth_codes":
+				var code string
+				var data []byte
+				rows.Scan(&code, &data)
+				err = target.db.Update(func(tx *bolt.Tx) error {
+					return tx.Bucket(bucketOIDCAuthCodes).Put([]byte(code), data)
+				})
+			}
+			if err != nil {
+				rows.Close()
+				status.State = "failed"
+				status.Error = fmt.Sprintf("migrate %s: %v", t.name, err)
+				send()
+				return fmt.Errorf("migrate %s: %w", t.name, err)
+			}
+			status.MigratedItems++
+			if status.MigratedItems%50 == 0 {
+				send()
+			}
+		}
+		rows.Close()
+
+		status.Progress[t.name] = "done"
+		send()
+	}
+
+	status.State = "completed"
+	status.CompletedAt = time.Now().Unix()
+	send()
+	return nil
+}
+
 // TestPostgresConnection tests if a Postgres DSN is reachable.
 func TestPostgresConnection(dsn string) error {
 	pg, err := OpenPostgres(dsn)

@@ -1665,7 +1665,6 @@ function DatabasePage() {
 
   useEffect(() => {
     api('GET', '/api/admin/database/info').then(setDbInfo);
-    // Check if migration is running
     api('GET', '/api/admin/database/migrate/status').then(s => {
       if (s.state === 'running') {
         setMigrating(true);
@@ -1684,11 +1683,8 @@ function DatabasePage() {
       if (s.state !== 'running') {
         clearInterval(interval);
         setMigrating(false);
-        if (s.state === 'completed') {
-          setToast({ message: 'Migration completed successfully!', type: 'success' });
-        } else if (s.state === 'failed') {
-          setToast({ message: 'Migration failed: ' + s.error, type: 'error' });
-        }
+        if (s.state === 'completed') setToast({ message: 'Migration completed!', type: 'success' });
+        else if (s.state === 'failed') setToast({ message: 'Migration failed: ' + s.error, type: 'error' });
       }
     }, 2000);
   };
@@ -1699,17 +1695,60 @@ function DatabasePage() {
     setTestResult(result);
   };
 
-  const startMigration = async () => {
-    if (!confirm('Start migration from BoltDB to PostgreSQL? This may take a while for large databases.')) return;
+  const startMigration = async (direction) => {
+    const msg = direction === 'to_postgres'
+      ? 'Migrate all data from BoltDB to PostgreSQL?'
+      : 'Migrate all data from PostgreSQL back to BoltDB?';
+    if (!confirm(msg)) return;
     setMigrating(true);
     setMigrationStatus({ state: 'running', progress: {} });
-    await api('POST', '/api/admin/database/migrate', { postgres_url: pgUrl });
+    await api('POST', '/api/admin/database/migrate', { postgres_url: pgUrl, direction });
     pollStatus();
   };
 
+  const switchBackend = async (backend) => {
+    const msg = backend === 'postgres'
+      ? 'Switch to PostgreSQL and restart SimpleAuth?'
+      : 'Switch to BoltDB and restart SimpleAuth?';
+    if (!confirm(msg)) return;
+    const body = backend === 'postgres' ? { backend, postgres_url: pgUrl } : { backend };
+    const result = await api('POST', '/api/admin/database/switch', body);
+    if (result.status === 'saved') {
+      setToast({ message: 'Switching to ' + backend + '... restarting.', type: 'success' });
+      setTimeout(() => location.reload(), 3000);
+    }
+  };
+
   const progressPercent = migrationStatus && migrationStatus.total_items > 0
-    ? Math.round((migrationStatus.migrated_items / migrationStatus.total_items) * 100)
-    : 0;
+    ? Math.round((migrationStatus.migrated_items / migrationStatus.total_items) * 100) : 0;
+
+  const progressBar = html`
+    ${migrationStatus && migrationStatus.state !== 'idle' && html`
+      <div style="margin-top: 16px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+          <span style="font-size: 0.875rem; font-weight: 600;">Migration ${migrationStatus.state}</span>
+          <span style="font-size: 0.875rem; color: var(--muted);">
+            ${migrationStatus.migrated_items} / ${migrationStatus.total_items} items (${progressPercent}%)
+          </span>
+        </div>
+        <div style="background: var(--border); border-radius: 4px; height: 8px; overflow: hidden;">
+          <div style="background: var(--burgundy); height: 100%; width: ${progressPercent}%; transition: width 0.3s;"></div>
+        </div>
+        ${migrationStatus.progress && Object.keys(migrationStatus.progress).length > 0 && html`
+          <div style="margin-top: 8px; font-size: 0.8rem; color: var(--muted);">
+            ${Object.entries(migrationStatus.progress).map(([table, st]) => html`
+              <span style="margin-right: 12px;">${table}: <strong>${st}</strong></span>
+            `)}
+          </div>
+        `}
+        ${migrationStatus.state === 'failed' && html`
+          <div class="alert alert-error" style="margin-top: 12px;">Migration failed: ${migrationStatus.error}</div>
+        `}
+      </div>
+    `}
+  `;
+
+  const backendLabel = dbInfo?.backend === 'postgres' ? 'PostgreSQL' : 'BoltDB (embedded)';
 
   return html`
     <${Toast} message=${toast?.message} type=${toast?.type} />
@@ -1718,7 +1757,7 @@ function DatabasePage() {
     <div class="card">
       <div class="card-header"><h3>Current Backend</h3></div>
       <div class="card-body">
-        <p><strong>Backend:</strong> ${dbInfo?.backend || 'loading...'}</p>
+        <p style="font-size: 1rem;"><strong>${backendLabel}</strong></p>
       </div>
     </div>
 
@@ -1732,55 +1771,37 @@ function DatabasePage() {
               placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
               style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; font-family: monospace; background: var(--card); color: var(--text);" />
           </div>
-          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
             <button class="btn btn-secondary" onClick=${testConnection} disabled=${!pgUrl || migrating}>Test Connection</button>
-            <button class="btn btn-primary" onClick=${startMigration} disabled=${!pgUrl || migrating || !testResult?.ok}>Start Migration</button>
+            <button class="btn btn-primary" onClick=${() => startMigration('to_postgres')} disabled=${!pgUrl || migrating || !testResult?.ok}>Migrate Data</button>
+            ${migrationStatus?.state === 'completed' && html`
+              <button class="btn btn-primary" onClick=${() => switchBackend('postgres')} disabled=${!pgUrl}>Switch to PostgreSQL & Restart</button>
+            `}
           </div>
-
           ${testResult && html`
             <div class="alert ${testResult.ok ? 'alert-success' : 'alert-error'}">
               ${testResult.ok ? 'Connection successful!' : 'Connection failed: ' + testResult.error}
             </div>
           `}
-
-          ${migrationStatus && migrationStatus.state !== 'idle' && html`
-            <div style="margin-top: 16px;">
-              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span style="font-size: 0.875rem; font-weight: 600;">Migration ${migrationStatus.state}</span>
-                <span style="font-size: 0.875rem; color: var(--muted);">
-                  ${migrationStatus.migrated_items} / ${migrationStatus.total_items} items (${progressPercent}%)
-                </span>
-              </div>
-              <div style="background: var(--border); border-radius: 4px; height: 8px; overflow: hidden;">
-                <div style="background: var(--burgundy); height: 100%; width: ${progressPercent}%; transition: width 0.3s;"></div>
-              </div>
-              ${migrationStatus.progress && Object.keys(migrationStatus.progress).length > 0 && html`
-                <div style="margin-top: 8px; font-size: 0.8rem; color: var(--muted);">
-                  ${Object.entries(migrationStatus.progress).map(([table, status]) => html`
-                    <span style="margin-right: 12px;">${table}: <strong>${status}</strong></span>
-                  `)}
-                </div>
-              `}
-              ${migrationStatus.state === 'completed' && html`
-                <div class="alert alert-success" style="margin-top: 12px;">
-                  Migration completed! Set <code>AUTH_POSTGRES_URL</code> in your environment and restart SimpleAuth to switch to PostgreSQL.
-                </div>
-              `}
-              ${migrationStatus.state === 'failed' && html`
-                <div class="alert alert-error" style="margin-top: 12px;">
-                  Migration failed: ${migrationStatus.error}
-                </div>
-              `}
-            </div>
-          `}
+          ${progressBar}
         </div>
       </div>
     `}
 
     ${dbInfo?.backend === 'postgres' && html`
       <div class="card" style="margin-top: 16px;">
+        <div class="card-header"><h3>PostgreSQL</h3></div>
         <div class="card-body">
-          <div class="alert alert-success">Running on PostgreSQL.</div>
+          <div class="alert alert-success" style="margin-bottom: 12px;">Running on PostgreSQL. Data is automatically persisted.</div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-secondary" onClick=${() => startMigration('to_boltdb')} disabled=${migrating}>
+              Migrate Back to BoltDB
+            </button>
+            ${migrationStatus?.state === 'completed' && html`
+              <button class="btn btn-primary" onClick=${() => switchBackend('boltdb')}>Switch to BoltDB & Restart</button>
+            `}
+          </div>
+          ${progressBar}
         </div>
       </div>
     `}

@@ -111,7 +111,7 @@ func New(cfg *Config, uiFS fs.FS) (*Server, error) {
 		log.Printf("[simpleauth] No admin_key configured — generated temporary key: %s", cfg.AdminKey)
 	}
 
-	s, err := store.OpenWithConfig(cfg.DataDir, cfg.PostgresURL)
+	s, err := store.OpenSmart(cfg.DataDir, cfg.PostgresURL)
 	if err != nil {
 		return nil, fmt.Errorf("simpleauth: open store: %w", err)
 	}
