@@ -116,6 +116,7 @@ func Load() *Config {
 	cfg := &Config{
 		Port:            "9090",
 		DataDir:         "./data",
+		BasePath:        "/sauth",
 		DeploymentName:     "sauth",
 		JWTIssuer:       "simpleauth",
 		AccessTTL:       8 * time.Hour,
@@ -292,10 +293,9 @@ impersonate_ttl: "1h"
 #   - "10.0.0.0/8"
 #   - "192.168.0.0/16"
 
-# Base path prefix for reverse proxy sub-path mounting (e.g., "/auth")
-# When set, SimpleAuth is accessible at https://hostname:port/auth/
-# Leave empty when SimpleAuth is at the root path (default)
-# base_path: ""
+# Base path prefix (default: "/sauth")
+# SimpleAuth is accessible at https://hostname:port/sauth/
+base_path: "/sauth"
 
 # Kerberos settings (usually auto-configured via admin UI)
 # krb5_keytab: "/path/to/krb5.keytab"

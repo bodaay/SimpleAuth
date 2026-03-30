@@ -108,12 +108,8 @@ func runServer() (exit bool) {
 
 	// Print access URLs
 	if cfg.TLSDisabled {
-		log.Printf("Public URL:   https://%s%s", cfg.Hostname, cfg.BasePath)
-		internalHost, _ := os.Hostname()
-		if internalHost == "" {
-			internalHost = "0.0.0.0"
-		}
-		log.Printf("Internal URL: http://%s:%s%s", internalHost, cfg.Port, cfg.BasePath)
+		log.Printf("Listening:    http://0.0.0.0:%s%s", cfg.Port, cfg.BasePath)
+		log.Printf("Admin UI:     http://0.0.0.0:%s%s/admin", cfg.Port, cfg.BasePath)
 	} else {
 		port := cfg.Port
 		portSuffix := ":" + port

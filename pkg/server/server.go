@@ -61,6 +61,7 @@ func Defaults() *Config {
 	return &Config{
 		Port:            "9090",
 		DataDir:         "./data",
+		BasePath:        "/sauth",
 		DeploymentName:  "sauth",
 		JWTIssuer:       "simpleauth",
 		AccessTTL:       8 * time.Hour,
