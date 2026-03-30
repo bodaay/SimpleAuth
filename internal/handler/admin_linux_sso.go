@@ -243,10 +243,11 @@ configure_chromium_based() {
     mkdir -p "$policy_dir"
     cat > "${policy_dir}/simpleauth-sso.json" << CREOF
 {
+  "AuthServerAllowlist": "${AUTH_URI}",
+  "AuthNegotiateDelegateAllowlist": "${AUTH_URI}",
+  "DisableAuthNegotiateCnameLookup": true,
   "AuthServerWhitelist": "${AUTH_URI}",
-  "AuthNegotiateDelegateWhitelist": "${AUTH_URI}",
-  "AuthSchemes": "negotiate",
-  "DisableAuthNegotiateCnameLookup": true
+  "AuthNegotiateDelegateWhitelist": "${AUTH_URI}"
 }
 CREOF
     ok "$name: policy written → ${policy_dir}/simpleauth-sso.json"
