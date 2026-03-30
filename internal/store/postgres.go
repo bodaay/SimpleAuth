@@ -949,3 +949,58 @@ func (s *PostgresStore) IsUserAccessRevoked(userGUID string) (bool, error) {
 	).Scan(&exists)
 	return exists, err
 }
+
+// --- Database Info ---
+
+func (s *PostgresStore) DatabaseInfo() (*DatabaseInfo, error) {
+	info := &DatabaseInfo{
+		Backend: "postgres",
+		Health:  "healthy",
+	}
+
+	// Version
+	s.db.QueryRow("SELECT version()").Scan(&info.Version)
+
+	// Database size
+	var sizeBytes int64
+	s.db.QueryRow("SELECT pg_database_size(current_database())").Scan(&sizeBytes)
+	info.SizeMB = float64(sizeBytes) / 1024 / 1024
+
+	// Connection pool stats
+	stats := s.db.Stats()
+	info.MaxConnections = stats.MaxOpenConnections
+	info.OpenConnections = stats.OpenConnections
+	info.InUse = stats.InUse
+	info.Idle = stats.Idle
+
+	// Table stats (only sa_ prefixed tables)
+	tables := []string{
+		"sa_users", "sa_identity_mappings", "sa_user_roles", "sa_user_permissions",
+		"sa_config", "sa_refresh_tokens", "sa_audit_log", "sa_oidc_auth_codes",
+		"sa_revoked_tokens", "sa_revoked_users",
+	}
+	for _, t := range tables {
+		var count int64
+		err := s.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", t)).Scan(&count)
+		if err != nil {
+			continue
+		}
+		var sizeMB float64
+		s.db.QueryRow(fmt.Sprintf("SELECT pg_total_relation_size('%s')::float / 1024 / 1024", t)).Scan(&sizeMB)
+
+		info.Tables++
+		info.TotalRows += count
+		info.TableDetails = append(info.TableDetails, TableInfo{
+			Name:   t,
+			Rows:   count,
+			SizeMB: sizeMB,
+		})
+	}
+
+	// Health check
+	if err := s.db.Ping(); err != nil {
+		info.Health = "error"
+	}
+
+	return info, nil
+}

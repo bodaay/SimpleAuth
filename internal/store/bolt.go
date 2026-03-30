@@ -1171,3 +1171,46 @@ func (s *BoltStore) IsUserAccessRevoked(userGUID string) (bool, error) {
 	})
 	return revoked, err
 }
+
+// --- Database Info ---
+
+func (s *BoltStore) DatabaseInfo() (*DatabaseInfo, error) {
+	info := &DatabaseInfo{
+		Backend: "boltdb",
+		Health:  "healthy",
+	}
+
+	// Get file size
+	path := s.db.Path()
+	if fi, err := os.Stat(path); err == nil {
+		info.SizeMB = float64(fi.Size()) / 1024 / 1024
+	}
+
+	// Count rows per bucket
+	s.db.View(func(tx *bolt.Tx) error {
+		for _, bname := range []string{
+			"users", "identity_mappings", "user_roles", "user_permissions",
+			"config", "refresh_tokens", "audit_log", "oidc_auth_codes",
+			"revoked_tokens", "revoked_users",
+		} {
+			b := tx.Bucket([]byte(bname))
+			if b == nil {
+				continue
+			}
+			var count int64
+			b.ForEach(func(k, v []byte) error {
+				count++
+				return nil
+			})
+			info.Tables++
+			info.TotalRows += count
+			info.TableDetails = append(info.TableDetails, TableInfo{
+				Name: bname,
+				Rows: count,
+			})
+		}
+		return nil
+	})
+
+	return info, nil
+}

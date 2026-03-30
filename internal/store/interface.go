@@ -82,6 +82,9 @@ type Store interface {
 	GetRuntimeSettings() (*RuntimeSettings, error)
 	SaveRuntimeSettings(s *RuntimeSettings) error
 
+	// Database Info
+	DatabaseInfo() (*DatabaseInfo, error)
+
 	// Token Revocation (access token blacklist)
 	RevokeAccessToken(jti string, expiresAt time.Time) error
 	IsAccessTokenRevoked(jti string) (bool, error)

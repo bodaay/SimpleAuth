@@ -1673,152 +1673,227 @@ function SettingsPage() {
 // === Database ===
 function DatabasePage() {
   const [dbInfo, setDbInfo] = useState(null);
+  const [tab, setTab] = useState('overview');
   const [pgUrl, setPgUrl] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [migrating, setMigrating] = useState(false);
   const [migrationStatus, setMigrationStatus] = useState(null);
   const [toast, setToast] = useState(null);
 
+  const refresh = () => api('GET', '/api/admin/database/info').then(setDbInfo);
+
   useEffect(() => {
-    api('GET', '/api/admin/database/info').then(setDbInfo);
+    refresh();
     api('GET', '/api/admin/database/migrate/status').then(s => {
-      if (s.state === 'running') {
-        setMigrating(true);
-        setMigrationStatus(s);
-        pollStatus();
-      } else if (s.state === 'completed' || s.state === 'failed') {
-        setMigrationStatus(s);
-      }
+      if (s.state === 'running') { setMigrating(true); setMigrationStatus(s); pollStatus(); }
+      else if (s.state !== 'idle') setMigrationStatus(s);
     });
   }, []);
 
   const pollStatus = () => {
-    const interval = setInterval(async () => {
+    const iv = setInterval(async () => {
       const s = await api('GET', '/api/admin/database/migrate/status');
       setMigrationStatus(s);
       if (s.state !== 'running') {
-        clearInterval(interval);
-        setMigrating(false);
-        if (s.state === 'completed') setToast({ message: 'Migration completed!', type: 'success' });
-        else if (s.state === 'failed') setToast({ message: 'Migration failed: ' + s.error, type: 'error' });
+        clearInterval(iv); setMigrating(false); refresh();
+        setToast(s.state === 'completed' ? { message: 'Migration completed!', type: 'success' } : { message: 'Migration failed: ' + s.error, type: 'error' });
       }
     }, 2000);
   };
 
-  const testConnection = async () => {
-    setTestResult(null);
-    const result = await api('POST', '/api/admin/database/test', { postgres_url: pgUrl });
-    setTestResult(result);
-  };
+  const testConnection = async () => { setTestResult(null); setTestResult(await api('POST', '/api/admin/database/test', { postgres_url: pgUrl })); };
 
   const startMigration = async (direction) => {
-    const msg = direction === 'to_postgres'
-      ? 'Migrate all data from BoltDB to PostgreSQL?'
-      : 'Migrate all data from PostgreSQL back to BoltDB?';
-    if (!confirm(msg)) return;
-    setMigrating(true);
-    setMigrationStatus({ state: 'running', progress: {} });
-    await api('POST', '/api/admin/database/migrate', { postgres_url: pgUrl, direction });
-    pollStatus();
+    if (!confirm(direction === 'to_postgres' ? 'Migrate all data to PostgreSQL?' : 'Migrate all data back to BoltDB?')) return;
+    setMigrating(true); setMigrationStatus({ state: 'running', progress: {} });
+    await api('POST', '/api/admin/database/migrate', { postgres_url: pgUrl, direction }); pollStatus();
   };
 
   const switchBackend = async (backend) => {
-    const msg = backend === 'postgres'
-      ? 'Switch to PostgreSQL and restart SimpleAuth?'
-      : 'Switch to BoltDB and restart SimpleAuth?';
-    if (!confirm(msg)) return;
+    if (!confirm('Switch to ' + backend + ' and restart SimpleAuth?')) return;
     const body = backend === 'postgres' ? { backend, postgres_url: pgUrl } : { backend };
-    const result = await api('POST', '/api/admin/database/switch', body);
-    if (result.status === 'saved') {
-      setToast({ message: 'Switching to ' + backend + '... restarting.', type: 'success' });
-      setTimeout(() => location.reload(), 3000);
-    }
+    await api('POST', '/api/admin/database/switch', body);
+    setToast({ message: 'Restarting...', type: 'success' }); setTimeout(() => location.reload(), 3000);
   };
 
-  const progressPercent = migrationStatus && migrationStatus.total_items > 0
-    ? Math.round((migrationStatus.migrated_items / migrationStatus.total_items) * 100) : 0;
+  const fmtSize = (mb) => !mb || mb === 0 ? '0 KB' : mb < 1 ? (mb * 1024).toFixed(0) + ' KB' : mb > 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb.toFixed(1) + ' MB';
+  const totalRows = dbInfo?.table_details?.reduce((s, t) => s + (t.rows || 0), 0) || 0;
+  const sortedTables = (dbInfo?.table_details || []).slice().sort((a, b) => (b.rows || 0) - (a.rows || 0));
+  const progressPct = migrationStatus?.total_items > 0 ? Math.round((migrationStatus.migrated_items / migrationStatus.total_items) * 100) : 0;
+  const backendLabel = dbInfo?.backend === 'postgres' ? 'PostgreSQL' : 'BoltDB';
+  const healthColor = dbInfo?.health === 'healthy' ? '#10b981' : dbInfo?.health === 'degraded' ? '#f59e0b' : '#ef4444';
 
-  const progressBar = html`
-    ${migrationStatus && migrationStatus.state !== 'idle' && html`
-      <div style="margin-top: 16px;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-          <span style="font-size: 0.875rem; font-weight: 600;">Migration ${migrationStatus.state}</span>
-          <span style="font-size: 0.875rem; color: var(--muted);">
-            ${migrationStatus.migrated_items} / ${migrationStatus.total_items} items (${progressPercent}%)
-          </span>
-        </div>
-        <div style="background: var(--border); border-radius: 4px; height: 8px; overflow: hidden;">
-          <div style="background: var(--burgundy); height: 100%; width: ${progressPercent}%; transition: width 0.3s;"></div>
-        </div>
-        ${migrationStatus.progress && Object.keys(migrationStatus.progress).length > 0 && html`
-          <div style="margin-top: 8px; font-size: 0.8rem; color: var(--muted);">
-            ${Object.entries(migrationStatus.progress).map(([table, st]) => html`
-              <span style="margin-right: 12px;">${table}: <strong>${st}</strong></span>
-            `)}
-          </div>
-        `}
-        ${migrationStatus.state === 'failed' && html`
-          <div class="alert alert-error" style="margin-top: 12px;">Migration failed: ${migrationStatus.error}</div>
-        `}
-      </div>
-    `}
-  `;
+  const tabBtn = (id, label) => html`
+    <button onClick=${() => setTab(id)}
+      style="padding: 8px 16px; font-size: 0.875rem; font-weight: 600; border: none; background: none; cursor: pointer; border-bottom: 2px solid ${tab === id ? 'var(--burgundy)' : 'transparent'}; color: ${tab === id ? 'var(--burgundy)' : 'var(--muted)'};">
+      ${label}
+    </button>`;
 
-  const backendLabel = dbInfo?.backend === 'postgres' ? 'PostgreSQL' : 'BoltDB (embedded)';
+  if (!dbInfo) return html`<div class="page-header"><h2>Database</h2></div><p>Loading...</p>`;
 
   return html`
     <${Toast} message=${toast?.message} type=${toast?.type} />
-    <div class="page-header"><h2>Database</h2></div>
-
-    <div class="card">
-      <div class="card-header"><h3>Current Backend</h3></div>
-      <div class="card-body">
-        <p style="font-size: 1rem;"><strong>${backendLabel}</strong></p>
+    <div class="page-header">
+      <div>
+        <h2>Database</h2>
+        <p style="font-size: 0.85rem; color: var(--muted); margin-top: 2px;">
+          ${backendLabel} ${dbInfo.version ? '· ' + dbInfo.version.split(' ')[0] : ''} · ${fmtSize(dbInfo.size_mb)} · ${totalRows.toLocaleString()} rows across ${dbInfo.tables} tables
+        </p>
       </div>
+      <button class="btn btn-secondary" onClick=${refresh}>Refresh</button>
     </div>
 
-    ${dbInfo?.backend === 'boltdb' && html`
-      <div class="card" style="margin-top: 16px;">
-        <div class="card-header"><h3>Migrate to PostgreSQL</h3></div>
-        <div class="card-body">
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 8px;">PostgreSQL Connection URL</label>
-            <input type="text" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
-              placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
-              style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; font-family: monospace; background: var(--card); color: var(--text);" />
+    <div style="display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 16px;">
+      ${tabBtn('overview', 'Overview')}
+      ${tabBtn('migrate', 'Migrate')}
+    </div>
+
+    ${tab === 'overview' && html`
+      <!-- Stats Row -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px;">
+        <div class="card" style="padding: 16px;">
+          <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; margin-bottom: 8px;">Health</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 10px; height: 10px; border-radius: 50%; background: ${healthColor};"></div>
+            <span style="font-size: 1.1rem; font-weight: 700; color: ${healthColor};">${dbInfo.health}</span>
           </div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
-            <button class="btn btn-secondary" onClick=${testConnection} disabled=${!pgUrl || migrating}>Test Connection</button>
-            <button class="btn btn-primary" onClick=${() => startMigration('to_postgres')} disabled=${!pgUrl || migrating || !testResult?.ok}>Migrate Data</button>
-            ${migrationStatus?.state === 'completed' && html`
-              <button class="btn btn-primary" onClick=${() => switchBackend('postgres')} disabled=${!pgUrl}>Switch to PostgreSQL & Restart</button>
-            `}
+        </div>
+        <div class="card" style="padding: 16px;">
+          <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; margin-bottom: 8px;">Size</div>
+          <span style="font-size: 1.1rem; font-weight: 700; font-family: monospace;">${fmtSize(dbInfo.size_mb)}</span>
+        </div>
+        <div class="card" style="padding: 16px;">
+          <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; margin-bottom: 8px;">Rows</div>
+          <span style="font-size: 1.1rem; font-weight: 700; font-family: monospace;">${totalRows.toLocaleString()}</span>
+          <span style="font-size: 0.75rem; color: var(--muted); display: block; margin-top: 2px;">${dbInfo.tables} tables</span>
+        </div>
+        <div class="card" style="padding: 16px;">
+          <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; margin-bottom: 8px;">Backend</div>
+          <span style="font-size: 1.1rem; font-weight: 700; color: var(--burgundy);">${backendLabel}</span>
+        </div>
+        ${dbInfo.backend === 'postgres' && html`
+          <div class="card" style="padding: 16px;">
+            <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; margin-bottom: 8px;">Connections</div>
+            <span style="font-size: 1.1rem; font-weight: 700; font-family: monospace;">${dbInfo.in_use_connections}/${dbInfo.max_connections}</span>
+            <span style="font-size: 0.75rem; color: var(--muted); display: block; margin-top: 2px;">${dbInfo.idle_connections} idle</span>
           </div>
-          ${testResult && html`
-            <div class="alert ${testResult.ok ? 'alert-success' : 'alert-error'}">
-              ${testResult.ok ? 'Connection successful!' : 'Connection failed: ' + testResult.error}
-            </div>
-          `}
-          ${progressBar}
+        `}
+      </div>
+
+      <!-- Table Breakdown -->
+      <div class="card">
+        <div class="card-header"><h3>Tables (${sortedTables.length})</h3></div>
+        <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+          ${sortedTables.map(t => {
+            const pct = totalRows > 0 ? (t.rows / totalRows) * 100 : 0;
+            return html`
+              <div style="display: flex; align-items: center; gap: 10px; padding: 6px 0;">
+                <span style="font-size: 0.8rem; color: var(--muted); font-family: monospace; width: 180px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis;">${t.name}</span>
+                <div style="flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden;">
+                  <div style="height: 100%; border-radius: 3px; background: var(--burgundy); width: ${Math.max(pct, 1)}%;"></div>
+                </div>
+                <span style="font-size: 0.8rem; font-family: monospace; width: 60px; text-align: right; flex-shrink: 0;">${t.rows.toLocaleString()}</span>
+                ${t.size_mb > 0 ? html`<span style="font-size: 0.75rem; color: var(--muted); width: 55px; text-align: right; flex-shrink: 0;">${fmtSize(t.size_mb)}</span>` : ''}
+              </div>`;
+          })}
+          <div style="border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; display: flex; justify-content: space-between; font-size: 0.875rem;">
+            <span style="font-weight: 600;">Total</span>
+            <span style="font-family: monospace; font-weight: 700;">${totalRows.toLocaleString()} rows · ${fmtSize(dbInfo.size_mb)}</span>
+          </div>
         </div>
       </div>
     `}
 
-    ${dbInfo?.backend === 'postgres' && html`
-      <div class="card" style="margin-top: 16px;">
-        <div class="card-header"><h3>PostgreSQL</h3></div>
-        <div class="card-body">
-          <div class="alert alert-success" style="margin-bottom: 12px;">Running on PostgreSQL. Data is automatically persisted.</div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button class="btn btn-secondary" onClick=${() => startMigration('to_boltdb')} disabled=${migrating}>
-              Migrate Back to BoltDB
-            </button>
-            ${migrationStatus?.state === 'completed' && html`
-              <button class="btn btn-primary" onClick=${() => switchBackend('boltdb')}>Switch to BoltDB & Restart</button>
-            `}
+    ${tab === 'migrate' && html`
+      <div style="max-width: 640px;">
+        <!-- Source -->
+        <div class="card" style="margin-bottom: 16px;">
+          <div class="card-body">
+            <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em;">Source (current)</div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+              <span style="background: var(--burgundy); color: white; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600;">${backendLabel}</span>
+              <span style="font-size: 0.875rem;">${fmtSize(dbInfo.size_mb)} · ${totalRows.toLocaleString()} rows</span>
+            </div>
           </div>
-          ${progressBar}
         </div>
+
+        ${dbInfo.backend === 'boltdb' && html`
+          <div class="card" style="margin-bottom: 16px;">
+            <div class="card-header"><h3>Migrate to PostgreSQL</h3></div>
+            <div class="card-body">
+              <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;">Copy all data to PostgreSQL. Source is not modified.</p>
+              <div style="margin-bottom: 12px;">
+                <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 6px;">PostgreSQL DSN</label>
+                <input type="text" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
+                  placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
+                  style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; font-family: monospace; background: var(--card); color: var(--text);" />
+                <p style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">postgres://user:password@host:5432/dbname?sslmode=disable</p>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-secondary" onClick=${testConnection} disabled=${!pgUrl || migrating}>Test Connection</button>
+                <button class="btn btn-primary" onClick=${() => startMigration('to_postgres')} disabled=${!pgUrl || migrating || !testResult?.ok}>Start Migration</button>
+              </div>
+              ${testResult && html`
+                <div class="alert ${testResult.ok ? 'alert-success' : 'alert-error'}" style="margin-top: 12px;">
+                  ${testResult.ok ? 'Connection successful' : 'Failed: ' + (testResult.error || 'unknown error')}
+                </div>
+              `}
+            </div>
+          </div>
+        `}
+
+        ${dbInfo.backend === 'postgres' && html`
+          <div class="card" style="margin-bottom: 16px;">
+            <div class="card-header"><h3>Migrate Back to BoltDB</h3></div>
+            <div class="card-body">
+              <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;">Copy all data back to embedded BoltDB.</p>
+              <button class="btn btn-secondary" onClick=${() => startMigration('to_boltdb')} disabled=${migrating}>Start Migration</button>
+            </div>
+          </div>
+        `}
+
+        <!-- Migration Progress -->
+        ${migrationStatus && migrationStatus.state !== 'idle' && html`
+          <div class="card">
+            <div class="card-body">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3 style="margin: 0; font-size: 0.9rem;">Migration Progress</h3>
+                <span style="background: ${migrationStatus.state === 'completed' ? '#10b981' : migrationStatus.state === 'failed' ? '#ef4444' : '#f59e0b'}; color: white; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600;">${migrationStatus.state}</span>
+              </div>
+              ${migrationStatus.total_items > 0 && html`
+                <div style="margin-bottom: 12px;">
+                  <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px;">
+                    <span style="color: var(--muted);">${migrationStatus.migrated_items?.toLocaleString()} / ${migrationStatus.total_items?.toLocaleString()} items</span>
+                    <span style="font-family: monospace; font-weight: 600;">${progressPct}%</span>
+                  </div>
+                  <div style="background: var(--border); border-radius: 4px; height: 10px; overflow: hidden;">
+                    <div style="background: var(--burgundy); height: 100%; width: ${progressPct}%; transition: width 0.5s; border-radius: 4px;"></div>
+                  </div>
+                </div>
+              `}
+              ${migrationStatus.progress && Object.keys(migrationStatus.progress).length > 0 && html`
+                <div style="max-height: 200px; overflow-y: auto;">
+                  ${Object.entries(migrationStatus.progress).map(([table, st]) => html`
+                    <div style="display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.8rem;">
+                      <span style="color: var(--muted); font-family: monospace;">${table}</span>
+                      <span style="color: ${st === 'done' ? '#10b981' : st === 'migrating' ? '#f59e0b' : 'var(--muted)'}; font-weight: 600;">${st}</span>
+                    </div>
+                  `)}
+                </div>
+              `}
+              ${migrationStatus.state === 'completed' && html`
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                  <button class="btn btn-primary" onClick=${() => switchBackend(dbInfo.backend === 'boltdb' ? 'postgres' : 'boltdb')}>
+                    Switch to ${dbInfo.backend === 'boltdb' ? 'PostgreSQL' : 'BoltDB'} & Restart
+                  </button>
+                </div>
+              `}
+              ${migrationStatus.state === 'failed' && html`
+                <div class="alert alert-error" style="margin-top: 12px;">${migrationStatus.error}</div>
+              `}
+            </div>
+          </div>
+        `}
       </div>
     `}
   `;

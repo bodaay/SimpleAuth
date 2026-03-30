@@ -24,13 +24,13 @@ func (h *Handler) initMigrationState() {
 // handleDatabaseInfo returns info about the current database backend.
 // GET /api/admin/database/info
 func (h *Handler) handleDatabaseInfo(w http.ResponseWriter, r *http.Request) {
-	dbCfg, _ := store.LoadDBConfig(h.cfg.DataDir)
-	info := map[string]interface{}{
-		"backend": h.storeBackend(),
-	}
-	if dbCfg != nil && dbCfg.PostgresURL != "" {
-		// Mask password in URL for display
-		info["postgres_configured"] = true
+	info, err := h.store.DatabaseInfo()
+	if err != nil {
+		jsonResp(w, map[string]interface{}{
+			"backend": h.storeBackend(),
+			"health":  "error",
+		}, http.StatusOK)
+		return
 	}
 	jsonResp(w, info, http.StatusOK)
 }

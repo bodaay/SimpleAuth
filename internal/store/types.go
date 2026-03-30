@@ -90,6 +90,28 @@ type OIDCAuthCode struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// DatabaseInfo holds stats about the active database backend.
+type DatabaseInfo struct {
+	Backend         string      `json:"backend"`          // "boltdb" or "postgres"
+	SizeMB          float64     `json:"size_mb"`
+	Tables          int         `json:"tables"`
+	TotalRows       int64       `json:"total_rows"`
+	TableDetails    []TableInfo `json:"table_details"`
+	Health          string      `json:"health"`           // "healthy", "degraded", "error"
+	Version         string      `json:"version,omitempty"`
+	MaxConnections  int         `json:"max_connections,omitempty"`
+	OpenConnections int         `json:"open_connections,omitempty"`
+	InUse           int         `json:"in_use_connections,omitempty"`
+	Idle            int         `json:"idle_connections,omitempty"`
+}
+
+// TableInfo holds per-table stats.
+type TableInfo struct {
+	Name   string  `json:"name"`
+	Rows   int64   `json:"rows"`
+	SizeMB float64 `json:"size_mb,omitempty"`
+}
+
 // RuntimeSettings holds configuration managed via the Admin UI.
 // Stored in the DB config bucket under "runtime_settings".
 type RuntimeSettings struct {
