@@ -170,6 +170,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/ldap/sync-user", h.requireMasterAdmin(h.handleSyncUser))
 	h.mux.HandleFunc("POST /api/admin/ldap/sync-all", h.requireMasterAdmin(h.handleSyncAll))
 	h.mux.HandleFunc("GET /api/admin/setup-script", h.requireMasterAdmin(h.handleSetupScript))
+	h.mux.HandleFunc("GET /api/admin/linux-setup-script", h.requireMasterAdmin(h.handleLinuxSetupScript))
 	h.mux.HandleFunc("GET /api/admin/kerberos/status", h.requireMasterAdmin(h.handleKerberosStatus))
 
 	// Admin: Users

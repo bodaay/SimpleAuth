@@ -902,6 +902,20 @@ function LDAPPage() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  const downloadLinuxSetupScript = async () => {
+    try {
+      const res = await fetch(BASE_PATH + '/api/admin/linux-setup-script', {
+        headers: { 'Authorization': `Bearer ${getApiKey()}` },
+      });
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = 'setup-sso.sh'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
   const handleFileImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -926,6 +940,7 @@ function LDAPPage() {
         <div style="display:flex;gap:var(--sp-2)">
           <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
           <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
+          <button class="btn btn-secondary" onClick=${downloadLinuxSetupScript}>Linux SSO Script</button>
         </div>
       </div>
 
@@ -1018,6 +1033,7 @@ function LDAPPage() {
       <h2>LDAP Settings</h2>
       <div style="display:flex;gap:var(--sp-2)">
         <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
+          <button class="btn btn-secondary" onClick=${downloadLinuxSetupScript}>Linux SSO Script</button>
         <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
         <button class="btn btn-secondary" onClick=${syncAll}>Sync All Users</button>
         <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('sync-user'); }}>Sync User</button>
