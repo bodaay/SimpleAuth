@@ -257,7 +257,6 @@ JWT claims include Keycloak-compatible fields: `preferred_username`, `realm_acce
 | **Account protection** | Lockout after N failed attempts, configurable threshold and duration |
 | **CSRF** | Token-based CSRF protection on all login forms |
 | **Admin authentication** | Timing-safe comparison of admin key |
-| **Encryption at rest** | AES-256-GCM encryption for secrets (LDAP bind passwords, Postgres URL) |
 | **Rate limiting** | Per-IP with configurable window/threshold, trusted proxy CIDR support |
 | **Redirect validation** | Scheme validation + allowlist; empty allowlist = reject all |
 
@@ -617,7 +616,6 @@ simpleauth
 │   │   ├── jwt.go                 # RSA keys, JWT signing/validation, JWKS, OIDC tokens
 │   │   ├── ldap.go                # LDAP search, bind, groups, attribute sync
 │   │   ├── local.go               # bcrypt password hashing
-│   │   └── encrypt.go             # AES-256-GCM encryption at rest for secrets
 │   └── handler/
 │       ├── handler.go             # Route registration, CORS, helpers
 │       ├── auth.go                # Login, refresh, negotiate, SPNEGO, impersonate
@@ -631,7 +629,7 @@ simpleauth
 │       ├── admin_migration.go     # Database migration and switching
 │       ├── admin_restart.go       # Graceful restart endpoint
 │       ├── admin_linux_sso.go     # Linux SSO setup script generation
-│       ├── secrets.go             # Secret management (encrypted storage)
+│       ├── secrets.go             # Secret management
 │       └── middleware.go          # Admin auth, rate limiting
 ├── sdk/                           # Client SDKs
 │   ├── js/                        # JavaScript/TypeScript

@@ -383,7 +383,7 @@ When a user authenticates, SimpleAuth resolves their identity mapping to find (o
 
 `store.OpenSmart(dataDir, postgresURL)` determines which backend to open:
 
-1. Read `db.json` from the data directory. If it exists and specifies `"backend": "postgres"` with a connection URL, open Postgres (decrypting the URL with `encrypt.key` if needed).
+1. Read `db.json` from the data directory. If it exists and specifies `"backend": "postgres"` with a connection URL, open Postgres.
 2. Otherwise, if `postgresURL` was passed (from `AUTH_POSTGRES_URL` env var or config file), try Postgres. On success, write `db.json` so the Admin UI knows the active backend.
 3. If neither is set, or if Postgres fails at any step, fall back to BoltDB with a warning in the logs.
 
@@ -416,16 +416,6 @@ SimpleAuth maintains two blacklists checked on every authenticated request:
 - **`revoked_users`** (BoltDB bucket) / **`sa_revoked_users`** (Postgres table) -- user GUIDs whose access tokens should be rejected regardless of JTI. Used when a user is disabled or all their sessions are revoked.
 
 Both have an `expires_at` timestamp. Expired entries are cleaned up by `CleanExpiredRevocations()` (called by the audit log pruner).
-
----
-
-## Encryption at Rest
-
-SimpleAuth generates a 256-bit AES key at `{data_dir}/encrypt.key` on first startup (32 random bytes, hex-encoded to 64 characters, file permissions `0600`).
-
-Encryption uses AES-256-GCM (`internal/auth/encrypt.go`). Encrypted values are prefixed with `enc::` followed by base64-encoded `nonce || ciphertext`. The key is independent of the admin key -- changing `AUTH_ADMIN_KEY` does not break encrypted secrets.
-
-Currently used to encrypt: the PostgreSQL connection string stored in `db.json`, and LDAP service account passwords.
 
 ---
 
@@ -484,6 +474,4 @@ SimpleAuth includes several configurable password security features:
 - BoltDB file has `0600` permissions
 - Data directory has `0700` permissions
 - TLS private keys have `0600` permissions
-- Encryption key (`encrypt.key`) has `0600` permissions
-- Sensitive secrets (Postgres URL, LDAP bind password) encrypted with AES-256-GCM using `encrypt.key`
 - Docker container runs as non-root user (`simpleauth`)

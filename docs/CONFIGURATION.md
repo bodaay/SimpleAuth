@@ -37,7 +37,7 @@ SimpleAuth looks for a config file in this order:
 | `hostname` | `AUTH_HOSTNAME` | OS hostname | FQDN clients use to access SimpleAuth. Used in TLS certificate SANs and Kerberos SPN. |
 | `port` | `AUTH_PORT` | `9090` | HTTPS listening port. |
 | `http_port` | `AUTH_HTTP_PORT` | `80` | HTTP port for automatic redirect to HTTPS. Set to `""` to disable. |
-| `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the database, TLS certificates, encryption key, and keytabs. |
+| `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the database, TLS certificates, and keytabs. |
 | `postgres_url` | `AUTH_POSTGRES_URL` | (none) | PostgreSQL connection string (e.g. `postgres://user:pass@host:5432/dbname?sslmode=disable`). When set, SimpleAuth uses Postgres instead of BoltDB. The target database is auto-created if it does not exist. Optional -- omit to use the embedded BoltDB backend. |
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
 | `client_id` | `AUTH_CLIENT_ID` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
@@ -326,11 +326,11 @@ A small JSON file in the data directory that records the active backend choice:
 ```json
 {
   "backend": "postgres",
-  "postgres_url": "enc::base64-ciphertext..."
+  "postgres_url": "postgres://user:pass@host:5432/dbname?sslmode=disable"
 }
 ```
 
-The `postgres_url` value is encrypted at rest using the `encrypt.key` (see below). This file is managed by the Admin UI migration/switch endpoints -- you do not need to create it manually.
+This file is managed by the Admin UI migration/switch endpoints -- you do not need to create it manually.
 
 ### Migration
 
@@ -343,16 +343,6 @@ The Admin UI provides bidirectional migration between BoltDB and PostgreSQL:
 
 ---
 
-## Encryption at Rest
-
-SimpleAuth automatically generates an encryption key at `{data_dir}/encrypt.key` on first startup. This is a 256-bit AES key stored as 64 hex characters with `0600` permissions.
-
-The key is used to encrypt sensitive values (currently the PostgreSQL connection string in `db.json`) using AES-256-GCM. Encrypted values are prefixed with `enc::` followed by base64-encoded ciphertext.
-
-The encryption key is independent of the admin key -- changing `AUTH_ADMIN_KEY` does not break encrypted secrets. If you lose `encrypt.key`, you will need to re-enter any encrypted values (e.g., re-configure the Postgres URL via the Admin UI).
-
----
-
 ## Auto-Generated Resources
 
 On first startup, SimpleAuth auto-generates several things if they don't already exist:
@@ -361,8 +351,7 @@ On first startup, SimpleAuth auto-generates several things if they don't already
 2. **BoltDB database** -- `{data_dir}/auth.db` (unless Postgres is configured)
 3. **TLS certificate** -- `{data_dir}/tls.crt` and `{data_dir}/tls.key` (self-signed, 10-year validity, includes all local IPs in SANs)
 4. **RSA signing keys** -- Stored in the database, used for JWT signing (RS256)
-5. **Encryption key** -- `{data_dir}/encrypt.key` (AES-256, hex-encoded, `0600` permissions)
-6. **Admin key** -- Printed to logs if not configured
+5. **Admin key** -- Printed to logs if not configured
 
 ---
 
