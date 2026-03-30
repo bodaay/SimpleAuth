@@ -57,7 +57,7 @@ func (s *PostgresStore) migrate() error {
 		user_guid TEXT NOT NULL,
 		PRIMARY KEY (provider, external_id)
 	);
-	CREATE INDEX IF NOT EXISTS idx_sa_identity_mappings_guid ON identity_mappings(user_guid);
+	CREATE INDEX IF NOT EXISTS idx_sa_identity_mappings_guid ON sa_identity_mappings(user_guid);
 	CREATE TABLE IF NOT EXISTS sa_user_roles (
 		guid TEXT PRIMARY KEY,
 		roles JSONB NOT NULL DEFAULT '[]'
@@ -79,7 +79,7 @@ func (s *PostgresStore) migrate() error {
 		timestamp TIMESTAMPTZ NOT NULL,
 		data JSONB NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS idx_sa_audit_log_ts ON audit_log(timestamp DESC);
+	CREATE INDEX IF NOT EXISTS idx_sa_audit_log_ts ON sa_audit_log(timestamp DESC);
 	CREATE TABLE IF NOT EXISTS sa_oidc_auth_codes (
 		code TEXT PRIMARY KEY,
 		data JSONB NOT NULL,
