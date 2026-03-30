@@ -270,26 +270,30 @@ FFEOF
 configure_chromium_based() {
   local name="$1"
   local policy_dir="$2"
-  # Each deployment gets its own file — Chrome merges all .json files in managed/
-  local policy_file="${policy_dir}/simpleauth-${DEPLOYMENT}.json"
+  # Chrome only reads ONE policy per key — use a single shared file
+  local policy_file="${policy_dir}/simpleauth-sso.json"
 
   if [[ -d "$(dirname "$policy_dir")" ]] || command -v "$name" &>/dev/null; then
     mkdir -p "$policy_dir"
 
-    # For Allowlist/Whitelist, Chrome uses the LAST value seen across files.
-    # So we need to merge all SimpleAuth URIs into one comma-separated string.
-    # Collect existing URIs from other simpleauth-*.json files
-    local existing_uris=""
-    for f in "${policy_dir}"/simpleauth-*.json; do
-      [[ -f "$f" ]] || continue
-      if command -v python3 &>/dev/null; then
-        local uri=$(python3 -c "import json; d=json.load(open('$f')); print(d.get('AuthServerAllowlist',''))" 2>/dev/null)
-        if [[ -n "$uri" && "$uri" != "${AUTH_URI}" ]]; then
-          existing_uris="${existing_uris},${uri}"
-        fi
+    # Read existing URIs from the file if it exists, merge with new URI
+    local all_uris="${AUTH_URI}"
+    if [[ -f "$policy_file" ]] && command -v python3 &>/dev/null; then
+      local merged=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('${policy_file}'))
+    existing = d.get('AuthServerAllowlist', '')
+    uris = set(u.strip() for u in existing.split(',') if u.strip())
+    uris.add('${AUTH_URI}')
+    print(','.join(sorted(uris)))
+except:
+    print('${AUTH_URI}')
+" 2>/dev/null)
+      if [[ -n "$merged" ]]; then
+        all_uris="$merged"
       fi
-    done
-    local all_uris="${AUTH_URI}${existing_uris}"
+    fi
 
     cat > "$policy_file" << CREOF
 {
