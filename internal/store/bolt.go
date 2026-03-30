@@ -25,6 +25,8 @@ var (
 	bucketIdxMappingsByGUID = []byte("idx_mappings_by_guid")
 	bucketRegTokens        = []byte("reg_tokens")
 	bucketOIDCAuthCodes    = []byte("oidc_auth_codes")
+	bucketRevokedTokens    = []byte("revoked_tokens")
+	bucketRevokedUsers     = []byte("revoked_users")
 )
 
 // BoltStore implements the Store interface using BoltDB (bbolt).
@@ -64,6 +66,8 @@ func (s *BoltStore) init() error {
 			bucketIdxMappingsByGUID,
 			bucketRegTokens,
 			bucketOIDCAuthCodes,
+			bucketRevokedTokens,
+			bucketRevokedUsers,
 		} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
@@ -1091,4 +1095,79 @@ func (s *BoltStore) SaveRuntimeSettings(rs *RuntimeSettings) error {
 		return err
 	}
 	return s.SetConfigValue("runtime_settings", data)
+}
+
+// --- Token Revocation ---
+
+func (s *BoltStore) RevokeAccessToken(jti string, expiresAt time.Time) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, _ := json.Marshal(expiresAt)
+		return tx.Bucket(bucketRevokedTokens).Put([]byte(jti), data)
+	})
+}
+
+func (s *BoltStore) IsAccessTokenRevoked(jti string) (bool, error) {
+	var revoked bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketRevokedTokens).Get([]byte(jti))
+		if data != nil {
+			revoked = true
+		}
+		return nil
+	})
+	return revoked, err
+}
+
+func (s *BoltStore) CleanExpiredRevocations() error {
+	now := time.Now()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRevokedTokens)
+		var toDelete [][]byte
+		b.ForEach(func(k, v []byte) error {
+			var expiresAt time.Time
+			if json.Unmarshal(v, &expiresAt) == nil && expiresAt.Before(now) {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			b.Delete(k)
+		}
+		// Also clean expired user revocations
+		ub := tx.Bucket(bucketRevokedUsers)
+		toDelete = nil
+		ub.ForEach(func(k, v []byte) error {
+			var expiresAt time.Time
+			if json.Unmarshal(v, &expiresAt) == nil && expiresAt.Before(now) {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			ub.Delete(k)
+		}
+		return nil
+	})
+}
+
+func (s *BoltStore) RevokeAllUserAccessTokens(userGUID string, expiresAt time.Time) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, _ := json.Marshal(expiresAt)
+		return tx.Bucket(bucketRevokedUsers).Put([]byte(userGUID), data)
+	})
+}
+
+func (s *BoltStore) IsUserAccessRevoked(userGUID string) (bool, error) {
+	var revoked bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketRevokedUsers).Get([]byte(userGUID))
+		if data != nil {
+			var expiresAt time.Time
+			if json.Unmarshal(data, &expiresAt) == nil && expiresAt.After(time.Now()) {
+				revoked = true
+			}
+		}
+		return nil
+	})
+	return revoked, err
 }

@@ -492,9 +492,9 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := h.jwt.ValidateToken(tokenStr)
+	claims, err := h.validateAccessToken(tokenStr)
 	if err != nil {
-		jsonError(w, "invalid token", http.StatusUnauthorized)
+		jsonError(w, "invalid or revoked token", http.StatusUnauthorized)
 		return
 	}
 
@@ -603,6 +603,25 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
+// validateAccessToken validates a JWT and checks the revocation blacklist.
+func (h *Handler) validateAccessToken(tokenStr string) (*auth.Claims, error) {
+	claims, err := h.jwt.ValidateToken(tokenStr)
+	if err != nil {
+		return nil, err
+	}
+	// Check user-level revocation (admin revoked all sessions)
+	if revoked, _ := h.store.IsUserAccessRevoked(claims.Subject); revoked {
+		return nil, fmt.Errorf("access revoked")
+	}
+	// Check individual token revocation
+	if claims.ID != "" {
+		if revoked, _ := h.store.IsAccessTokenRevoked(claims.ID); revoked {
+			return nil, fmt.Errorf("token revoked")
+		}
+	}
+	return claims, nil
+}
+
 // handleResetPassword allows an authenticated user to change their password.
 // POST /api/auth/reset-password with Authorization: Bearer <access_token>
 func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -613,9 +632,9 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := h.jwt.ValidateToken(tokenStr)
+	claims, err := h.validateAccessToken(tokenStr)
 	if err != nil {
-		jsonError(w, "invalid token", http.StatusUnauthorized)
+		jsonError(w, "invalid or revoked token", http.StatusUnauthorized)
 		return
 	}
 

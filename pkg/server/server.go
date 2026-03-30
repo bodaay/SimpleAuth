@@ -64,7 +64,7 @@ func Defaults() *Config {
 		BasePath:        "/sauth",
 		DeploymentName:  "sauth",
 		JWTIssuer:       "simpleauth",
-		AccessTTL:       8 * time.Hour,
+		AccessTTL:       15 * time.Minute,
 		RefreshTTL:      720 * time.Hour,
 		ImpersonateTTL:  1 * time.Hour,
 		AuditRetention:  90 * 24 * time.Hour,

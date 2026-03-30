@@ -85,6 +85,14 @@ func (s *PostgresStore) migrate() error {
 		data JSONB NOT NULL,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS revoked_tokens (
+		jti TEXT PRIMARY KEY,
+		expires_at TIMESTAMPTZ NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS revoked_users (
+		user_guid TEXT PRIMARY KEY,
+		expires_at TIMESTAMPTZ NOT NULL
+	);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -877,4 +885,46 @@ func (s *PostgresStore) SaveRuntimeSettings(rs *RuntimeSettings) error {
 		return err
 	}
 	return s.SetConfigValue("runtime_settings", data)
+}
+
+// --- Token Revocation ---
+
+func (s *PostgresStore) RevokeAccessToken(jti string, expiresAt time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, $2) ON CONFLICT (jti) DO NOTHING`,
+		jti, expiresAt,
+	)
+	return err
+}
+
+func (s *PostgresStore) IsAccessTokenRevoked(jti string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM revoked_tokens WHERE jti = $1)`, jti).Scan(&exists)
+	return exists, err
+}
+
+func (s *PostgresStore) CleanExpiredRevocations() error {
+	_, err := s.db.Exec(`DELETE FROM revoked_tokens WHERE expires_at < NOW()`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`DELETE FROM revoked_users WHERE expires_at < NOW()`)
+	return err
+}
+
+func (s *PostgresStore) RevokeAllUserAccessTokens(userGUID string, expiresAt time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT INTO revoked_users (user_guid, expires_at) VALUES ($1, $2) ON CONFLICT (user_guid) DO UPDATE SET expires_at = $2`,
+		userGUID, expiresAt,
+	)
+	return err
+}
+
+func (s *PostgresStore) IsUserAccessRevoked(userGUID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM revoked_users WHERE user_guid = $1 AND expires_at > NOW())`,
+		userGUID,
+	).Scan(&exists)
+	return exists, err
 }

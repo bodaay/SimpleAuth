@@ -588,10 +588,10 @@ func (h *Handler) handleOIDCUserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := h.jwt.ValidateToken(tokenStr)
+	claims, err := h.validateAccessToken(tokenStr)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-		oidcError(w, "invalid_token", "invalid or expired token", http.StatusUnauthorized)
+		oidcError(w, "invalid_token", "invalid or revoked token", http.StatusUnauthorized)
 		return
 	}
 
@@ -655,7 +655,7 @@ func (h *Handler) handleOIDCIntrospect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := h.jwt.ValidateToken(tokenStr)
+	claims, err := h.validateAccessToken(tokenStr)
 	if err != nil {
 		jsonResp(w, map[string]interface{}{"active": false}, http.StatusOK)
 		return

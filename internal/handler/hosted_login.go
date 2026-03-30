@@ -125,11 +125,28 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 
 func isAllowedRedirect(allowedList []string, uri string) bool {
 	if len(allowedList) == 0 {
-		return true // No restrictions configured
+		return false // No redirect URIs configured — reject all redirects
 	}
+
+	// Only allow http/https schemes
+	if !strings.HasPrefix(uri, "https://") && !strings.HasPrefix(uri, "http://") {
+		return false
+	}
+
 	for _, allowed := range allowedList {
 		if strings.HasSuffix(allowed, "*") {
-			if strings.HasPrefix(uri, allowed[:len(allowed)-1]) {
+			prefix := allowed[:len(allowed)-1]
+			// Ensure wildcard prefix ends with / to prevent subdomain bypass
+			// e.g. "https://app.corp.local/*" matches "https://app.corp.local/callback"
+			// but NOT "https://app.corp.local.evil.com/"
+			if !strings.HasSuffix(prefix, "/") && !strings.HasSuffix(prefix, ".") {
+				prefix += "/"
+				if strings.HasPrefix(uri, prefix) || uri == allowed[:len(allowed)-1] {
+					return true
+				}
+				continue
+			}
+			if strings.HasPrefix(uri, prefix) {
 				return true
 			}
 		} else if allowed == uri {

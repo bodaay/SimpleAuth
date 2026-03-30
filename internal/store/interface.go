@@ -81,4 +81,11 @@ type Store interface {
 	// Runtime Settings
 	GetRuntimeSettings() (*RuntimeSettings, error)
 	SaveRuntimeSettings(s *RuntimeSettings) error
+
+	// Token Revocation (access token blacklist)
+	RevokeAccessToken(jti string, expiresAt time.Time) error
+	IsAccessTokenRevoked(jti string) (bool, error)
+	CleanExpiredRevocations() error
+	RevokeAllUserAccessTokens(userGUID string, expiresAt time.Time) error
+	IsUserAccessRevoked(userGUID string) (bool, error)
 }

@@ -284,10 +284,13 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 // StartAuditPruner runs a background goroutine to clean old audit entries.
 func (h *Handler) StartAuditPruner() {
 	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
+		ticker := time.NewTicker(1 * time.Hour)
 		for range ticker.C {
 			if err := h.store.PruneAuditLog(h.getAuditRetention()); err != nil {
 				log.Printf("audit prune error: %v", err)
+			}
+			if err := h.store.CleanExpiredRevocations(); err != nil {
+				log.Printf("revocation cleanup error: %v", err)
 			}
 		}
 	}()

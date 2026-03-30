@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
+
+func timingSafeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // --- Auth Middleware ---
 
@@ -25,7 +30,7 @@ func (h *Handler) requireMasterAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 
-		if token != h.cfg.AdminKey {
+		if !timingSafeEqual(token, h.cfg.AdminKey) {
 			jsonError(w, "invalid admin key", http.StatusUnauthorized)
 			return
 		}
@@ -131,9 +136,9 @@ func extractIP(addr string) string {
 }
 
 func isTrustedProxy(ip string, trustedCIDRs []*net.IPNet) bool {
-	// If no trusted proxies configured, trust all (backwards compatible)
+	// If no trusted proxies configured, trust NONE — prevents X-Forwarded-For spoofing
 	if len(trustedCIDRs) == 0 {
-		return true
+		return false
 	}
 	parsed := net.ParseIP(ip)
 	if parsed == nil {

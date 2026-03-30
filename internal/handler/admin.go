@@ -306,12 +306,17 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleRevokeSessions(w http.ResponseWriter, r *http.Request) {
 	guid := pathParam(r, "guid")
+	// Revoke refresh tokens
 	if err := h.store.RevokeUserTokens(guid); err != nil {
 		jsonError(w, "failed to revoke sessions", http.StatusInternalServerError)
 		return
 	}
+	// Also blacklist all access tokens for this user until current tokens expire
+	expiresAt := time.Now().Add(h.cfg.AccessTTL)
+	h.store.RevokeAllUserAccessTokens(guid, expiresAt)
+
 	h.audit("sessions_revoked", "admin", getClientIP(r), map[string]interface{}{"target_guid": guid})
-	jsonResp(w, map[string]string{"status": "all sessions revoked"}, http.StatusOK)
+	jsonResp(w, map[string]string{"status": "all sessions revoked (access + refresh tokens)"}, http.StatusOK)
 }
 
 // --- Identity Mappings ---
