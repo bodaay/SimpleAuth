@@ -121,7 +121,7 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 	switch table {
 	case "users":
 		_, err := target.db.Exec(
-			`INSERT INTO users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`,
+			`INSERT INTO sa_users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`,
 			key, v,
 		)
 		return err
@@ -135,7 +135,7 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 		provider := key[:idx]
 		externalID := key[idx+1:]
 		_, err := target.db.Exec(
-			`INSERT INTO identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3)
+			`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3)
 			 ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`,
 			provider, externalID, string(v),
 		)
@@ -147,28 +147,28 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 
 	case "user_roles":
 		_, err := target.db.Exec(
-			`INSERT INTO user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`,
+			`INSERT INTO sa_user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`,
 			key, v,
 		)
 		return err
 
 	case "user_permissions":
 		_, err := target.db.Exec(
-			`INSERT INTO user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`,
+			`INSERT INTO sa_user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`,
 			key, v,
 		)
 		return err
 
 	case "config":
 		_, err := target.db.Exec(
-			`INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+			`INSERT INTO sa_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
 			key, v,
 		)
 		return err
 
 	case "refresh_tokens":
 		_, err := target.db.Exec(
-			`INSERT INTO refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`,
+			`INSERT INTO sa_refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`,
 			key, v,
 		)
 		return err
@@ -180,7 +180,7 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 			return nil // skip corrupt entries
 		}
 		_, err := target.db.Exec(
-			`INSERT INTO audit_log (id, timestamp, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+			`INSERT INTO sa_audit_log (id, timestamp, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
 			entry.ID, entry.Timestamp, v,
 		)
 		return err
@@ -191,7 +191,7 @@ func migrateKV(target *PostgresStore, table string, k, v []byte) error {
 			return nil
 		}
 		_, err := target.db.Exec(
-			`INSERT INTO oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
+			`INSERT INTO sa_oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING`,
 			key, v, ac.ExpiresAt,
 		)
 		return err
@@ -217,22 +217,23 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 
 	tables := []struct {
 		name  string
+		table string
 		query string
 	}{
-		{"users", `SELECT guid, data FROM users`},
-		{"identity_mappings", `SELECT provider, external_id, user_guid FROM identity_mappings`},
-		{"user_roles", `SELECT guid, roles FROM user_roles`},
-		{"user_permissions", `SELECT guid, permissions FROM user_permissions`},
-		{"config", `SELECT key, value FROM config`},
-		{"refresh_tokens", `SELECT token_id, data FROM refresh_tokens`},
-		{"audit_log", `SELECT id, data FROM audit_log`},
-		{"oidc_auth_codes", `SELECT code, data FROM oidc_auth_codes`},
+		{"users", "sa_users", `SELECT guid, data FROM sa_users`},
+		{"identity_mappings", "sa_identity_mappings", `SELECT provider, external_id, user_guid FROM sa_identity_mappings`},
+		{"user_roles", "sa_user_roles", `SELECT guid, roles FROM sa_user_roles`},
+		{"user_permissions", "sa_user_permissions", `SELECT guid, permissions FROM sa_user_permissions`},
+		{"config", "sa_config", `SELECT key, value FROM sa_config`},
+		{"refresh_tokens", "sa_refresh_tokens", `SELECT token_id, data FROM sa_refresh_tokens`},
+		{"audit_log", "sa_audit_log", `SELECT id, data FROM sa_audit_log`},
+		{"oidc_auth_codes", "sa_oidc_auth_codes", `SELECT code, data FROM sa_oidc_auth_codes`},
 	}
 
 	// Count totals
 	for _, t := range tables {
 		var count int64
-		source.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", t.name)).Scan(&count)
+		source.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", t.table)).Scan(&count)
 		status.TotalItems += count
 	}
 	send()

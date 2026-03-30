@@ -47,49 +47,49 @@ func OpenPostgres(dsn string) (*PostgresStore, error) {
 
 func (s *PostgresStore) migrate() error {
 	schema := `
-	CREATE TABLE IF NOT EXISTS users (
+	CREATE TABLE IF NOT EXISTS sa_users (
 		guid TEXT PRIMARY KEY,
 		data JSONB NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS identity_mappings (
+	CREATE TABLE IF NOT EXISTS sa_identity_mappings (
 		provider TEXT NOT NULL,
 		external_id TEXT NOT NULL,
 		user_guid TEXT NOT NULL,
 		PRIMARY KEY (provider, external_id)
 	);
-	CREATE INDEX IF NOT EXISTS idx_identity_mappings_guid ON identity_mappings(user_guid);
-	CREATE TABLE IF NOT EXISTS user_roles (
+	CREATE INDEX IF NOT EXISTS idx_sa_identity_mappings_guid ON identity_mappings(user_guid);
+	CREATE TABLE IF NOT EXISTS sa_user_roles (
 		guid TEXT PRIMARY KEY,
 		roles JSONB NOT NULL DEFAULT '[]'
 	);
-	CREATE TABLE IF NOT EXISTS user_permissions (
+	CREATE TABLE IF NOT EXISTS sa_user_permissions (
 		guid TEXT PRIMARY KEY,
 		permissions JSONB NOT NULL DEFAULT '[]'
 	);
-	CREATE TABLE IF NOT EXISTS config (
+	CREATE TABLE IF NOT EXISTS sa_config (
 		key TEXT PRIMARY KEY,
 		value BYTEA
 	);
-	CREATE TABLE IF NOT EXISTS refresh_tokens (
+	CREATE TABLE IF NOT EXISTS sa_refresh_tokens (
 		token_id TEXT PRIMARY KEY,
 		data JSONB NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS audit_log (
+	CREATE TABLE IF NOT EXISTS sa_audit_log (
 		id TEXT PRIMARY KEY,
 		timestamp TIMESTAMPTZ NOT NULL,
 		data JSONB NOT NULL
 	);
-	CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(timestamp DESC);
-	CREATE TABLE IF NOT EXISTS oidc_auth_codes (
+	CREATE INDEX IF NOT EXISTS idx_sa_audit_log_ts ON audit_log(timestamp DESC);
+	CREATE TABLE IF NOT EXISTS sa_oidc_auth_codes (
 		code TEXT PRIMARY KEY,
 		data JSONB NOT NULL,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS revoked_tokens (
+	CREATE TABLE IF NOT EXISTS sa_revoked_tokens (
 		jti TEXT PRIMARY KEY,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
-	CREATE TABLE IF NOT EXISTS revoked_users (
+	CREATE TABLE IF NOT EXISTS sa_revoked_users (
 		user_guid TEXT PRIMARY KEY,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
@@ -102,16 +102,16 @@ func (s *PostgresStore) migrate() error {
 // a clean target. Do NOT call this on a running Postgres store with live data.
 func (s *PostgresStore) ResetSchema() error {
 	drops := `
-	DROP TABLE IF EXISTS revoked_users CASCADE;
-	DROP TABLE IF EXISTS revoked_tokens CASCADE;
-	DROP TABLE IF EXISTS oidc_auth_codes CASCADE;
-	DROP TABLE IF EXISTS audit_log CASCADE;
-	DROP TABLE IF EXISTS refresh_tokens CASCADE;
-	DROP TABLE IF EXISTS config CASCADE;
-	DROP TABLE IF EXISTS user_permissions CASCADE;
-	DROP TABLE IF EXISTS user_roles CASCADE;
-	DROP TABLE IF EXISTS identity_mappings CASCADE;
-	DROP TABLE IF EXISTS users CASCADE;
+	DROP TABLE IF EXISTS sa_revoked_users CASCADE;
+	DROP TABLE IF EXISTS sa_revoked_tokens CASCADE;
+	DROP TABLE IF EXISTS sa_oidc_auth_codes CASCADE;
+	DROP TABLE IF EXISTS sa_audit_log CASCADE;
+	DROP TABLE IF EXISTS sa_refresh_tokens CASCADE;
+	DROP TABLE IF EXISTS sa_config CASCADE;
+	DROP TABLE IF EXISTS sa_user_permissions CASCADE;
+	DROP TABLE IF EXISTS sa_user_roles CASCADE;
+	DROP TABLE IF EXISTS sa_identity_mappings CASCADE;
+	DROP TABLE IF EXISTS sa_users CASCADE;
 	`
 	if _, err := s.db.Exec(drops); err != nil {
 		return err
@@ -137,7 +137,7 @@ func (s *PostgresStore) CreateUser(u *User) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`,
+		`INSERT INTO sa_users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`,
 		u.GUID, data,
 	)
 	return err
@@ -145,7 +145,7 @@ func (s *PostgresStore) CreateUser(u *User) error {
 
 func (s *PostgresStore) GetUser(guid string) (*User, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM users WHERE guid = $1`, guid).Scan(&data)
+	err := s.db.QueryRow(`SELECT data FROM sa_users WHERE guid = $1`, guid).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found: %s", guid)
 	}
@@ -180,7 +180,7 @@ func (s *PostgresStore) UpdateUser(u *User) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`UPDATE users SET data = $1 WHERE guid = $2`, data, u.GUID)
+	res, err := s.db.Exec(`UPDATE sa_users SET data = $1 WHERE guid = $2`, data, u.GUID)
 	if err != nil {
 		return err
 	}
@@ -192,12 +192,12 @@ func (s *PostgresStore) UpdateUser(u *User) error {
 }
 
 func (s *PostgresStore) DeleteUser(guid string) error {
-	_, err := s.db.Exec(`DELETE FROM users WHERE guid = $1`, guid)
+	_, err := s.db.Exec(`DELETE FROM sa_users WHERE guid = $1`, guid)
 	return err
 }
 
 func (s *PostgresStore) ListUsers() ([]*User, error) {
-	rows, err := s.db.Query(`SELECT data FROM users`)
+	rows, err := s.db.Query(`SELECT data FROM sa_users`)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (s *PostgresStore) DeleteLDAPConfig() error {
 
 func (s *PostgresStore) SetIdentityMapping(provider, externalID, userGUID string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3)
+		`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3)
 		 ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`,
 		provider, externalID, userGUID,
 	)
@@ -260,7 +260,7 @@ func (s *PostgresStore) SetIdentityMapping(provider, externalID, userGUID string
 func (s *PostgresStore) ResolveMapping(provider, externalID string) (string, error) {
 	var guid string
 	err := s.db.QueryRow(
-		`SELECT user_guid FROM identity_mappings WHERE provider = $1 AND external_id = $2`,
+		`SELECT user_guid FROM sa_identity_mappings WHERE provider = $1 AND external_id = $2`,
 		provider, externalID,
 	).Scan(&guid)
 	if err == sql.ErrNoRows {
@@ -271,7 +271,7 @@ func (s *PostgresStore) ResolveMapping(provider, externalID string) (string, err
 
 func (s *PostgresStore) DeleteIdentityMapping(provider, externalID string) error {
 	_, err := s.db.Exec(
-		`DELETE FROM identity_mappings WHERE provider = $1 AND external_id = $2`,
+		`DELETE FROM sa_identity_mappings WHERE provider = $1 AND external_id = $2`,
 		provider, externalID,
 	)
 	return err
@@ -279,7 +279,7 @@ func (s *PostgresStore) DeleteIdentityMapping(provider, externalID string) error
 
 func (s *PostgresStore) GetMappingsForUser(userGUID string) ([]IdentityMapping, error) {
 	rows, err := s.db.Query(
-		`SELECT provider, external_id FROM identity_mappings WHERE user_guid = $1`,
+		`SELECT provider, external_id FROM sa_identity_mappings WHERE user_guid = $1`,
 		userGUID,
 	)
 	if err != nil {
@@ -298,7 +298,7 @@ func (s *PostgresStore) GetMappingsForUser(userGUID string) ([]IdentityMapping, 
 }
 
 func (s *PostgresStore) ListAllMappings() ([]IdentityMappingEntry, error) {
-	rows, err := s.db.Query(`SELECT provider, external_id, user_guid FROM identity_mappings`)
+	rows, err := s.db.Query(`SELECT provider, external_id, user_guid FROM sa_identity_mappings`)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +319,7 @@ func (s *PostgresStore) ListAllMappings() ([]IdentityMappingEntry, error) {
 func (s *PostgresStore) SetUserRoles(guid string, roles []string) error {
 	data, _ := json.Marshal(roles)
 	_, err := s.db.Exec(
-		`INSERT INTO user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`,
+		`INSERT INTO sa_user_roles (guid, roles) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET roles = $2`,
 		guid, data,
 	)
 	return err
@@ -327,7 +327,7 @@ func (s *PostgresStore) SetUserRoles(guid string, roles []string) error {
 
 func (s *PostgresStore) GetUserRoles(guid string) ([]string, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT roles FROM user_roles WHERE guid = $1`, guid).Scan(&data)
+	err := s.db.QueryRow(`SELECT roles FROM sa_user_roles WHERE guid = $1`, guid).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -341,7 +341,7 @@ func (s *PostgresStore) GetUserRoles(guid string) ([]string, error) {
 func (s *PostgresStore) SetUserPermissions(guid string, perms []string) error {
 	data, _ := json.Marshal(perms)
 	_, err := s.db.Exec(
-		`INSERT INTO user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`,
+		`INSERT INTO sa_user_permissions (guid, permissions) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET permissions = $2`,
 		guid, data,
 	)
 	return err
@@ -349,7 +349,7 @@ func (s *PostgresStore) SetUserPermissions(guid string, perms []string) error {
 
 func (s *PostgresStore) GetUserPermissions(guid string) ([]string, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT permissions FROM user_permissions WHERE guid = $1`, guid).Scan(&data)
+	err := s.db.QueryRow(`SELECT permissions FROM sa_user_permissions WHERE guid = $1`, guid).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -381,7 +381,7 @@ func (s *PostgresStore) ListAllPermissions() ([]string, error) {
 
 func (s *PostgresStore) SetConfigValue(key string, value []byte) error {
 	_, err := s.db.Exec(
-		`INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+		`INSERT INTO sa_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
 		key, value,
 	)
 	return err
@@ -389,7 +389,7 @@ func (s *PostgresStore) SetConfigValue(key string, value []byte) error {
 
 func (s *PostgresStore) GetConfigValue(key string) ([]byte, error) {
 	var val []byte
-	err := s.db.QueryRow(`SELECT value FROM config WHERE key = $1`, key).Scan(&val)
+	err := s.db.QueryRow(`SELECT value FROM sa_config WHERE key = $1`, key).Scan(&val)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -397,7 +397,7 @@ func (s *PostgresStore) GetConfigValue(key string) ([]byte, error) {
 }
 
 func (s *PostgresStore) DeleteConfigValue(key string) error {
-	_, err := s.db.Exec(`DELETE FROM config WHERE key = $1`, key)
+	_, err := s.db.Exec(`DELETE FROM sa_config WHERE key = $1`, key)
 	return err
 }
 
@@ -536,7 +536,7 @@ func (s *PostgresStore) ResolvePermissions(roles, directPerms []string) ([]strin
 func (s *PostgresStore) SaveRefreshToken(rt *RefreshToken) error {
 	data, _ := json.Marshal(rt)
 	_, err := s.db.Exec(
-		`INSERT INTO refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`,
+		`INSERT INTO sa_refresh_tokens (token_id, data) VALUES ($1, $2) ON CONFLICT (token_id) DO UPDATE SET data = $2`,
 		rt.TokenID, data,
 	)
 	return err
@@ -544,7 +544,7 @@ func (s *PostgresStore) SaveRefreshToken(rt *RefreshToken) error {
 
 func (s *PostgresStore) GetRefreshToken(tokenID string) (*RefreshToken, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM refresh_tokens WHERE token_id = $1`, tokenID).Scan(&data)
+	err := s.db.QueryRow(`SELECT data FROM sa_refresh_tokens WHERE token_id = $1`, tokenID).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("refresh token not found")
 	}
@@ -565,7 +565,7 @@ func (s *PostgresStore) MarkRefreshTokenUsed(tokenID string) error {
 }
 
 func (s *PostgresStore) RevokeTokenFamily(familyID string) error {
-	rows, err := s.db.Query(`SELECT data FROM refresh_tokens`)
+	rows, err := s.db.Query(`SELECT data FROM sa_refresh_tokens`)
 	if err != nil {
 		return err
 	}
@@ -582,13 +582,13 @@ func (s *PostgresStore) RevokeTokenFamily(familyID string) error {
 		}
 	}
 	for _, id := range toDelete {
-		s.db.Exec(`DELETE FROM refresh_tokens WHERE token_id = $1`, id)
+		s.db.Exec(`DELETE FROM sa_refresh_tokens WHERE token_id = $1`, id)
 	}
 	return nil
 }
 
 func (s *PostgresStore) ListUserSessions(userGUID string) ([]*RefreshToken, error) {
-	rows, err := s.db.Query(`SELECT data FROM refresh_tokens`)
+	rows, err := s.db.Query(`SELECT data FROM sa_refresh_tokens`)
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +609,7 @@ func (s *PostgresStore) ListUserSessions(userGUID string) ([]*RefreshToken, erro
 }
 
 func (s *PostgresStore) RevokeUserTokens(userGUID string) error {
-	rows, err := s.db.Query(`SELECT data FROM refresh_tokens`)
+	rows, err := s.db.Query(`SELECT data FROM sa_refresh_tokens`)
 	if err != nil {
 		return err
 	}
@@ -626,7 +626,7 @@ func (s *PostgresStore) RevokeUserTokens(userGUID string) error {
 		}
 	}
 	for _, id := range toDelete {
-		s.db.Exec(`DELETE FROM refresh_tokens WHERE token_id = $1`, id)
+		s.db.Exec(`DELETE FROM sa_refresh_tokens WHERE token_id = $1`, id)
 	}
 	return nil
 }
@@ -642,7 +642,7 @@ func (s *PostgresStore) WriteAuditLog(entry *AuditEntry) error {
 	}
 	data, _ := json.Marshal(entry)
 	_, err := s.db.Exec(
-		`INSERT INTO audit_log (id, timestamp, data) VALUES ($1, $2, $3)`,
+		`INSERT INTO sa_audit_log (id, timestamp, data) VALUES ($1, $2, $3)`,
 		entry.ID, entry.Timestamp, data,
 	)
 	return err
@@ -667,7 +667,7 @@ func (s *PostgresStore) QueryAuditLog(q AuditQuery) ([]*AuditEntry, error) {
 		argN++
 	}
 
-	query := `SELECT data FROM audit_log`
+	query := `SELECT data FROM sa_audit_log`
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -711,7 +711,7 @@ func (s *PostgresStore) QueryAuditLog(q AuditQuery) ([]*AuditEntry, error) {
 
 func (s *PostgresStore) PruneAuditLog(retention time.Duration) error {
 	cutoff := time.Now().UTC().Add(-retention)
-	_, err := s.db.Exec(`DELETE FROM audit_log WHERE timestamp < $1`, cutoff)
+	_, err := s.db.Exec(`DELETE FROM sa_audit_log WHERE timestamp < $1`, cutoff)
 	return err
 }
 
@@ -733,7 +733,7 @@ func (s *PostgresStore) MergeUsers(sourceGUIDs []string, displayName, email stri
 
 	// Create new user
 	userData, _ := json.Marshal(newUser)
-	if _, err := tx.Exec(`INSERT INTO users (guid, data) VALUES ($1, $2)`, newUser.GUID, userData); err != nil {
+	if _, err := tx.Exec(`INSERT INTO sa_users (guid, data) VALUES ($1, $2)`, newUser.GUID, userData); err != nil {
 		return nil, err
 	}
 
@@ -742,38 +742,38 @@ func (s *PostgresStore) MergeUsers(sourceGUIDs []string, displayName, email stri
 
 	for _, srcGUID := range sourceGUIDs {
 		// Move identity mappings
-		tx.Exec(`UPDATE identity_mappings SET user_guid = $1 WHERE user_guid = $2`, newUser.GUID, srcGUID)
+		tx.Exec(`UPDATE sa_identity_mappings SET user_guid = $1 WHERE user_guid = $2`, newUser.GUID, srcGUID)
 
 		// Collect roles
 		var rolesData []byte
-		if err := tx.QueryRow(`SELECT roles FROM user_roles WHERE guid = $1`, srcGUID).Scan(&rolesData); err == nil {
+		if err := tx.QueryRow(`SELECT roles FROM sa_user_roles WHERE guid = $1`, srcGUID).Scan(&rolesData); err == nil {
 			var roles []string
 			json.Unmarshal(rolesData, &roles)
 			for _, r := range roles {
 				allRoles[r] = true
 			}
 		}
-		tx.Exec(`DELETE FROM user_roles WHERE guid = $1`, srcGUID)
+		tx.Exec(`DELETE FROM sa_user_roles WHERE guid = $1`, srcGUID)
 
 		// Collect permissions
 		var permsData []byte
-		if err := tx.QueryRow(`SELECT permissions FROM user_permissions WHERE guid = $1`, srcGUID).Scan(&permsData); err == nil {
+		if err := tx.QueryRow(`SELECT permissions FROM sa_user_permissions WHERE guid = $1`, srcGUID).Scan(&permsData); err == nil {
 			var perms []string
 			json.Unmarshal(permsData, &perms)
 			for _, p := range perms {
 				allPerms[p] = true
 			}
 		}
-		tx.Exec(`DELETE FROM user_permissions WHERE guid = $1`, srcGUID)
+		tx.Exec(`DELETE FROM sa_user_permissions WHERE guid = $1`, srcGUID)
 
 		// Mark source as merged
 		var srcData []byte
-		if err := tx.QueryRow(`SELECT data FROM users WHERE guid = $1`, srcGUID).Scan(&srcData); err == nil {
+		if err := tx.QueryRow(`SELECT data FROM sa_users WHERE guid = $1`, srcGUID).Scan(&srcData); err == nil {
 			var srcUser User
 			json.Unmarshal(srcData, &srcUser)
 			srcUser.MergedInto = newUser.GUID
 			mergedData, _ := json.Marshal(&srcUser)
-			tx.Exec(`UPDATE users SET data = $1 WHERE guid = $2`, mergedData, srcGUID)
+			tx.Exec(`UPDATE sa_users SET data = $1 WHERE guid = $2`, mergedData, srcGUID)
 		}
 	}
 
@@ -784,7 +784,7 @@ func (s *PostgresStore) MergeUsers(sourceGUIDs []string, displayName, email stri
 			roles = append(roles, r)
 		}
 		data, _ := json.Marshal(roles)
-		tx.Exec(`INSERT INTO user_roles (guid, roles) VALUES ($1, $2)`, newUser.GUID, data)
+		tx.Exec(`INSERT INTO sa_user_roles (guid, roles) VALUES ($1, $2)`, newUser.GUID, data)
 	}
 	if len(allPerms) > 0 {
 		var perms []string
@@ -792,7 +792,7 @@ func (s *PostgresStore) MergeUsers(sourceGUIDs []string, displayName, email stri
 			perms = append(perms, p)
 		}
 		data, _ := json.Marshal(perms)
-		tx.Exec(`INSERT INTO user_permissions (guid, permissions) VALUES ($1, $2)`, newUser.GUID, data)
+		tx.Exec(`INSERT INTO sa_user_permissions (guid, permissions) VALUES ($1, $2)`, newUser.GUID, data)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -832,7 +832,7 @@ func (s *PostgresStore) BackupWriter(w io.Writer) error {
 	dump["identity_mappings"] = mappings
 
 	// Config
-	rows, err := s.db.Query(`SELECT key, value FROM config`)
+	rows, err := s.db.Query(`SELECT key, value FROM sa_config`)
 	if err == nil {
 		defer rows.Close()
 		configMap := map[string]json.RawMessage{}
@@ -864,7 +864,7 @@ func (s *PostgresStore) Restore(r io.Reader) error {
 func (s *PostgresStore) SaveOIDCAuthCode(code *OIDCAuthCode) error {
 	data, _ := json.Marshal(code)
 	_, err := s.db.Exec(
-		`INSERT INTO oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3)`,
+		`INSERT INTO sa_oidc_auth_codes (code, data, expires_at) VALUES ($1, $2, $3)`,
 		code.Code, data, code.ExpiresAt,
 	)
 	return err
@@ -872,7 +872,7 @@ func (s *PostgresStore) SaveOIDCAuthCode(code *OIDCAuthCode) error {
 
 func (s *PostgresStore) ConsumeOIDCAuthCode(code string) (*OIDCAuthCode, error) {
 	var data []byte
-	err := s.db.QueryRow(`DELETE FROM oidc_auth_codes WHERE code = $1 RETURNING data`, code).Scan(&data)
+	err := s.db.QueryRow(`DELETE FROM sa_oidc_auth_codes WHERE code = $1 RETURNING data`, code).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("auth code not found")
 	}
@@ -912,7 +912,7 @@ func (s *PostgresStore) SaveRuntimeSettings(rs *RuntimeSettings) error {
 
 func (s *PostgresStore) RevokeAccessToken(jti string, expiresAt time.Time) error {
 	_, err := s.db.Exec(
-		`INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, $2) ON CONFLICT (jti) DO NOTHING`,
+		`INSERT INTO sa_revoked_tokens (jti, expires_at) VALUES ($1, $2) ON CONFLICT (jti) DO NOTHING`,
 		jti, expiresAt,
 	)
 	return err
@@ -920,22 +920,22 @@ func (s *PostgresStore) RevokeAccessToken(jti string, expiresAt time.Time) error
 
 func (s *PostgresStore) IsAccessTokenRevoked(jti string) (bool, error) {
 	var exists bool
-	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM revoked_tokens WHERE jti = $1)`, jti).Scan(&exists)
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sa_revoked_tokens WHERE jti = $1)`, jti).Scan(&exists)
 	return exists, err
 }
 
 func (s *PostgresStore) CleanExpiredRevocations() error {
-	_, err := s.db.Exec(`DELETE FROM revoked_tokens WHERE expires_at < NOW()`)
+	_, err := s.db.Exec(`DELETE FROM sa_revoked_tokens WHERE expires_at < NOW()`)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`DELETE FROM revoked_users WHERE expires_at < NOW()`)
+	_, err = s.db.Exec(`DELETE FROM sa_revoked_users WHERE expires_at < NOW()`)
 	return err
 }
 
 func (s *PostgresStore) RevokeAllUserAccessTokens(userGUID string, expiresAt time.Time) error {
 	_, err := s.db.Exec(
-		`INSERT INTO revoked_users (user_guid, expires_at) VALUES ($1, $2) ON CONFLICT (user_guid) DO UPDATE SET expires_at = $2`,
+		`INSERT INTO sa_revoked_users (user_guid, expires_at) VALUES ($1, $2) ON CONFLICT (user_guid) DO UPDATE SET expires_at = $2`,
 		userGUID, expiresAt,
 	)
 	return err
@@ -944,7 +944,7 @@ func (s *PostgresStore) RevokeAllUserAccessTokens(userGUID string, expiresAt tim
 func (s *PostgresStore) IsUserAccessRevoked(userGUID string) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM revoked_users WHERE user_guid = $1 AND expires_at > NOW())`,
+		`SELECT EXISTS(SELECT 1 FROM sa_revoked_users WHERE user_guid = $1 AND expires_at > NOW())`,
 		userGUID,
 	).Scan(&exists)
 	return exists, err
