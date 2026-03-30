@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DBConfig persists the active backend choice in a local JSON file.
@@ -114,10 +115,22 @@ func OpenSmart(dataDir, envPostgresURL string) (Store, error) {
 	dbCfg, _ := LoadDBConfig(dataDir)
 	if dbCfg != nil && dbCfg.Backend == "postgres" && dbCfg.PostgresURL != "" {
 		pgURL := decryptIfNeeded(dbCfg.PostgresURL, encKey)
-		s, err := OpenPostgres(pgURL)
+		// Retry Postgres connection with backoff (handles Docker startup ordering)
+		var s *PostgresStore
+		var err error
+		for attempt := 1; attempt <= 5; attempt++ {
+			s, err = OpenPostgres(pgURL)
+			if err == nil {
+				break
+			}
+			if attempt < 5 {
+				log.Printf("[store] Postgres not ready (attempt %d/5): %v — retrying in %ds...", attempt, err, attempt*2)
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+		}
 		if err != nil {
-			log.Printf("[store] WARNING: Postgres failed (%v) — falling back to BoltDB", err)
-			return OpenBolt(dataDir)
+			// db.json explicitly says Postgres — don't silently fall back to stale BoltDB
+			return nil, fmt.Errorf("postgres configured in db.json but connection failed after 5 attempts: %w", err)
 		}
 		log.Printf("[store] Using PostgreSQL backend")
 		return s, nil
@@ -125,9 +138,20 @@ func OpenSmart(dataDir, envPostgresURL string) (Store, error) {
 
 	// Check env/config postgres URL (backward compat)
 	if envPostgresURL != "" {
-		s, err := OpenPostgres(envPostgresURL)
+		var s *PostgresStore
+		var err error
+		for attempt := 1; attempt <= 5; attempt++ {
+			s, err = OpenPostgres(envPostgresURL)
+			if err == nil {
+				break
+			}
+			if attempt < 5 {
+				log.Printf("[store] Postgres not ready (attempt %d/5): %v — retrying in %ds...", attempt, err, attempt*2)
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+		}
 		if err != nil {
-			log.Printf("[store] WARNING: Postgres failed (%v) — falling back to BoltDB", err)
+			log.Printf("[store] WARNING: Postgres failed after retries (%v) — falling back to BoltDB", err)
 			return OpenBolt(dataDir)
 		}
 		// Save to db.json so UI knows the backend
