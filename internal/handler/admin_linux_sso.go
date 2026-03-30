@@ -206,13 +206,45 @@ AUTH_URI="https://${AUTH_HOSTNAME}"
 
 configure_firefox() {
   local name="$1"
-  local paths=("$2")
+  local dir="$2"
   local found=false
 
-  for dir in "${paths[@]}"; do
-    if [[ -d "$(dirname "$dir")" ]] || command -v "$name" &>/dev/null; then
-      mkdir -p "$dir"
-      cat > "${dir}/policies.json" << FFEOF
+  if [[ -d "$(dirname "$dir")" ]] || command -v "$name" &>/dev/null; then
+    mkdir -p "$dir"
+    local policy_file="${dir}/policies.json"
+
+    if [[ -f "$policy_file" ]]; then
+      # Merge: add our URI to existing SPNEGO/Delegated arrays if not already present
+      if command -v python3 &>/dev/null; then
+        python3 -c "
+import json, sys
+try:
+    with open('${policy_file}') as f:
+        p = json.load(f)
+except:
+    p = {}
+pol = p.setdefault('policies', {})
+auth = pol.setdefault('Authentication', {})
+for key in ['SPNEGO', 'Delegated']:
+    arr = auth.get(key, [])
+    if not isinstance(arr, list):
+        arr = [arr]
+    if '${AUTH_URI}' not in arr:
+        arr.append('${AUTH_URI}')
+    auth[key] = arr
+auth.setdefault('AllowNonFQDN', {})['SPNEGO'] = True
+with open('${policy_file}', 'w') as f:
+    json.dump(p, f, indent=2)
+" 2>/dev/null && ok "$name: merged ${AUTH_URI} into existing ${policy_file}" && found=true
+      fi
+
+      if ! $found; then
+        warn "$name: python3 not available, overwriting ${policy_file}"
+      fi
+    fi
+
+    if ! $found; then
+      cat > "$policy_file" << FFEOF
 {
   "policies": {
     "Authentication": {
@@ -225,10 +257,10 @@ configure_firefox() {
   }
 }
 FFEOF
-      ok "$name: policy written → ${dir}/policies.json"
-      found=true
+      ok "$name: policy written → ${policy_file}"
     fi
-  done
+    found=true
+  fi
 
   if ! $found; then
     info "$name: not installed (skipped)"
@@ -238,19 +270,37 @@ FFEOF
 configure_chromium_based() {
   local name="$1"
   local policy_dir="$2"
+  # Each deployment gets its own file — Chrome merges all .json files in managed/
+  local policy_file="${policy_dir}/simpleauth-${DEPLOYMENT}.json"
 
   if [[ -d "$(dirname "$policy_dir")" ]] || command -v "$name" &>/dev/null; then
     mkdir -p "$policy_dir"
-    cat > "${policy_dir}/simpleauth-sso.json" << CREOF
+
+    # For Allowlist/Whitelist, Chrome uses the LAST value seen across files.
+    # So we need to merge all SimpleAuth URIs into one comma-separated string.
+    # Collect existing URIs from other simpleauth-*.json files
+    local existing_uris=""
+    for f in "${policy_dir}"/simpleauth-*.json; do
+      [[ -f "$f" ]] || continue
+      if command -v python3 &>/dev/null; then
+        local uri=$(python3 -c "import json; d=json.load(open('$f')); print(d.get('AuthServerAllowlist',''))" 2>/dev/null)
+        if [[ -n "$uri" && "$uri" != "${AUTH_URI}" ]]; then
+          existing_uris="${existing_uris},${uri}"
+        fi
+      fi
+    done
+    local all_uris="${AUTH_URI}${existing_uris}"
+
+    cat > "$policy_file" << CREOF
 {
-  "AuthServerAllowlist": "${AUTH_URI}",
-  "AuthNegotiateDelegateAllowlist": "${AUTH_URI}",
+  "AuthServerAllowlist": "${all_uris}",
+  "AuthNegotiateDelegateAllowlist": "${all_uris}",
   "DisableAuthNegotiateCnameLookup": true,
-  "AuthServerWhitelist": "${AUTH_URI}",
-  "AuthNegotiateDelegateWhitelist": "${AUTH_URI}"
+  "AuthServerWhitelist": "${all_uris}",
+  "AuthNegotiateDelegateWhitelist": "${all_uris}"
 }
 CREOF
-    ok "$name: policy written → ${policy_dir}/simpleauth-sso.json"
+    ok "$name: policy written → ${policy_file}"
   else
     info "$name: not installed (skipped)"
   fi
