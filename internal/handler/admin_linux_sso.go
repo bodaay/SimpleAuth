@@ -321,25 +321,48 @@ configure_firefox "firefox" "/etc/firefox/policies"
 [[ -d "/usr/lib/firefox/distribution" ]] && configure_firefox "firefox" "/usr/lib/firefox/distribution"
 [[ -d "/usr/lib64/firefox/distribution" ]] && configure_firefox "firefox" "/usr/lib64/firefox/distribution"
 
-# Firefox Snap (Ubuntu default)
-if [[ -d "/snap/firefox" ]] || snap list firefox &>/dev/null; then
-  info "Firefox Snap detected (Ubuntu default)"
-  SNAP_POLICY="/etc/firefox/policies"
-  configure_firefox "firefox-snap" "$SNAP_POLICY"
-
-  # Snap Firefox needs the system-configuration-files interface to read /etc/firefox/policies
-  if snap connections firefox 2>/dev/null | grep -q "system-configuration-files.*-$"; then
-    info "Connecting Snap Firefox to system-configuration-files..."
-    if snap connect firefox:system-configuration-files 2>/dev/null; then
-      ok "Firefox Snap: interface connected — policies will be readable"
+# Firefox Snap (Ubuntu default) — does NOT support Kerberos SSO
+if [[ -d "/snap/firefox" ]] || snap list firefox &>/dev/null 2>&1; then
+  echo ""
+  fail "Firefox Snap detected — Kerberos SSO will NOT work!"
+  warn "Snap Firefox runs in a sandbox and cannot access the system Kerberos ticket cache."
+  warn "This is a known Ubuntu issue with no workaround."
+  echo ""
+  echo -e "  ${BOLD}To fix, switch to the .deb version:${NC}"
+  echo ""
+  echo -e "    ${CYAN}sudo snap remove firefox${NC}"
+  echo -e "    ${CYAN}sudo add-apt-repository ppa:mozillateam/ppa${NC}"
+  echo -e "    ${CYAN}sudo apt install -t 'o=LP-PPA-mozillateam' firefox${NC}"
+  echo ""
+  echo -e "  Or just use ${BOLD}Chrome/Chromium${NC} — it works out of the box."
+  echo ""
+  read -p "  Remove Snap Firefox and install deb version now? [y/N] " FIX_FF
+  FIX_FF=${FIX_FF:-N}
+  if [[ "$FIX_FF" =~ ^[Yy]$ ]]; then
+    info "Removing Snap Firefox..."
+    snap remove firefox 2>/dev/null
+    info "Adding Mozilla PPA..."
+    add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null
+    # Prefer PPA over Snap for future updates
+    cat > /etc/apt/preferences.d/mozilla-firefox << PREFEOF
+Package: firefox*
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1001
+PREFEOF
+    info "Installing Firefox from PPA..."
+    apt-get update -qq && apt-get install -y firefox
+    if command -v firefox &>/dev/null; then
+      ok "Firefox .deb installed — Kerberos SSO will work"
+      configure_firefox "firefox" "/etc/firefox/policies"
+      [[ -d "/usr/lib/firefox/distribution" ]] && configure_firefox "firefox" "/usr/lib/firefox/distribution"
     else
-      warn "Firefox Snap: failed to connect interface. Run manually:"
-      warn "  ${CYAN}sudo snap connect firefox:system-configuration-files${NC}"
+      fail "Firefox installation failed"
     fi
   else
-    ok "Firefox Snap: system-configuration-files interface already connected"
+    info "Skipped — Snap Firefox policies written anyway (password login still works)"
+    SNAP_POLICY="/etc/firefox/policies"
+    configure_firefox "firefox-snap" "$SNAP_POLICY"
   fi
-  warn "Note: restart Firefox after policy changes: ${CYAN}snap restart firefox${NC}"
 fi
 
 # Firefox Flatpak
