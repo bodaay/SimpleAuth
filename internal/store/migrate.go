@@ -39,12 +39,13 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 		}
 	}
 
-	// Reset target schema (drop + recreate) to ensure clean migration
-	if err := target.ResetSchema(); err != nil {
-		status.State = "failed"
-		status.Error = fmt.Sprintf("reset target schema: %v", err)
-		send()
-		return err
+	// Ensure target has clean sa_ tables (truncate, don't drop — preserves schema)
+	for _, table := range []string{
+		"sa_oidc_auth_codes", "sa_revoked_tokens", "sa_revoked_users",
+		"sa_audit_log", "sa_refresh_tokens", "sa_user_permissions",
+		"sa_user_roles", "sa_identity_mappings", "sa_config", "sa_users",
+	} {
+		target.db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
 	}
 
 	// Count total items across all buckets
