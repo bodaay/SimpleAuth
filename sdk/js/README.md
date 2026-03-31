@@ -14,7 +14,7 @@ npm install @simpleauth/js
 import { SimpleAuth } from '@simpleauth/js';
 
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090/sauth',
+  url: 'https://auth.corp.local/sauth',
 });
 ```
 
@@ -98,7 +98,7 @@ import { SimpleAuth } from '@simpleauth/js';
 
 const app = express();
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090/sauth',
+  url: 'https://auth.corp.local/sauth',
 });
 
 // Require authentication (returns 401 if no valid token)
@@ -208,7 +208,7 @@ The SDK works in browsers without any bundler configuration. It uses the native 
 import { SimpleAuth } from './index.js';
 
 const auth = new SimpleAuth({
-  url: 'https://auth.corp.local:9090/sauth',
+  url: 'https://auth.corp.local/sauth',
 });
 
 const tokens = await auth.login('username', 'password');

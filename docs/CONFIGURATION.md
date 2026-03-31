@@ -187,7 +187,7 @@ services:
       AUTH_ADMIN_KEY: "your-secret-admin-key"
       AUTH_HOSTNAME: "auth.corp.local"
       AUTH_JWT_ISSUER: "simpleauth"
-      AUTH_JWT_ACCESS_TTL: "4h"
+      AUTH_JWT_ACCESS_TTL: "15m"
       # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
       AUTH_REDIRECT_URI: "https://myapp.example.com/callback"
       AUTH_CORS_ORIGINS: "*"

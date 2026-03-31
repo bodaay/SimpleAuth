@@ -23,7 +23,7 @@ import { createSimpleAuth, SimpleAuthError, SimpleAuthUser } from "@simpleauth/j
 // File: lib/auth.ts
 
 const auth = createSimpleAuth({
-  url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local:9090",
+  url: process.env.SIMPLEAUTH_URL ?? "https://auth.corp.local/sauth",
 });
 
 /**

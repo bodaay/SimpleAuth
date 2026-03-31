@@ -173,7 +173,7 @@ When a login request comes in:
 - **Verification:** Offline using JWKS public keys (no server roundtrip)
 - **Contents:** User GUID, name, email, roles, permissions, groups, department, company, job title
 
-Access tokens include Keycloak-compatible claims:
+Access tokens include standard claims:
 
 ```json
 {

@@ -40,7 +40,7 @@ func main() {
 	// Initialize the client
 	// -----------------------------------------------------------------
 	client := simpleauth.New(simpleauth.Options{
-		URL:                envOr("SIMPLEAUTH_URL", "https://auth.corp.local:9090/sauth"),
+		URL:                envOr("SIMPLEAUTH_URL", "https://auth.corp.local/sauth"),
 		InsecureSkipVerify: true, // Only for development with self-signed certs
 	})
 
