@@ -274,7 +274,7 @@ admin_key: ""
 
 # JWT settings
 jwt_issuer: "simpleauth"
-access_ttl: "8h"
+access_ttl: "15m"
 refresh_ttl: "720h"
 impersonate_ttl: "1h"
 

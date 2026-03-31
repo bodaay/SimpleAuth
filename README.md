@@ -2,7 +2,7 @@
   <h1 align="center">SimpleAuth</h1>
   <p align="center">
     <strong>The simplest way to add Active Directory authentication to any app.</strong><br>
-    Single binary. Zero dependencies. Full Kerberos SSO. Keycloak-compatible OIDC.<br>
+    Single binary. Zero dependencies. Full Kerberos SSO. REST API + RS256 JWTs.<br>
     BoltDB or PostgreSQL. Admin UI for everything. Embeddable as a Go library.
   </p>
 </p>
@@ -23,14 +23,14 @@ Each SimpleAuth instance serves one application. Roles and permissions are globa
 | **Kerberos SSO** | Complex config | Built-in but rigid | **Auto-configured** |
 | **AD integration** | Manual LDAP config | Native but complex | **Auto-discovery + PowerShell script** |
 | **Learning curve** | Steep (realms, flows, mappers...) | Moderate | **Flat** |
-| **OIDC compatible** | Yes | Yes | **Yes (Keycloak URL-compatible)** |
+| **REST API** | Custom per-setup | Claims-based | **Simple JSON API + RS256 JWTs** |
 
 ## Quick Start
 
 ### Option 1: Docker (recommended)
 
 ```bash
-docker run -d -p 9090:9090 -p 80:80 \
+docker run -d -p 8080:8080 -p 80:80 \
   -e AUTH_HOSTNAME=auth.corp.local \
   -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
   -v simpleauth-data:/data \
@@ -53,7 +53,7 @@ On first run, SimpleAuth will:
 3. Auto-generate an admin key if none configured (printed to stdout)
 4. Start HTTPS on port 9090 and HTTP redirect on port 80
 
-The default base path is `/sauth`. The admin UI is at `https://<hostname>:9090/sauth/admin`. The hosted login page is at `/sauth/login`.
+The default base path is `/sauth`. The admin UI is at `https://<hostname>/sauth/admin` (port 9090 for binary, 8080 for Docker). The hosted login page is at `/sauth/login`.
 
 ### Admin Access
 
@@ -197,7 +197,7 @@ Most configuration is manageable from the Admin UI at runtime. Environment varia
 - **Account lockout** -- automatic lockout after repeated failed login attempts, with configurable threshold and duration
 - **Force password change** -- admin can require a user to change their password on next login
 - **Hosted login page** -- redirect-based flow, apps don't need their own login form
-- **OIDC / Keycloak compatible** -- authorization_code, client_credentials, password grant, refresh_token, token introspection
+- **Legacy OIDC compatibility** -- Keycloak-compatible endpoints available for migration (deprecated, direct API recommended)
 - **Impersonation** -- admins generate tokens as any user, fully audited
 
 ### Identity
@@ -231,21 +231,11 @@ Most configuration is manageable from the Admin UI at runtime. Environment varia
 - **Linux SSO setup script** -- auto-generated bash script configures krb5.conf + browser policies (Firefox, Chrome, Edge, Brave, Vivaldi, Opera) + optional SSSD domain join
 - **Embeddable** -- `pkg/server` package for embedding SimpleAuth in any Go application
 
-### Keycloak Compatibility
+### Legacy OIDC / Keycloak Compatibility (Deprecated)
 
-SimpleAuth exposes Keycloak-compatible OIDC endpoints so existing apps can switch without code changes:
+> For new integrations, use the direct `/api/auth/*` endpoints. The OIDC layer exists only for migrating existing Keycloak apps and will be removed in v1.0.
 
-| Keycloak URL | SimpleAuth URL |
-|-------------|----------------|
-| `/realms/{realm}/.well-known/openid-configuration` | Same |
-| `/realms/{realm}/protocol/openid-connect/token` | Same |
-| `/realms/{realm}/protocol/openid-connect/auth` | Same |
-| `/realms/{realm}/protocol/openid-connect/userinfo` | Same |
-| `/realms/{realm}/protocol/openid-connect/certs` | Same |
-| `/realms/{realm}/protocol/openid-connect/token/introspect` | Same |
-| `/realms/{realm}/protocol/openid-connect/logout` | Same |
-
-JWT claims include Keycloak-compatible fields: `preferred_username`, `realm_access.roles`, `azp`, `scope`, `session_state`.
+Keycloak-compatible endpoints are available at `/realms/{realm}/protocol/openid-connect/*` for apps migrating from Keycloak. `client_id` and `client_secret` are accepted but not validated.
 
 ## Security
 
@@ -408,7 +398,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version
 
 ```bash
 docker build -t simpleauth .
-docker run -d -p 9090:9090 -p 80:80 \
+docker run -d -p 8080:8080 -p 80:80 \
   -e AUTH_ADMIN_KEY=changeme \
   -e AUTH_HOSTNAME=auth.corp.local \
   -e AUTH_REDIRECT_URI=https://myapp.corp.local/callback \
@@ -520,17 +510,9 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |
 | `GET` | `/health` | Health check |
 
-### OIDC / Keycloak-Compatible
+### OIDC / Keycloak-Compatible (Deprecated — use direct API above)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/realms/{realm}/.well-known/openid-configuration` | Discovery document |
-| `GET/POST` | `/realms/{realm}/protocol/openid-connect/auth` | Authorization endpoint |
-| `POST` | `/realms/{realm}/protocol/openid-connect/token` | Token endpoint |
-| `GET` | `/realms/{realm}/protocol/openid-connect/userinfo` | UserInfo endpoint |
-| `GET` | `/realms/{realm}/protocol/openid-connect/certs` | JWKS endpoint |
-| `POST` | `/realms/{realm}/protocol/openid-connect/token/introspect` | Token introspection |
-| `GET` | `/realms/{realm}/protocol/openid-connect/logout` | Logout endpoint |
+Legacy endpoints at `/realms/{realm}/protocol/openid-connect/*` are available for apps migrating from Keycloak. See [Keycloak Migration Guide](docs/KEYCLOAK-MIGRATION.md).
 
 ### Admin
 
