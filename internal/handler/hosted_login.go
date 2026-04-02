@@ -237,12 +237,14 @@ const hostedLoginHTML = `<!DOCTYPE html>
   --bg: #F7F5F3; --card: #FFFFFF; --text: #1A1F24; --muted: #A59F8A;
   --border: #D6D1CA; --burgundy: #8B153D; --burgundy-hover: #6E1030;
   --error-bg: #F8E4E4; --error-text: #8B153D;
-  --gold-light: #F8E08E; --gold-dark: #8F6A2A;
+  --gold-light: #F8E08E; --gold: #8F6A2A;
+  --input-bg: #FFFFFF; --input-border: #C1A18D;
 }
 @media(prefers-color-scheme:dark){:root{
   --bg:#222A31;--card:#2E3840;--text:#F2EFEC;--muted:#8A857D;
   --border:#475560;--burgundy:#8B153D;--burgundy-hover:#A42D55;
   --error-bg:rgba(139,21,61,0.2);--error-text:#D4A0A0;
+  --gold:#8F6A2A;--input-bg:#2A333B;--input-border:#475560;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -253,8 +255,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .gold-bar{height:3px;background:linear-gradient(90deg,var(--gold-light),var(--gold-dark));border-radius:999px;margin-bottom:24px}
 .error{background:var(--error-bg);color:var(--error-text);padding:12px 16px;border-radius:8px;font-size:0.875rem;margin-bottom:16px}
 label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:8px}
-input[type=text],input[type=password]{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
-input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
+input[type=text],input[type=password]{width:100%%;padding:12px 16px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:12px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
+input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,106,42,0.2)}
 .btn-primary{width:100%%;padding:14px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer;font-family:inherit;text-align:center;text-decoration:none;display:block}
 .btn-primary:hover{background:var(--burgundy-hover)}
 .btn-submit{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}

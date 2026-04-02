@@ -55,6 +55,13 @@
   --shadow-md: 0 2px 8px rgba(51,63,72,0.08);
   --shadow-lg: 0 4px 16px rgba(51,63,72,0.10);
   --focus-ring: 0 0 0 3px rgba(143,106,42,0.2);
+
+  /* Input fields (from guide 06) */
+  --input-bg: #FFFFFF;
+  --input-border: #C1A18D;          /* Sand — warm, visible */
+  --input-border-focus: #8F6A2A;    /* Gold */
+  --input-text: #1A1F24;
+  --input-placeholder: #A59F8A;     /* Olive Gold */
 }
 
 /* ── Dark theme (from guide 02) ── */
@@ -90,6 +97,11 @@
     --shadow-md: 0 2px 8px rgba(0,0,0,0.25);
     --shadow-lg: 0 4px 16px rgba(0,0,0,0.3);
     --focus-ring: 0 0 0 3px rgba(143,106,42,0.3);
+    --input-bg: #2A333B;             /* surface — darker than card */
+    --input-border: #475560;         /* visible border */
+    --input-border-focus: #8F6A2A;   /* Gold */
+    --input-text: #F2EFEC;
+    --input-placeholder: #6B7780;
   }
 }
 
@@ -124,6 +136,11 @@
   --shadow-md: 0 2px 8px rgba(0,0,0,0.25);
   --shadow-lg: 0 4px 16px rgba(0,0,0,0.3);
   --focus-ring: 0 0 0 3px rgba(143,106,42,0.3);
+  --input-bg: #2A333B;
+  --input-border: #475560;
+  --input-border-focus: #8F6A2A;
+  --input-text: #F2EFEC;
+  --input-placeholder: #6B7780;
 }
 
 /* === Reset === */
@@ -360,20 +377,20 @@ tr:hover td { background: var(--bg-hover); }
 .form-input, .form-select, .form-textarea {
   width: 100%;
   padding: var(--sp-3) var(--sp-4);
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius);
   font-size: 0.875rem;
   font-family: var(--font-primary);
-  color: var(--text-primary);
+  color: var(--input-text);
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .form-input:focus, .form-select:focus, .form-textarea:focus {
   outline: none;
-  border-color: var(--border-focus);
+  border-color: var(--input-border-focus);
   box-shadow: var(--focus-ring);
 }
-.form-input::placeholder { color: var(--text-muted); }
+.form-input::placeholder { color: var(--input-placeholder); }
 .form-textarea { resize: vertical; min-height: 80px; }
 .form-help {
   font-size: 0.75rem;
