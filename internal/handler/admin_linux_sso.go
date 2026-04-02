@@ -16,6 +16,9 @@ func (h *Handler) handleLinuxSetupScript(w http.ResponseWriter, r *http.Request)
 	hostname := h.cfg.Hostname
 	basePath := h.cfg.BasePath
 	deploymentName := h.cfg.DeploymentName
+	if rs := h.runtimeSettings.get(); rs != nil && rs.DeploymentName != "" {
+		deploymentName = rs.DeploymentName
+	}
 
 	// Derive KDC from LDAP URL if available
 	kdc := ""

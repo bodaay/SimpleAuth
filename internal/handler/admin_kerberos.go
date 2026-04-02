@@ -420,14 +420,18 @@ func (h *Handler) getKRB5Realm() string {
 // handleSetupScript returns a full interactive PowerShell script for AD setup.
 func (h *Handler) handleSetupScript(w http.ResponseWriter, r *http.Request) {
 	hostname := h.cfg.Hostname
-	defaultAccount := "svc-sauth-" + strings.ToLower(h.cfg.DeploymentName)
+	deploymentName := h.cfg.DeploymentName
+	if rs := h.runtimeSettings.get(); rs != nil && rs.DeploymentName != "" {
+		deploymentName = rs.DeploymentName
+	}
+	defaultAccount := "svc-sauth-" + strings.ToLower(deploymentName)
 
-	lines := setupScriptLines(hostname, defaultAccount, h.cfg.DeploymentName)
+	lines := setupScriptLines(hostname, defaultAccount, deploymentName)
 	script := strings.Join(lines, "\r\n")
 
 	bom := []byte{0xEF, 0xBB, 0xBF}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Setup-SimpleAuth-%s.ps1"`, strings.ToLower(h.cfg.DeploymentName)))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Setup-SimpleAuth-%s.ps1"`, strings.ToLower(deploymentName)))
 	w.Write(bom)
 	w.Write([]byte(script))
 }
