@@ -506,6 +506,7 @@ For production, provide your own certificate or put SimpleAuth behind nginx (see
 | `POST` | `/api/auth/impersonate` | Generate token as another user (admin) |
 | `POST` | `/api/auth/reset-password` | Change password (authenticated) |
 | `GET` | `/login` | Hosted login page (redirect flow) |
+| `GET` | `/logout` | Logout: clears SSO cookies, redirects to `/login?manual=1` |
 | `GET` | `/account` | User self-service page (profile + password change) |
 | `GET` | `/test-negotiate` | Kerberos SSO test page |
 | `GET` | `/.well-known/jwks.json` | JWKS public keys |

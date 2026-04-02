@@ -132,6 +132,8 @@ await adminAuth.setUserPermissions('user-guid', ['read:all', 'write:config']);
 await auth.logout(idToken);
 ```
 
+> **Hosted login flow:** If your app uses the hosted login page with auto-SSO, redirect users to `/logout?redirect_uri=...` instead of `/login?redirect_uri=...` when logging out. This clears SSO cookies and prevents auto-SSO from immediately re-authenticating the user.
+
 ---
 
 ## Go

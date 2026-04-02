@@ -277,6 +277,29 @@ On successful login without a `redirect_uri`, the user is redirected to `/accoun
 
 ---
 
+### `GET /logout`
+
+**Auth:** None
+
+Logout endpoint. Clears SSO cookies and redirects to the login page with `manual=1` to prevent auto-SSO from immediately logging the user back in.
+
+**Query parameters:**
+- `redirect_uri` -- Passed through to the login page redirect
+
+**Behavior:**
+
+```
+GET /logout?redirect_uri=https://myapp.example.com/callback
+  -> clears SSO cookies
+  -> 302 redirect to /login?manual=1&redirect_uri=https://myapp.example.com/callback
+```
+
+This is the **recommended logout path** for apps using auto-SSO (`AUTH_AUTO_SSO=true`). If your app redirects to `/login` after logout, auto-SSO may immediately re-authenticate the user without showing the login form. Redirecting to `/logout` instead ensures the SSO session is cleared first.
+
+> **Not a breaking change.** `/login` continues to work as before. `/logout` is an additive endpoint.
+
+---
+
 ### `GET /login/sso`
 
 **Auth:** None (Kerberos SPNEGO)

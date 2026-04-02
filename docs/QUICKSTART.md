@@ -86,6 +86,8 @@ curl -k -X POST https://localhost:8080/sauth/api/admin/ldap/test \
 
 > **Auto SSO:** Set `AUTH_AUTO_SSO=true` (or `auto_sso: true` in config) to make the login page automatically attempt Kerberos SSO without requiring a button click. On failure, it falls back to the manual login form. This can also be toggled at runtime from the Admin UI Settings page.
 
+> **Logout with auto-SSO:** When auto-SSO is enabled, apps should redirect users to `/logout?redirect_uri=X` instead of `/login?redirect_uri=X` when logging out. The `/logout` endpoint clears SSO cookies and redirects to `/login?manual=1&redirect_uri=X`, preventing auto-SSO from immediately logging the user back in.
+
 ---
 
 ## 3. Configure OIDC (optional)

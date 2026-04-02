@@ -422,7 +422,9 @@ async function fetchCurrentUser(): Promise<AuthContext["user"]> {
 
 async function performLogout(): Promise<void> {
   await fetch("/api/auth/logout", { method: "POST" });
-  window.location.href = "/login";
+  // Redirect to /logout instead of /login to clear SSO cookies and prevent
+  // auto-SSO from immediately re-authenticating the user.
+  window.location.href = "/logout?redirect_uri=" + encodeURIComponent(window.location.origin + "/login");
 }
 
 // ---------------------------------------------------------------------------

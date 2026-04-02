@@ -57,6 +57,8 @@ const newTokens = await auth.refresh(tokens.refresh_token);
 await auth.logout(tokens.id_token);
 ```
 
+> **Hosted login flow with auto-SSO:** If your app uses the SimpleAuth hosted login page, redirect users to `/logout?redirect_uri=...` instead of `/login?redirect_uri=...` when logging out. This clears SSO cookies and prevents auto-SSO from immediately re-authenticating the user.
+
 ## Token Verification (Server-Side)
 
 Verify a JWT access token using the server's JWKS (fetched from `GET /.well-known/jwks.json`). The SDK caches JWKS keys for 1 hour and automatically re-fetches on key ID miss.
