@@ -254,9 +254,16 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 		}
 
 		fileServer := http.FileServerFS(uiFS)
+		setAdminHeaders := func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+		}
 		h.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 			if indexData != nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				setAdminHeaders(w)
 				w.Write(indexData)
 				return
 			}
@@ -266,7 +273,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 			p := r.PathValue("path")
 			if p == "" || p == "index.html" {
 				if indexData != nil {
-					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					setAdminHeaders(w)
 					w.Write(indexData)
 					return
 				}

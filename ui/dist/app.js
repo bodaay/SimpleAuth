@@ -1297,6 +1297,8 @@ function ImpersonatePage() {
         target_guid: selectedUser,
       });
       setResult(res);
+      // Auto-clear token from DOM after 60 seconds
+      setTimeout(() => setResult(null), 60 * 1000);
     } catch (e) { showToast(e.message, 'error'); }
   };
 
@@ -1838,7 +1840,7 @@ function DatabasePage() {
               <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;">Copy all data to PostgreSQL. Source is not modified.</p>
               <div style="margin-bottom: 12px;">
                 <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 6px;">PostgreSQL DSN</label>
-                <input type="text" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
+                <input type="password" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
                   placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
                   style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; font-family: monospace; background: var(--card); color: var(--text);" />
                 <p style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">postgres://user:password@host:5432/dbname?sslmode=disable</p>
@@ -1932,11 +1934,31 @@ function App() {
   useEffect(() => {
     if (authed) {
       api('GET', '/api/admin/users').catch(() => {
-        setApiKey('');
+        clearApiKey();
         setAuthed(false);
       });
     }
   }, []);
+
+  // Idle timeout — clear admin key after 30 min of inactivity
+  useEffect(() => {
+    if (!authed) return;
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        clearApiKey();
+        setAuthed(false);
+      }, 30 * 60 * 1000);
+    };
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart'];
+    events.forEach(e => document.addEventListener(e, reset));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach(e => document.removeEventListener(e, reset));
+    };
+  }, [authed]);
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'auto' : 'light';
