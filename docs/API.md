@@ -577,9 +577,45 @@ curl -k -X POST \
 
 List all users. Password hashes are stripped from the response.
 
+**Query Parameters:**
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `include` | `identities` | Include each user's identity mappings as an `identities` array. Without this parameter, the `identities` field is omitted (backward compatible). |
+
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
   https://localhost:8080/api/admin/users
+```
+
+**With identities:**
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  "https://localhost:8080/api/admin/users?include=identities"
+```
+
+Each entry in the `identities` array contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `provider` | string | Identity provider (e.g. `"local"`, `"ldap"`) |
+| `external_id` | string | User identifier within that provider (e.g. `"kalahmad"`) |
+
+**Example response with `?include=identities`:**
+
+```json
+[
+  {
+    "guid": "abc-123...",
+    "display_name": "Khalefa Ahmad",
+    "email": "kalahmad@corp.local",
+    "identities": [
+      {"provider": "local", "external_id": "kalahmad"},
+      {"provider": "ldap", "external_id": "kalahmad"}
+    ]
+  }
+]
 ```
 
 ---
@@ -623,6 +659,19 @@ The `username` field creates a `local` identity mapping (e.g., `local:jsmith`). 
 **Auth:** Admin Key
 
 Get a single user by GUID.
+
+**Query Parameters:**
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `include` | `identities` | Include the user's identity mappings as an `identities` array. Without this parameter, the `identities` field is omitted (backward compatible). |
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  "https://localhost:8080/api/admin/users/{guid}?include=identities"
+```
+
+See [`GET /api/admin/users`](#get-apiadminusers) for the `identities` array format.
 
 **User object fields include:**
 
