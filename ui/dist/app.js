@@ -725,7 +725,12 @@ function LDAPPage() {
   const load = () => {
     api('GET', '/api/admin/ldap').then(cfg => {
       setLdapConfig(cfg || false);
-      if (cfg && cfg.url) setConnectionStatus('ok');
+      // Actually test connection instead of assuming configured = ok
+      if (cfg && cfg.url) {
+        api('POST', '/api/admin/ldap/test').then(r => {
+          setConnectionStatus(r.status === 'ok' ? 'ok' : 'error');
+        }).catch(() => setConnectionStatus('error'));
+      }
     }).catch(() => setLdapConfig(false));
     api('GET', '/api/admin/kerberos/status').then(setKrbStatus).catch(() => {});
     api('GET', '/api/admin/server-info').then(setServerInfo).catch(() => {});
