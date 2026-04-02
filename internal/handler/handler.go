@@ -146,10 +146,10 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("GET /api/admin/server-info", h.requireMasterAdmin(func(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]interface{}{
 			"hostname":        h.cfg.Hostname,
-			"deployment_name": h.cfg.DeploymentName,
+			"deployment_name": h.getDeploymentName(),
 			"jwt_issuer":      h.cfg.JWTIssuer,
 			"version":         h.version,
-			"redirect_uri":    h.cfg.RedirectURI,
+			"redirect_uri":    h.getDefaultRedirectURI(),
 		}, http.StatusOK)
 	}))
 

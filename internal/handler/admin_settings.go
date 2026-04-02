@@ -102,6 +102,21 @@ func (h *Handler) getAuditRetention() time.Duration {
 	return h.cfg.AuditRetention
 }
 
+func (h *Handler) getDeploymentName() string {
+	if rs := h.runtimeSettings.get(); rs != nil && rs.DeploymentName != "" {
+		return rs.DeploymentName
+	}
+	return h.cfg.DeploymentName
+}
+
+func (h *Handler) getDefaultRedirectURI() string {
+	uris := h.getRedirectURIs()
+	if len(uris) > 0 {
+		return uris[0]
+	}
+	return h.cfg.RedirectURI
+}
+
 // --- Admin API: Settings ---
 
 // handleGetSettings returns current runtime settings.

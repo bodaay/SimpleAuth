@@ -192,8 +192,8 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect with code
 	redirectTarget := redirectURI
-	if redirectTarget == "" && h.cfg.RedirectURI != "" {
-		redirectTarget = h.cfg.RedirectURI
+	if redirectTarget == "" {
+		redirectTarget = h.getDefaultRedirectURI()
 	}
 	sep := "?"
 	if strings.Contains(redirectTarget, "?") {
@@ -228,7 +228,7 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	realm := h.cfg.JWTIssuer
 	action := h.cfg.BasePath + "/realms/" + realm + "/protocol/openid-connect/auth"
 
-	appName := h.cfg.DeploymentName
+	appName := h.getDeploymentName()
 	if appName == "" {
 		appName = "your application"
 	}

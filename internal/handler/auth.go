@@ -1112,8 +1112,8 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		target := redirectURI
-		if target == "" && h.cfg.RedirectURI != "" {
-			target = h.cfg.RedirectURI
+		if target == "" {
+			target = h.getDefaultRedirectURI()
 		}
 		sep := "?"
 		if strings.Contains(target, "?") {
