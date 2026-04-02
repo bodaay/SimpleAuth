@@ -69,6 +69,7 @@ SimpleAuth looks for a config file in this order:
 | `password_history_count` | `AUTH_PASSWORD_HISTORY_COUNT` | `0` | Number of previous passwords to remember and prevent reuse. `0` disables history check. |
 | `account_lockout_threshold` | `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Number of failed login attempts before the account is locked. `0` disables account lockout. |
 | `account_lockout_duration` | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | How long an account stays locked after hitting the lockout threshold. Go duration format. |
+| `auto_sso` | `AUTH_AUTO_SSO` | `false` | When enabled, the login page automatically attempts Kerberos SSO without user interaction. Shows a "Attempting Single Sign-On..." spinner and redirects on success. Falls back to the manual login form if SSO fails. |
 
 ---
 
@@ -138,6 +139,9 @@ password_history_count: 0
 # Account lockout
 account_lockout_threshold: 0
 account_lockout_duration: "30m"
+
+# Kerberos SSO
+auto_sso: false            # auto-attempt SSO on login page (no click required)
 ```
 
 ---

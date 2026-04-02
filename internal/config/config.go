@@ -63,6 +63,9 @@ type Config struct {
 	AccountLockoutThreshold  int           `yaml:"account_lockout_threshold"`
 	AccountLockoutDuration   time.Duration `yaml:"account_lockout_duration"`
 
+	// SSO
+	AutoSSO bool `yaml:"auto_sso"`
+
 	// Database
 	PostgresURL string `yaml:"postgres_url"`
 }
@@ -616,6 +619,9 @@ func applyEnvOverrides(cfg *Config) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.AccountLockoutDuration = d
 		}
+	}
+	if v := os.Getenv("AUTH_AUTO_SSO"); v != "" {
+		cfg.AutoSSO = v == "true" || v == "1" || v == "yes"
 	}
 	if v := os.Getenv("AUTH_POSTGRES_URL"); v != "" {
 		cfg.PostgresURL = v

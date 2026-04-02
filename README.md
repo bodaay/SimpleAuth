@@ -189,7 +189,7 @@ Most configuration is manageable from the Admin UI at runtime. Environment varia
 
 ### Authentication
 
-- **Kerberos/SPNEGO** -- transparent Windows SSO, auto-configured keytab
+- **Kerberos/SPNEGO** -- transparent Windows SSO, auto-configured keytab. Set `AUTH_AUTO_SSO=true` to auto-attempt SSO on the login page (shows a spinner, falls back to manual login on failure).
 - **LDAP bind** -- form-based login with fallback user filter detection (sAMAccountName, userPrincipalName, uid)
 - **Local passwords** -- bcrypt-hashed, for non-AD users
 - **Password policy** -- configurable minimum length and complexity requirements (uppercase, lowercase, digit, special)
@@ -461,6 +461,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_PASSWORD_HISTORY_COUNT` | `0` | Number of previous passwords to remember (0 = disabled) |
 | `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Failed login attempts before lockout (0 = disabled) |
 | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | Duration of account lockout |
+| `AUTH_AUTO_SSO` | `false` | Auto-attempt Kerberos SSO on the login page (skip manual click) |
 
 > **Note:** If neither `AUTH_REDIRECT_URI` nor `AUTH_REDIRECT_URIS` is set, all redirect URIs are **rejected**.
 

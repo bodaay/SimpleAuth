@@ -84,6 +84,8 @@ curl -k -X POST https://localhost:8080/sauth/api/admin/ldap/test \
 
 > **Linux SSO:** After configuring LDAP, you can download a Linux SSO script from the admin UI (`/sauth/admin`) to configure Linux clients for single sign-on against your directory.
 
+> **Auto SSO:** Set `AUTH_AUTO_SSO=true` (or `auto_sso: true` in config) to make the login page automatically attempt Kerberos SSO without requiring a button click. On failure, it falls back to the manual login form. This can also be toggled at runtime from the Admin UI Settings page.
+
 ---
 
 ## 3. Configure OIDC (optional)
