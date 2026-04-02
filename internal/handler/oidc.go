@@ -233,9 +233,10 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 		appName = "your application"
 	}
 
-	ssoHTML := ""
-	if h.getKeytabPath() != "" {
-		ssoLink := h.url("/login/sso") + "?oidc=1"
+	ssoEnabled := h.getKeytabPath() != ""
+	ssoLink := ""
+	if ssoEnabled {
+		ssoLink = h.url("/login/sso") + "?oidc=1"
 		if redirectURI != "" {
 			ssoLink += "&redirect_uri=" + url.QueryEscape(redirectURI)
 		}
@@ -245,11 +246,26 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 		if nonce != "" {
 			ssoLink += "&nonce=" + url.QueryEscape(nonce)
 		}
-		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
+	}
+
+	autoSSO := false
+	if ssoEnabled && errorMsg == "" {
+		if rs := h.runtimeSettings.get(); rs != nil && rs.AutoSSO {
+			autoSSO = true
+		}
+	}
+
+	ssoEnabledStr := ""
+	if ssoEnabled {
+		ssoEnabledStr = "1"
+	}
+	autoSSOStr := ""
+	if autoSSO {
+		autoSSOStr = "1"
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, oidcLoginHTML, action, h.oidcClientID(), redirectURI, state, nonce, scope, appName, errorHTML, ssoHTML)
+	fmt.Fprintf(w, oidcLoginHTML, action, h.oidcClientID(), redirectURI, state, nonce, scope, appName, errorHTML, ssoLink, ssoEnabledStr, autoSSOStr)
 }
 
 // handleOIDCToken handles the OAuth2 token endpoint.
@@ -740,6 +756,10 @@ func oidcError(w http.ResponseWriter, errorCode, description string, status int)
 }
 
 // OIDC login page template
+// oidcLoginHTML format args:
+// %[1]s = form action, %[2]s = client_id, %[3]s = redirect_uri, %[4]s = state,
+// %[5]s = nonce, %[6]s = scope, %[7]s = appName, %[8]s = errorHTML,
+// %[9]s = ssoLink, %[10]s = ssoEnabled ("1"/""), %[11]s = autoSSO ("1"/"")
 const oidcLoginHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -759,8 +779,8 @@ const oidcLoginHTML = `<!DOCTYPE html>
   --error-bg:rgba(139,21,61,0.2);--error-text:#D4A0A0;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
-.card{width:400px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{width:420px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1)}
 .brand{text-align:center;margin-bottom:32px}
 .brand h1{font-size:1.5rem;font-weight:700;margin-bottom:4px}
 .brand p{color:var(--muted);font-size:0.875rem}
@@ -769,14 +789,18 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:8px}
 input[type=text],input[type=password]{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
 input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
-button{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
-button:hover{background:var(--burgundy-hover)}
+.btn-primary{width:100%%;padding:14px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer;font-family:inherit;text-align:center;text-decoration:none;display:block}
+.btn-primary:hover{background:var(--burgundy-hover)}
+.btn-submit{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-submit:hover{background:var(--burgundy-hover)}
+.manual-toggle{display:block;width:100%%;text-align:center;padding:10px;color:var(--muted);font-size:0.8rem;cursor:pointer;border:none;background:none;margin-top:16px;font-family:inherit}
+.manual-toggle:hover{color:var(--text)}
+.manual-form{display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+.manual-form.show{display:block}
 .app-name{font-size:0.75rem;color:var(--muted);text-align:center;margin-top:16px}
-.sso-btn{display:block;width:100%%;padding:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-weight:600;text-align:center;text-decoration:none;font-family:inherit;cursor:pointer}
-.sso-btn:hover{border-color:var(--burgundy);color:var(--burgundy)}
-.divider{display:flex;align-items:center;margin:20px 0;gap:12px}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
-.divider span{color:var(--muted);font-size:0.75rem;white-space:nowrap}
+.sso-status{text-align:center;padding:24px 0;color:var(--muted);font-size:0.9rem}
+.sso-status .spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--burgundy);border-radius:50%%;animation:spin 0.8s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -784,21 +808,56 @@ button:hover{background:var(--burgundy-hover)}
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
   %[8]s
-  %[9]s
-  <form method="POST" action="%[1]s">
-    <input type="hidden" name="client_id" value="%[2]s">
-    <input type="hidden" name="redirect_uri" value="%[3]s">
-    <input type="hidden" name="state" value="%[4]s">
-    <input type="hidden" name="nonce" value="%[5]s">
-    <input type="hidden" name="scope" value="%[6]s">
-    <input type="hidden" name="response_type" value="code">
-    <label>Username</label>
-    <input type="text" name="username" placeholder="Enter your username" autofocus required>
-    <label>Password</label>
-    <input type="password" name="password" placeholder="Enter your password" required>
-    <button type="submit">Sign In</button>
-  </form>
+  <div id="sso-section" style="display:none">
+    <a href="%[9]s" class="btn-primary" id="sso-btn">Sign in with Single Sign-On</a>
+    <button class="manual-toggle" onclick="document.getElementById('manual-form').classList.add('show');this.style.display='none'">
+      Or sign in with username and password
+    </button>
+  </div>
+  <div id="auto-sso-status" style="display:none">
+    <div class="sso-status"><span class="spinner"></span> Attempting Single Sign-On...</div>
+  </div>
+  <div id="manual-form" class="manual-form">
+    <form method="POST" action="%[1]s">
+      <input type="hidden" name="client_id" value="%[2]s">
+      <input type="hidden" name="redirect_uri" value="%[3]s">
+      <input type="hidden" name="state" value="%[4]s">
+      <input type="hidden" name="nonce" value="%[5]s">
+      <input type="hidden" name="scope" value="%[6]s">
+      <input type="hidden" name="response_type" value="code">
+      <label>Username</label>
+      <input type="text" name="username" placeholder="Enter your username" autofocus required>
+      <label>Password</label>
+      <input type="password" name="password" placeholder="Enter your password" required>
+      <button type="submit" class="btn-submit">Sign In</button>
+    </form>
+  </div>
   <div class="app-name">Signing into %[7]s</div>
 </div>
+<script>
+(function(){
+  var ssoEnabled = "%[10]s" === "1";
+  var autoSSO = "%[11]s" === "1";
+  var ssoLink = "%[9]s";
+  var hasError = document.querySelector('.error') !== null;
+
+  if (ssoEnabled && !hasError) {
+    document.getElementById('sso-section').style.display = 'block';
+    if (autoSSO && ssoLink) {
+      document.getElementById('sso-section').style.display = 'none';
+      document.getElementById('auto-sso-status').style.display = 'block';
+      setTimeout(function(){ window.location.href = ssoLink; }, 500);
+    }
+  } else if (ssoEnabled && hasError) {
+    document.getElementById('sso-section').style.display = 'block';
+    document.getElementById('manual-form').classList.add('show');
+  } else {
+    document.getElementById('manual-form').classList.add('show');
+    document.getElementById('manual-form').style.borderTop = 'none';
+    document.getElementById('manual-form').style.marginTop = '0';
+    document.getElementById('manual-form').style.paddingTop = '0';
+  }
+})();
+</script>
 </body>
 </html>`

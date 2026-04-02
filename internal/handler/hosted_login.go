@@ -52,20 +52,38 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 		errorHTML = `<div class="error">` + errorMsg + `</div>`
 	}
 
-	ssoHTML := ""
-	if h.getKeytabPath() != "" {
-		ssoLink := h.url("/login/sso")
+	ssoEnabled := h.getKeytabPath() != ""
+	ssoLink := ""
+	if ssoEnabled {
+		ssoLink = h.url("/login/sso")
 		if redirectURI != "" {
 			ssoLink += "?redirect_uri=" + url.QueryEscape(redirectURI)
 		}
-		ssoHTML = fmt.Sprintf(`<a href="%s" class="sso-btn">Sign in with SSO</a><div class="divider"><span>or sign in with credentials</span></div>`, ssoLink)
+	}
+
+	// Check auto_sso setting — only auto-redirect if SSO is enabled, no error, and not already tried
+	autoSSO := false
+	if ssoEnabled && errorMsg == "" && r.URL.Query().Get("manual") != "1" {
+		if rs := h.runtimeSettings.get(); rs != nil && rs.AutoSSO {
+			autoSSO = true
+		}
 	}
 
 	csrfToken := generateCSRFToken()
 	setCSRFCookie(w, csrfToken)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoHTML, csrfToken)
+	// %[1]s = redirectURI, %[2]s = errorHTML, %[3]s = ssoLink, %[4]s = csrfToken,
+	// %[5]s = ssoEnabled ("1"/""), %[6]s = autoSSO ("1"/"")
+	ssoEnabledStr := ""
+	if ssoEnabled {
+		ssoEnabledStr = "1"
+	}
+	autoSSOStr := ""
+	if autoSSO {
+		autoSSOStr = "1"
+	}
+	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoLink, csrfToken, ssoEnabledStr, autoSSOStr)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
@@ -227,22 +245,26 @@ const hostedLoginHTML = `<!DOCTYPE html>
 }}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
-.card{width:400px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1)}
+.card{width:420px;padding:40px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1)}
 .brand{text-align:center;margin-bottom:32px}
 .brand h1{font-size:1.5rem;font-weight:700;margin-bottom:4px}
 .brand p{color:var(--muted);font-size:0.875rem}
 .gold-bar{height:3px;background:linear-gradient(90deg,var(--gold-light),var(--gold-dark));border-radius:999px;margin-bottom:24px}
 .error{background:var(--error-bg);color:var(--error-text);padding:12px 16px;border-radius:8px;font-size:0.875rem;margin-bottom:16px}
 label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:8px}
-input{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
+input[type=text],input[type=password]{width:100%%;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
 input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
-button{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
-button:hover{background:var(--burgundy-hover)}
-.sso-btn{display:block;width:100%%;padding:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-weight:600;text-align:center;text-decoration:none;font-family:inherit;cursor:pointer}
-.sso-btn:hover{border-color:var(--burgundy);color:var(--burgundy)}
-.divider{display:flex;align-items:center;margin:20px 0;gap:12px}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
-.divider span{color:var(--muted);font-size:0.75rem;white-space:nowrap}
+.btn-primary{width:100%%;padding:14px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer;font-family:inherit;text-align:center;text-decoration:none;display:block}
+.btn-primary:hover{background:var(--burgundy-hover)}
+.btn-submit{width:100%%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-submit:hover{background:var(--burgundy-hover)}
+.manual-toggle{display:block;width:100%%;text-align:center;padding:10px;color:var(--muted);font-size:0.8rem;cursor:pointer;border:none;background:none;margin-top:16px;font-family:inherit}
+.manual-toggle:hover{color:var(--text)}
+.manual-form{display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+.manual-form.show{display:block}
+.sso-status{text-align:center;padding:24px 0;color:var(--muted);font-size:0.9rem}
+.sso-status .spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--burgundy);border-radius:50%%;animation:spin 0.8s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -250,22 +272,54 @@ button:hover{background:var(--burgundy-hover)}
   <div class="brand"><h1>SimpleAuth</h1><p>Sign in to continue</p></div>
   <div class="gold-bar"></div>
   %[2]s
-  %[3]s
-  <form method="POST" action="{{BASE_PATH}}/login">
-    <input type="hidden" name="redirect_uri" value="%[1]s">
-    <input type="hidden" name="_csrf" value="%[4]s">
-    <label>Username</label>
-    <input type="text" name="username" placeholder="Enter your username" autofocus required>
-    <label>Password</label>
-    <input type="password" name="password" placeholder="Enter your password" required>
-    <button type="submit">Sign In</button>
-  </form>
+  <div id="sso-section" style="display:none">
+    <a href="%[3]s" class="btn-primary" id="sso-btn">Sign in with Single Sign-On</a>
+    <button class="manual-toggle" onclick="document.getElementById('manual-form').classList.add('show');this.style.display='none'">
+      Or sign in with username and password
+    </button>
+  </div>
+  <div id="auto-sso-status" style="display:none">
+    <div class="sso-status"><span class="spinner"></span> Attempting Single Sign-On...</div>
+  </div>
+  <div id="manual-form" class="manual-form">
+    <form method="POST" action="{{BASE_PATH}}/login">
+      <input type="hidden" name="redirect_uri" value="%[1]s">
+      <input type="hidden" name="_csrf" value="%[4]s">
+      <label>Username</label>
+      <input type="text" name="username" placeholder="Enter your username" autofocus required>
+      <label>Password</label>
+      <input type="password" name="password" placeholder="Enter your password" required>
+      <button type="submit" class="btn-submit">Sign In</button>
+    </form>
+  </div>
 </div>
 <script>
-// If already logged in, show account link
-try{if(sessionStorage.getItem('sa_access_token')){
-  document.querySelector('.brand p').innerHTML='Sign in to continue or <a href="{{BASE_PATH}}/account" style="color:var(--burgundy);font-weight:600">go to your account</a>';
-}}catch(e){}
+(function(){
+  var ssoEnabled = "%[5]s" === "1";
+  var autoSSO = "%[6]s" === "1";
+  var ssoLink = "%[3]s";
+  var hasError = document.querySelector('.error') !== null;
+
+  if (ssoEnabled && !hasError) {
+    document.getElementById('sso-section').style.display = 'block';
+    if (autoSSO && ssoLink) {
+      // Auto-SSO: show spinner then redirect (full page navigation = SPNEGO works)
+      document.getElementById('sso-section').style.display = 'none';
+      document.getElementById('auto-sso-status').style.display = 'block';
+      setTimeout(function(){ window.location.href = ssoLink; }, 500);
+    }
+  } else if (ssoEnabled && hasError) {
+    // SSO failed — show SSO button + manual form expanded
+    document.getElementById('sso-section').style.display = 'block';
+    document.getElementById('manual-form').classList.add('show');
+  } else {
+    // No SSO — show manual form directly
+    document.getElementById('manual-form').classList.add('show');
+    document.getElementById('manual-form').style.borderTop = 'none';
+    document.getElementById('manual-form').style.marginTop = '0';
+    document.getElementById('manual-form').style.paddingTop = '0';
+  }
+})();
 </script>
 </body>
 </html>`

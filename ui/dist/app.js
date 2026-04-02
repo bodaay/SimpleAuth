@@ -1678,6 +1678,14 @@ function SettingsPage() {
     </div>
 
     <div class="card" style="margin-top: 16px;">
+      <div class="card-header"><h3>Single Sign-On</h3></div>
+      <div class="card-body">
+        ${field('Auto-attempt SSO on login page', 'auto_sso', 'boolean')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">When enabled, the login page automatically attempts Kerberos SSO without the user clicking a button. Falls back to the manual login form if SSO fails.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 16px;">
       <div class="card-header"><h3>Audit Log</h3></div>
       <div class="card-body">
         ${field('Retention (days)', 'audit_retention_days', 'number')}

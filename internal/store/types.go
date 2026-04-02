@@ -130,4 +130,5 @@ type RuntimeSettings struct {
 	RateLimitMax             int      `json:"rate_limit_max"`
 	RateLimitWindowS         int      `json:"rate_limit_window_s"` // seconds
 	AuditRetentionDays       int      `json:"audit_retention_days"`
+	AutoSSO                  bool     `json:"auto_sso"`
 }
