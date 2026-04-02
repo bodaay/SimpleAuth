@@ -221,7 +221,8 @@ func (h *Handler) redirectToLoginError(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	// No redirect_uri — show SimpleAuth's own login page with error
-	u := h.url("/login") + "?error=" + url.QueryEscape(msg)
+	// manual=1 prevents auto-SSO from looping
+	u := h.url("/login") + "?error=" + url.QueryEscape(msg) + "&manual=1"
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
@@ -299,25 +300,34 @@ input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(
   var autoSSO = "%[6]s" === "1";
   var ssoLink = "%[3]s";
   var hasError = document.querySelector('.error') !== null;
+  var manualForm = document.getElementById('manual-form');
+
+  function showManualOnly() {
+    manualForm.classList.add('show');
+    manualForm.style.borderTop = 'none';
+    manualForm.style.marginTop = '0';
+    manualForm.style.paddingTop = '0';
+  }
 
   if (ssoEnabled && !hasError) {
-    document.getElementById('sso-section').style.display = 'block';
     if (autoSSO && ssoLink) {
-      // Auto-SSO: show spinner then redirect (full page navigation = SPNEGO works)
-      document.getElementById('sso-section').style.display = 'none';
+      // Auto-SSO: show spinner, wait 3s, then redirect
       document.getElementById('auto-sso-status').style.display = 'block';
-      setTimeout(function(){ window.location.href = ssoLink; }, 500);
+      setTimeout(function(){ window.location.href = ssoLink; }, 3000);
+    } else {
+      // Manual SSO: show button + collapsed form
+      document.getElementById('sso-section').style.display = 'block';
     }
   } else if (ssoEnabled && hasError) {
-    // SSO failed — show SSO button + manual form expanded
+    // SSO failed — show SSO button (retry) + manual form expanded
     document.getElementById('sso-section').style.display = 'block';
-    document.getElementById('manual-form').classList.add('show');
+    manualForm.classList.add('show');
+  } else if (hasError) {
+    // Error but no SSO — just manual form
+    showManualOnly();
   } else {
-    // No SSO — show manual form directly
-    document.getElementById('manual-form').classList.add('show');
-    document.getElementById('manual-form').style.borderTop = 'none';
-    document.getElementById('manual-form').style.marginTop = '0';
-    document.getElementById('manual-form').style.paddingTop = '0';
+    // No SSO configured — show manual form directly
+    showManualOnly();
   }
 })();
 </script>

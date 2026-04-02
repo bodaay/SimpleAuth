@@ -840,22 +840,28 @@ input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(
   var autoSSO = "%[11]s" === "1";
   var ssoLink = "%[9]s";
   var hasError = document.querySelector('.error') !== null;
+  var manualForm = document.getElementById('manual-form');
+
+  function showManualOnly() {
+    manualForm.classList.add('show');
+    manualForm.style.borderTop = 'none';
+    manualForm.style.marginTop = '0';
+    manualForm.style.paddingTop = '0';
+  }
 
   if (ssoEnabled && !hasError) {
-    document.getElementById('sso-section').style.display = 'block';
     if (autoSSO && ssoLink) {
-      document.getElementById('sso-section').style.display = 'none';
       document.getElementById('auto-sso-status').style.display = 'block';
-      setTimeout(function(){ window.location.href = ssoLink; }, 500);
+      setTimeout(function(){ window.location.href = ssoLink; }, 3000);
+    } else {
+      document.getElementById('sso-section').style.display = 'block';
     }
-  } else if (ssoEnabled && hasError) {
+  } else if (hasError) {
+    // SSO failed — show manual form only, SSO button still available
     document.getElementById('sso-section').style.display = 'block';
-    document.getElementById('manual-form').classList.add('show');
+    manualForm.classList.add('show');
   } else {
-    document.getElementById('manual-form').classList.add('show');
-    document.getElementById('manual-form').style.borderTop = 'none';
-    document.getElementById('manual-form').style.marginTop = '0';
-    document.getElementById('manual-form').style.paddingTop = '0';
+    showManualOnly();
   }
 })();
 </script>
