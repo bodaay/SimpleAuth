@@ -130,6 +130,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 
 	// Hosted login page
 	h.mux.HandleFunc("GET /login", h.handleHostedLoginPage)
+	h.mux.HandleFunc("GET /logout", h.handleLogout)
 	h.mux.HandleFunc("POST /login", h.handleHostedLoginSubmit)
 	h.mux.HandleFunc("GET /login/sso", h.handleSSOLogin)
 
