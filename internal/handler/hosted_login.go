@@ -217,10 +217,10 @@ func isAllowedRedirect(allowedList []string, uri string) bool {
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	redirectURI := r.URL.Query().Get("redirect_uri")
 
-	// Clear SSO-attempted cookie
-	http.SetCookie(w, &http.Cookie{Name: "__sso_attempted", Value: "1", Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	// Clear any existing SSO-attempted cookie
+	http.SetCookie(w, &http.Cookie{Name: "__sso_attempted", Value: "", Path: "/", MaxAge: -1})
 
-	// Redirect to login with manual=1 to prevent auto-SSO
+	// Redirect to login with manual=1 to prevent auto-SSO on this page load only
 	u := h.url("/login") + "?manual=1"
 	if redirectURI != "" {
 		u += "&redirect_uri=" + url.QueryEscape(redirectURI)
