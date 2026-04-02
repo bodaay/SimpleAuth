@@ -989,6 +989,16 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mark SSO as attempted so auto-SSO doesn't loop on failure
+	http.SetCookie(w, &http.Cookie{
+		Name:     "__sso_attempted",
+		Value:    "1",
+		Path:     "/",
+		MaxAge:   300, // 5 minutes — prevents loop, but allows retry later
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	authHeader := r.Header.Get("Authorization")
 
 	ip := getClientIP(r)
@@ -1088,6 +1098,9 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[sso] Login success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
 	h.auditLogin(user, ip, map[string]interface{}{"flow": "sso", "method": "kerberos"})
+
+	// Clear SSO-attempted cookie on success so future auto-SSO works
+	http.SetCookie(w, &http.Cookie{Name: "__sso_attempted", Value: "", Path: "/", MaxAge: -1})
 
 	// OIDC flow: issue auth code and redirect with ?code=X&state=Z
 	if r.URL.Query().Get("oidc") == "1" {

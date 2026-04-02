@@ -63,7 +63,11 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 
 	// Check auto_sso setting — only auto-redirect if SSO is enabled, no error, and not already tried
 	autoSSO := false
-	if ssoEnabled && errorMsg == "" && r.URL.Query().Get("manual") != "1" {
+	ssoAttempted := false
+	if c, err := r.Cookie("__sso_attempted"); err == nil && c.Value == "1" {
+		ssoAttempted = true
+	}
+	if ssoEnabled && errorMsg == "" && r.URL.Query().Get("manual") != "1" && !ssoAttempted {
 		if rs := h.runtimeSettings.get(); rs != nil && rs.AutoSSO {
 			autoSSO = true
 		}

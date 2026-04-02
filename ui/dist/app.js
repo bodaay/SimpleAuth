@@ -1594,13 +1594,12 @@ function SettingsPage() {
 
   const field = (label, key, type) => html`
     <div style="margin-bottom: 12px;">
-      <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">${label}</label>
+      <label class="form-label">${label}</label>
       ${type === 'boolean' ? html`
         <input type="checkbox" checked=${settings[key]} onChange=${e => setSettings({...settings, [key]: e.target.checked})} />
       ` : html`
-        <input type="${type === 'number' ? 'number' : 'text'}" value=${settings[key] || ''}
-          onInput=${e => setSettings({...settings, [key]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value})}
-          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; background: var(--card); color: var(--text);" />
+        <input class="form-input" type="${type === 'number' ? 'number' : 'text'}" value=${settings[key] || ''}
+          onInput=${e => setSettings({...settings, [key]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value})} />
       `}
     </div>
   `;
@@ -1629,7 +1628,7 @@ function SettingsPage() {
         <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">Allowed Redirect URIs (one per line)</label>
         <textarea rows="4" value=${(settings.redirect_uris || []).join('\n')}
           onInput=${e => setSettings({...settings, redirect_uris: e.target.value.split('\n').filter(u => u.trim())})}
-          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; font-family: monospace; background: var(--card); color: var(--text);"
+          class="form-textarea" style="font-family: monospace;"
           placeholder="https://app.example.com/callback"></textarea>
         <p style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Wildcards supported: https://app.example.com/*</p>
       </div>
@@ -1676,7 +1675,7 @@ function SettingsPage() {
         <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 4px;">Roles assigned to new users (one per line)</label>
         <textarea rows="3" value=${(settings.default_roles || []).join('\n')}
           onInput=${e => setSettings({...settings, default_roles: e.target.value.split('\n').filter(r => r.trim())})}
-          style="width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; background: var(--card); color: var(--text);"
+          class="form-textarea"
           placeholder="user"></textarea>
       </div>
     </div>
@@ -1852,9 +1851,9 @@ function DatabasePage() {
               <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;">Copy all data to PostgreSQL. Source is not modified.</p>
               <div style="margin-bottom: 12px;">
                 <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 6px;">PostgreSQL DSN</label>
-                <input type="password" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
+                <input class="form-input" type="password" value=${pgUrl} onInput=${e => setPgUrl(e.target.value)}
                   placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
-                  style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85rem; font-family: monospace; background: var(--card); color: var(--text);" />
+                  style="font-family: monospace;" />
                 <p style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">postgres://user:password@host:5432/dbname?sslmode=disable</p>
               </div>
               <div style="display: flex; gap: 8px; flex-wrap: wrap;">
