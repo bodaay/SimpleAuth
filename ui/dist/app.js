@@ -8,8 +8,14 @@ const html = htm.bind(h);
 const API_KEY_STORAGE = 'simpleauth_admin_key';
 const BASE_PATH = (window.__BASE_PATH__ || '');
 
-function getApiKey() { return localStorage.getItem(API_KEY_STORAGE) || ''; }
-function setApiKey(key) { localStorage.setItem(API_KEY_STORAGE, key); }
+// Migrate from localStorage (insecure) to sessionStorage on first load
+if (localStorage.getItem(API_KEY_STORAGE)) {
+  sessionStorage.setItem(API_KEY_STORAGE, localStorage.getItem(API_KEY_STORAGE));
+  localStorage.removeItem(API_KEY_STORAGE);
+}
+function getApiKey() { return sessionStorage.getItem(API_KEY_STORAGE) || ''; }
+function setApiKey(key) { sessionStorage.setItem(API_KEY_STORAGE, key); }
+function clearApiKey() { sessionStorage.removeItem(API_KEY_STORAGE); }
 
 async function api(method, path, body) {
   const opts = {
@@ -1985,7 +1991,7 @@ function App() {
             ${theme === 'dark' ? icons.sun : icons.moon}
             <span style="margin-left:var(--sp-2);font-size:0.75rem">${theme === 'auto' ? 'Auto' : theme === 'dark' ? 'Light' : 'Dark'}</span>
           </button>
-          <button class="btn btn-sm btn-secondary" style="width:100%;margin-top:var(--sp-2)" onClick=${() => { setApiKey(''); setAuthed(false); }}>Sign Out</button>
+          <button class="btn btn-sm btn-secondary" style="width:100%;margin-top:var(--sp-2)" onClick=${() => { clearApiKey(); setAuthed(false); }}>Sign Out</button>
         </div>
       </nav>
       <main class="main-content">
