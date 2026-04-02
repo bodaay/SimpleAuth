@@ -395,7 +395,7 @@ function UsersPage() {
   const [definedPermsList, setDefinedPermsList] = useState([]);
 
   const load = () => {
-    api('GET', '/api/admin/users').then(setUsers).catch(() => {});
+    api('GET', '/api/admin/users?include=identities').then(setUsers).catch(() => {});
   };
   useEffect(load, []);
 
@@ -525,7 +525,8 @@ function UsersPage() {
     const q = search.toLowerCase();
     return (u.display_name || '').toLowerCase().includes(q) ||
            (u.email || '').toLowerCase().includes(q) ||
-           u.guid.toLowerCase().includes(q);
+           u.guid.toLowerCase().includes(q) ||
+           (u.identities || []).some(id => id.external_id.toLowerCase().includes(q));
   });
 
   return html`
@@ -538,13 +539,16 @@ function UsersPage() {
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>GUID</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Identities</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>
           ${filtered.length === 0
             ? html`<tr><td colspan="6"><div class="empty-state"><p>No users found</p></div></td></tr>`
             : filtered.map(u => html`
               <tr style="cursor:pointer" onClick=${() => openDetail(u)}>
-                <td><span class="guid">${u.guid.substring(0, 8)}...</span></td>
+                <td>${(u.identities || []).length > 0
+                  ? (u.identities || []).map(id => html`<div style="font-size:0.8rem;"><span style="font-weight:600">${id.external_id}</span> <span style="color:var(--text-muted);font-size:0.7rem">(${id.provider})</span></div>`)
+                  : html`<span class="guid" style="font-size:0.75rem">${u.guid.substring(0, 8)}...</span>`
+                }</td>
                 <td>${u.display_name || '—'}</td>
                 <td style="color:var(--text-secondary)">${u.email || '—'}</td>
                 <td>

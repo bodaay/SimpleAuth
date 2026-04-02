@@ -13,6 +13,16 @@ import (
 
 // --- User Management ---
 
+type userResponse struct {
+	*store.User
+	Identities []identityInfo `json:"identities,omitempty"`
+}
+
+type identityInfo struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
+}
+
 func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := h.store.ListUsers()
 	if err != nil {
@@ -22,12 +32,30 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if users == nil {
 		users = []*store.User{}
 	}
-	// Strip password hashes and history
-	for _, u := range users {
-		u.PasswordHash = ""
-		u.PasswordHistory = nil
+
+	includeIdentities := r.URL.Query().Get("include") == "identities"
+
+	if !includeIdentities {
+		// Backward compatible — return plain user list
+		jsonResp(w, users, http.StatusOK)
+		return
 	}
-	jsonResp(w, users, http.StatusOK)
+
+	// Enriched response with identity mappings
+	result := make([]userResponse, 0, len(users))
+	for _, u := range users {
+		var identities []identityInfo
+		if mappings, err := h.store.GetMappingsForUser(u.GUID); err == nil {
+			for _, m := range mappings {
+				identities = append(identities, identityInfo{
+					Provider:   m.Provider,
+					ExternalID: m.ExternalID,
+				})
+			}
+		}
+		result = append(result, userResponse{User: u, Identities: identities})
+	}
+	jsonResp(w, result, http.StatusOK)
 }
 
 func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +123,17 @@ func (h *Handler) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user.PasswordHash = ""
 	user.PasswordHistory = nil
+
+	if r.URL.Query().Get("include") == "identities" {
+		var identities []identityInfo
+		if mappings, err := h.store.GetMappingsForUser(guid); err == nil {
+			for _, m := range mappings {
+				identities = append(identities, identityInfo{Provider: m.Provider, ExternalID: m.ExternalID})
+			}
+		}
+		jsonResp(w, userResponse{User: user, Identities: identities}, http.StatusOK)
+		return
+	}
 	jsonResp(w, user, http.StatusOK)
 }
 
