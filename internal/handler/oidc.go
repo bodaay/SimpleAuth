@@ -812,8 +812,8 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
 .auto-sso-ring circle.progress{fill:none;stroke:var(--burgundy);stroke-width:3;stroke-linecap:round;stroke-dasharray:175;stroke-dashoffset:175;transition:stroke-dashoffset 0.3s ease}
 .auto-sso-ring .countdown{position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);font-size:1.25rem;font-weight:700;color:var(--text)}
 .auto-sso p{color:var(--muted);font-size:0.9rem;margin-bottom:8px}
-.auto-sso .cancel{color:var(--muted);font-size:0.75rem;cursor:pointer;border:none;background:none;font-family:inherit;opacity:0.6;transition:opacity 0.2s}
-.auto-sso .cancel:hover{opacity:1;color:var(--text)}
+.auto-sso .cancel{color:var(--burgundy);font-size:0.75rem;cursor:pointer;border:none;background:none;font-family:inherit;opacity:0.7;transition:opacity 0.2s}
+.auto-sso .cancel:hover{opacity:1}
 </style>
 </head>
 <body>
