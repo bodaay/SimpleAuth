@@ -78,7 +78,7 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// %[1]s = redirectURI, %[2]s = errorHTML, %[3]s = ssoLink, %[4]s = csrfToken,
-	// %[5]s = ssoEnabled ("1"/""), %[6]s = autoSSO ("1"/"")
+	// %[5]s = ssoEnabled ("1"/""), %[6]s = autoSSO ("1"/""), %[7]d = delay seconds
 	ssoEnabledStr := ""
 	if ssoEnabled {
 		ssoEnabledStr = "1"
@@ -87,7 +87,11 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	if autoSSO {
 		autoSSOStr = "1"
 	}
-	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoLink, csrfToken, ssoEnabledStr, autoSSOStr)
+	ssoDelay := 3
+	if rs := h.runtimeSettings.get(); rs != nil && rs.AutoSSODelay > 0 {
+		ssoDelay = rs.AutoSSODelay
+	}
+	fmt.Fprintf(w, h.bp(hostedLoginHTML), redirectURI, errorHTML, ssoLink, csrfToken, ssoEnabledStr, autoSSOStr, ssoDelay)
 }
 
 // handleHostedLoginSubmit processes the hosted login form submission.
@@ -285,9 +289,15 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
 .manual-toggle:hover{color:var(--text)}
 .manual-form{display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
 .manual-form.show{display:block}
-.sso-status{text-align:center;padding:24px 0;color:var(--muted);font-size:0.9rem}
-.sso-status .spinner{display:inline-block;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--burgundy);border-radius:50%%;animation:spin 0.8s linear infinite;margin-right:8px;vertical-align:middle}
-@keyframes spin{to{transform:rotate(360deg)}}
+.auto-sso{text-align:center;padding:20px 0}
+.auto-sso-ring{position:relative;width:64px;height:64px;margin:0 auto 16px}
+.auto-sso-ring svg{transform:rotate(-90deg)}
+.auto-sso-ring circle.track{fill:none;stroke:var(--border);stroke-width:3}
+.auto-sso-ring circle.progress{fill:none;stroke:var(--burgundy);stroke-width:3;stroke-linecap:round;stroke-dasharray:175;stroke-dashoffset:175;transition:stroke-dashoffset 0.3s ease}
+.auto-sso-ring .countdown{position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);font-size:1.25rem;font-weight:700;color:var(--text)}
+.auto-sso p{color:var(--muted);font-size:0.9rem;margin-bottom:8px}
+.auto-sso .cancel{color:var(--muted);font-size:0.75rem;cursor:pointer;border:none;background:none;font-family:inherit;opacity:0.6;transition:opacity 0.2s}
+.auto-sso .cancel:hover{opacity:1;color:var(--text)}
 </style>
 </head>
 <body>
@@ -302,7 +312,17 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
     </button>
   </div>
   <div id="auto-sso-status" style="display:none">
-    <div class="sso-status"><span class="spinner"></span> Attempting Single Sign-On...</div>
+    <div class="auto-sso">
+      <div class="auto-sso-ring">
+        <svg width="64" height="64" viewBox="0 0 64 64">
+          <circle class="track" cx="32" cy="32" r="28"/>
+          <circle class="progress" id="sso-progress" cx="32" cy="32" r="28"/>
+        </svg>
+        <span class="countdown" id="sso-countdown"></span>
+      </div>
+      <p>Signing in with SSO...</p>
+      <button class="cancel" id="sso-cancel">cancel</button>
+    </div>
   </div>
   <div id="manual-form" class="manual-form">
     <form method="POST" action="{{BASE_PATH}}/login">
@@ -321,6 +341,7 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
   var ssoEnabled = "%[5]s" === "1";
   var autoSSO = "%[6]s" === "1";
   var ssoLink = "%[3]s";
+  var ssoDelay = %[7]d;
   var hasError = document.querySelector('.error') !== null;
   var manualForm = document.getElementById('manual-form');
 
@@ -331,24 +352,53 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
     manualForm.style.paddingTop = '0';
   }
 
+  function cancelAutoSSO() {
+    if (window._ssoTimer) clearInterval(window._ssoTimer);
+    if (window._ssoTimeout) clearTimeout(window._ssoTimeout);
+    document.getElementById('auto-sso-status').style.display = 'none';
+    document.getElementById('sso-section').style.display = 'block';
+    manualForm.classList.add('show');
+  }
+
   if (ssoEnabled && !hasError) {
-    if (autoSSO && ssoLink) {
-      // Auto-SSO: show spinner, wait 3s, then redirect
+    if (autoSSO && ssoLink && ssoDelay > 0) {
       document.getElementById('auto-sso-status').style.display = 'block';
-      setTimeout(function(){ window.location.href = ssoLink; }, 3000);
+      document.getElementById('sso-cancel').onclick = cancelAutoSSO;
+
+      // Countdown ring animation
+      var remaining = ssoDelay;
+      var circle = document.getElementById('sso-progress');
+      var countdownEl = document.getElementById('sso-countdown');
+      var circumference = 2 * Math.PI * 28; // r=28
+      countdownEl.textContent = remaining;
+
+      window._ssoTimer = setInterval(function(){
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(window._ssoTimer);
+          countdownEl.textContent = '';
+        } else {
+          countdownEl.textContent = remaining;
+        }
+        var offset = circumference * (1 - (ssoDelay - remaining) / ssoDelay);
+        circle.style.strokeDashoffset = offset;
+      }, 1000);
+      // Initial progress
+      circle.style.strokeDasharray = circumference;
+      circle.style.strokeDashoffset = circumference;
+
+      window._ssoTimeout = setTimeout(function(){
+        window.location.href = ssoLink;
+      }, ssoDelay * 1000);
     } else {
-      // Manual SSO: show button + collapsed form
       document.getElementById('sso-section').style.display = 'block';
     }
   } else if (ssoEnabled && hasError) {
-    // SSO failed — show SSO button (retry) + manual form expanded
     document.getElementById('sso-section').style.display = 'block';
     manualForm.classList.add('show');
   } else if (hasError) {
-    // Error but no SSO — just manual form
     showManualOnly();
   } else {
-    // No SSO configured — show manual form directly
     showManualOnly();
   }
 })();

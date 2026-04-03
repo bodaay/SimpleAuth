@@ -1689,7 +1689,9 @@ function SettingsPage() {
       <div class="card-header"><h3>Single Sign-On</h3></div>
       <div class="card-body">
         ${field('Auto-attempt SSO on login page', 'auto_sso', 'boolean')}
-        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">When enabled, the login page automatically attempts Kerberos SSO without the user clicking a button. Falls back to the manual login form if SSO fails.</p>
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">When enabled, the login page shows a countdown then attempts Kerberos SSO automatically. User can cancel during countdown. Falls back to manual login if SSO fails.</p>
+        ${field('SSO countdown delay (seconds)', 'auto_sso_delay', 'number')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">How many seconds to wait before auto-attempting SSO. Default: 3.</p>
       </div>
     </div>
 

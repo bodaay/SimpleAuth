@@ -53,6 +53,7 @@ func (h *Handler) initRuntimeSettings() {
 		RateLimitWindowS:         int(h.cfg.RateLimitWindow.Seconds()),
 		AuditRetentionDays:       int(h.cfg.AuditRetention.Hours() / 24),
 		AutoSSO:                  h.cfg.AutoSSO,
+		AutoSSODelay:             h.cfg.AutoSSODelay,
 	}
 	h.store.SaveRuntimeSettings(rs)
 	h.runtimeSettings.set(rs)

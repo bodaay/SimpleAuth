@@ -64,7 +64,8 @@ type Config struct {
 	AccountLockoutDuration   time.Duration `yaml:"account_lockout_duration"`
 
 	// SSO
-	AutoSSO bool `yaml:"auto_sso"`
+	AutoSSO      bool `yaml:"auto_sso"`
+	AutoSSODelay int  `yaml:"auto_sso_delay"` // seconds, default 3
 
 	// Database
 	PostgresURL string `yaml:"postgres_url"`
@@ -129,6 +130,7 @@ func Load() *Config {
 		RateLimitMax:    10,
 		RateLimitWindow: 1 * time.Minute,
 		HTTPPort:        "80",
+		AutoSSODelay:           3,
 		PasswordMinLength:      8,
 		AccountLockoutDuration: 30 * time.Minute,
 	}
@@ -622,6 +624,11 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AUTH_AUTO_SSO"); v != "" {
 		cfg.AutoSSO = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("AUTH_AUTO_SSO_DELAY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.AutoSSODelay = n
+		}
 	}
 	if v := os.Getenv("AUTH_POSTGRES_URL"); v != "" {
 		cfg.PostgresURL = v
