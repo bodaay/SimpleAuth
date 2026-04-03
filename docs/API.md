@@ -1743,7 +1743,8 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
   "default_roles": ["user"],
   "audit_retention_days": 90,
   "deployment_name": "sauth",
-  "auto_sso": false
+  "auto_sso": false,
+  "auto_sso_delay": 3
 }
 ```
 
@@ -1780,7 +1781,8 @@ Update runtime settings. Only provided fields are updated.
   "default_roles": ["user", "viewer"],
   "audit_retention_days": 180,
   "deployment_name": "prod-auth",
-  "auto_sso": true
+  "auto_sso": true,
+  "auto_sso_delay": 5
 }
 ```
 

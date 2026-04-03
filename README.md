@@ -462,6 +462,7 @@ SimpleAuth uses a YAML config file with environment variable overrides:
 | `AUTH_ACCOUNT_LOCKOUT_THRESHOLD` | `0` | Failed login attempts before lockout (0 = disabled) |
 | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | Duration of account lockout |
 | `AUTH_AUTO_SSO` | `false` | Auto-attempt Kerberos SSO on the login page (skip manual click) |
+| `AUTH_AUTO_SSO_DELAY` | `3` | Seconds to show countdown animation before auto-redirecting to SSO (user can cancel) |
 
 > **Note:** If neither `AUTH_REDIRECT_URI` nor `AUTH_REDIRECT_URIS` is set, all redirect URIs are **rejected**.
 
