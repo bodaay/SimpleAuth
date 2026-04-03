@@ -21,12 +21,8 @@ public class SimpleAuthClient : IDisposable
     private string UserInfoUrl => $"{BaseUrl}/api/auth/userinfo";
     private string AdminUrl => $"{BaseUrl}/api/admin";
 
-    /// <summary>Admin key for Bearer auth on admin endpoints. Falls back to ClientSecret for backward compat.</summary>
-    private string EffectiveAdminKey =>
-        !string.IsNullOrEmpty(_options.AdminKey) ? _options.AdminKey :
-#pragma warning disable CS0618 // suppress Obsolete warning for backward compat fallback
-        _options.ClientSecret;
-#pragma warning restore CS0618
+    /// <summary>Admin key for Bearer auth on admin endpoints.</summary>
+    private string EffectiveAdminKey => _options.AdminKey;
 
     public SimpleAuthClient(SimpleAuthOptions options)
     {

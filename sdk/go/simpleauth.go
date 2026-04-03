@@ -27,13 +27,9 @@ import (
 
 // Options configures a new Client.
 type Options struct {
-	URL               string // SimpleAuth server URL (e.g. "https://auth.example.com")
-	AdminKey          string // Admin API key (for admin operations and bootstrap)
-	InsecureSkipVerify bool  // Allow self-signed TLS certificates
-	// Deprecated: ClientID, ClientSecret, Realm are accepted but ignored. Will be removed in v1.0.
-	ClientID     string
-	ClientSecret string
-	Realm        string
+	URL                string // SimpleAuth server URL (e.g. "https://auth.example.com/sauth")
+	AdminKey           string // Admin API key (for admin operations and bootstrap)
+	InsecureSkipVerify bool   // Allow self-signed TLS certificates
 }
 
 // TokenResponse is the OAuth2 token endpoint response.
@@ -123,14 +119,9 @@ func New(opts Options) *Client {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 
-	adminKey := opts.AdminKey
-	if adminKey == "" {
-		adminKey = opts.ClientSecret // backward compat
-	}
-
 	return &Client{
 		baseURL:  strings.TrimRight(opts.URL, "/"),
-		adminKey: adminKey,
+		adminKey: opts.AdminKey,
 		http:     &http.Client{Transport: transport, Timeout: 30 * time.Second},
 		keys:     make(map[string]*rsa.PublicKey),
 		keysTTL:  1 * time.Hour,

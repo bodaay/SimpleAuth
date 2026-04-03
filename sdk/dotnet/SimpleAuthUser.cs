@@ -52,18 +52,6 @@ public class SimpleAuthOptions
     /// <summary>Admin API key for admin operations (Bearer auth)</summary>
     public string AdminKey { get; set; } = string.Empty;
 
-    [Obsolete("ClientId is no longer used. SimpleAuth uses direct API endpoints instead of OIDC.")]
-    /// <summary>OIDC client ID (deprecated — no longer used)</summary>
-    public string ClientId { get; set; } = string.Empty;
-
-    [Obsolete("ClientSecret is deprecated. Use AdminKey for admin operations instead.")]
-    /// <summary>OIDC client secret (deprecated — use AdminKey instead)</summary>
-    public string ClientSecret { get; set; } = string.Empty;
-
-    [Obsolete("Realm is no longer used. SimpleAuth uses direct API endpoints instead of realm URLs.")]
-    /// <summary>Realm name (deprecated — no longer used)</summary>
-    public string Realm { get; set; } = "simpleauth";
-
     /// <summary>Whether to validate SSL certificates</summary>
     public bool ValidateSsl { get; set; } = true;
 }

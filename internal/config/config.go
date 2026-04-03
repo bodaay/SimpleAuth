@@ -18,8 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
+"gopkg.in/yaml.v3"
 )
 
 var deploymentNameRe = regexp.MustCompile(`^[a-zA-Z]{1,6}$`)
@@ -47,8 +46,8 @@ type Config struct {
 	RateLimitWindow time.Duration `yaml:"rate_limit_window"`
 	CORSOrigins     string        `yaml:"cors_origins"`
 	HTTPPort        string        `yaml:"http_port"`
-	ClientID        string        `yaml:"client_id"`
-	ClientSecret    string        `yaml:"client_secret"`
+	ClientID        string        `yaml:"client_id"`     // Legacy — not validated, kept for backward compat
+	ClientSecret    string        `yaml:"client_secret"` // Legacy — not validated, kept for backward compat
 	RedirectURI     string        `yaml:"redirect_uri"`
 	RedirectURIs    []string      `yaml:"redirect_uris"`
 	DefaultRoles    []string      `yaml:"default_roles"`
@@ -240,14 +239,8 @@ func (cfg *Config) Validate() error {
 		cfg.RedirectURI = cfg.RedirectURIs[0]
 	}
 
-	// Auto-generate OIDC client credentials if not configured
-	if cfg.ClientID == "" {
-		cfg.ClientID = "simpleauth"
-	}
-	if cfg.ClientSecret == "" {
-		cfg.ClientSecret = uuid.New().String()
-		log.Printf("No client_secret configured — generated: %s", cfg.ClientSecret)
-	}
+	// ClientID/ClientSecret are legacy — not validated, silently ignored
+	// Kept so old docker-compose files don't break
 
 	return nil
 }

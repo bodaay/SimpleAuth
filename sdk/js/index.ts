@@ -10,12 +10,6 @@ export interface SimpleAuthOptions {
   url: string;
   /** Admin API key for admin operations */
   adminKey?: string;
-  /** @deprecated Use `adminKey` instead. Falls back to clientSecret if adminKey is not set. */
-  clientId?: string;
-  /** @deprecated Use `adminKey` instead. Falls back to clientSecret if adminKey is not set. */
-  clientSecret?: string;
-  /** @deprecated No longer used. Realm-based URLs have been removed. */
-  realm?: string;
 }
 
 export interface TokenResponse {
@@ -374,17 +368,16 @@ export class SimpleAuth {
   constructor(options: SimpleAuthOptions) {
     // Strip trailing slash
     this.url = options.url.replace(/\/+$/, '');
-    // adminKey takes precedence, fall back to clientSecret for backward compat
-    this.adminKey = options.adminKey ?? options.clientSecret;
+    this.adminKey = options.adminKey;
 
     const jwksUrl = `${this.url}/.well-known/jwks.json`;
     this.jwksCache = new JWKSCache(jwksUrl);
   }
 
-  /** Build admin Bearer header (uses adminKey or clientSecret as API key) */
+  /** Build admin Bearer header */
   private adminAuthHeader(): string {
     if (!this.adminKey) {
-      throw new SimpleAuthError('adminKey (or clientSecret) is required for admin operations', 401);
+      throw new SimpleAuthError('adminKey is required for admin operations', 401);
     }
     return 'Bearer ' + this.adminKey;
   }
@@ -532,7 +525,7 @@ export class SimpleAuth {
 
   /**
    * Get a user by GUID.
-   * Requires adminKey (or clientSecret for backward compat).
+   * Requires adminKey.
    */
   async getUser(guid: string): Promise<User> {
     const resp = await fetch(`${this.url}/api/admin/users/${encodeURIComponent(guid)}`, {
@@ -549,7 +542,7 @@ export class SimpleAuth {
 
   /**
    * Get the roles assigned to a user.
-   * Requires adminKey (or clientSecret for backward compat).
+   * Requires adminKey.
    */
   async getUserRoles(guid: string): Promise<string[]> {
     const resp = await fetch(
@@ -567,7 +560,7 @@ export class SimpleAuth {
 
   /**
    * Set the roles for a user.
-   * Requires adminKey (or clientSecret for backward compat).
+   * Requires adminKey.
    */
   async setUserRoles(guid: string, roles: string[]): Promise<void> {
     const resp = await fetch(
@@ -590,7 +583,7 @@ export class SimpleAuth {
 
   /**
    * Get the permissions assigned to a user.
-   * Requires adminKey (or clientSecret for backward compat).
+   * Requires adminKey.
    */
   async getUserPermissions(guid: string): Promise<string[]> {
     const resp = await fetch(
@@ -608,7 +601,7 @@ export class SimpleAuth {
 
   /**
    * Set the permissions for a user.
-   * Requires adminKey (or clientSecret for backward compat).
+   * Requires adminKey.
    */
   async setUserPermissions(guid: string, permissions: string[]): Promise<void> {
     const resp = await fetch(

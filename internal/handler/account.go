@@ -21,24 +21,26 @@ const accountPageHTML = `<!DOCTYPE html>
 <title>My Account — SimpleAuth</title>
 <style>
 :root {
-  --bg: #FAFAF8; --card: #FFFFFF; --text: #333F48; --muted: #A59F8A;
+  --bg: #F7F5F3; --card: #FFFFFF; --text: #1A1F24; --muted: #A59F8A;
   --border: #D6D1CA; --burgundy: #8B153D; --burgundy-hover: #6E1030;
   --success-bg: #E8F5E9; --success-text: #2E7D32;
   --error-bg: #F8E4E4; --error-text: #8B153D;
-  --gold-light: #F8E08E; --gold-dark: #8F6A2A;
+  --gold-light: #F8E08E; --gold: #8F6A2A;
   --tag-bg: #F0EDE8; --tag-text: #6B6760;
+  --input-bg: #FFFFFF; --input-border: #C1A18D;
 }
 @media(prefers-color-scheme:dark){:root{
-  --bg:#1A1E22;--card:#242A30;--text:#E8E4DE;--muted:#6B6760;
-  --border:#3A424A;--burgundy:#A02050;--burgundy-hover:#B82D60;
+  --bg:#222A31;--card:#2E3840;--text:#F2EFEC;--muted:#8A857D;
+  --border:#475560;--burgundy:#8B153D;--burgundy-hover:#A42D55;
   --success-bg:rgba(46,125,50,0.2);--success-text:#81C784;
   --error-bg:rgba(139,21,61,0.2);--error-text:#D4A0A0;
   --tag-bg:#2A3038;--tag-text:#A59F8A;
+  --gold:#8F6A2A;--input-bg:#2A333B;--input-border:#475560;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px}
 .container{width:100%;max-width:520px}
-.card{padding:32px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 4px 16px rgba(51,63,72,0.1);margin-bottom:24px}
+.card{padding:32px;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 4px 16px rgba(51,63,72,0.1);margin-bottom:24px}
 .brand{text-align:center;margin-bottom:24px}
 .brand h1{font-size:1.5rem;font-weight:700;margin-bottom:4px}
 .brand p{color:var(--muted);font-size:0.875rem}
@@ -51,7 +53,7 @@ h2{font-size:1.125rem;font-weight:600;margin-bottom:16px}
 .tag{display:inline-block;padding:3px 10px;background:var(--tag-bg);color:var(--tag-text);border-radius:999px;font-size:0.75rem;font-weight:500}
 .divider{height:1px;background:var(--border);margin:20px 0}
 label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:8px}
-input[type="password"]{width:100%;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
+input[type="password"]{width:100%;padding:12px 16px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:12px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:16px}
 input[type="password"]:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
 button{width:100%;padding:12px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
 button:hover{background:var(--burgundy-hover)}

@@ -142,7 +142,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 
 	// Health & Server Info
 	h.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
+		jsonResp(w, map[string]string{"status": "ok", "version": h.version}, http.StatusOK)
 	})
 	h.mux.HandleFunc("GET /api/admin/server-info", h.requireMasterAdmin(func(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]interface{}{

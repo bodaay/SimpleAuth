@@ -14,7 +14,7 @@ import (
 	"simpleauth/internal/store"
 )
 
-// registerOIDCRoutes registers all OIDC/Keycloak-compatible endpoints.
+// registerOIDCRoutes registers standard OIDC endpoints.
 func (h *Handler) registerOIDCRoutes() {
 	realm := h.cfg.JWTIssuer
 
@@ -91,20 +91,14 @@ func (h *Handler) handleOIDCDiscovery(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, doc, http.StatusOK)
 }
 
-// authenticateOIDCClient extracts client credentials from the request.
-// Deprecated: client_id/client_secret validation is skipped — SimpleAuth is single-app.
-// These fields are accepted for backward compatibility but not enforced.
+// authenticateOIDCClient validates client credentials.
+// SimpleAuth is single-app — client credentials are not enforced.
 func (h *Handler) authenticateOIDCClient(r *http.Request) error {
-	// Accept any client_id/client_secret — no validation in single-app mode.
 	return nil
 }
 
-// oidcClientID returns the effective client_id for OIDC claims (azp, audience).
-// Uses configured ClientID if set, otherwise defaults to "simpleauth".
+// oidcClientID returns the client_id for OIDC claims.
 func (h *Handler) oidcClientID() string {
-	if h.cfg.ClientID != "" {
-		return h.cfg.ClientID
-	}
 	return "simpleauth"
 }
 

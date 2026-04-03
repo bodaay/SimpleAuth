@@ -20,7 +20,6 @@ using SimpleAuth;
 var client = new SimpleAuthClient(new SimpleAuthOptions
 {
     Url = "https://auth.corp.local/sauth",
-    Realm = "simpleauth",
 });
 
 // Password login
@@ -183,9 +182,6 @@ var client = new SimpleAuthClient(new SimpleAuthOptions
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `Url`          | `string` | Yes      | --              | SimpleAuth server URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) |
 | `AdminKey`     | `string` | No       | `""`            | Admin key for admin API operations (sent as Bearer token) |
-| `ClientId`     | `string` | No       | `""`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
-| `ClientSecret` | `string` | No       | `""`            | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |
-| `Realm`        | `string` | No       | `"simpleauth"`  | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. |
 | `ValidateSsl`  | `bool`   | No       | `true`          | Whether to validate SSL certificates     |
 
 ## Error Handling

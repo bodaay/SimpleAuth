@@ -197,9 +197,6 @@ try {
 |----------------|----------|----------|-----------------|------------------------------------------|
 | `url`          | `string` | Yes      | --              | SimpleAuth server URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) |
 | `adminKey`     | `string` | No       | --              | Admin key for admin API operations (sent as Bearer token) |
-| `clientId`     | `string` | No       | `''`            | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. |
-| `clientSecret` | `string` | No       | --              | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. |
-| `realm`        | `string` | No       | `'simpleauth'`  | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. |
 
 ## Browser Usage
 

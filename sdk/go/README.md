@@ -200,7 +200,4 @@ mux.Handle("/auth/", http.StripPrefix("/auth", sa.Handler()))
 |---|---|---|
 | `URL` | SimpleAuth server base URL (include `/sauth` base path, e.g. `https://auth.example.com/sauth`) | *(required)* |
 | `AdminKey` | Admin key for admin API operations (sent as Bearer token) | `""` |
-| `ClientID` | **(Deprecated)** OIDC client ID. Accepted but ignored. Will be removed in v1.0. | `""` |
-| `ClientSecret` | **(Deprecated)** OIDC client secret. Accepted but ignored. Will be removed in v1.0. | `""` |
-| `Realm` | **(Deprecated)** OIDC realm name. Accepted but ignored. Will be removed in v1.0. | `"simpleauth"` |
 | `InsecureSkipVerify` | Skip TLS certificate verification | `false` |
