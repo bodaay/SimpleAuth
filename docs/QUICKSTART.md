@@ -23,8 +23,6 @@ docker run -d \
   simpleauth
 ```
 
-> **Note:** `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and optional. They are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value. They will be removed in v1.0.
-
 That's it. SimpleAuth is running at `https://localhost:8080/sauth` with a self-signed TLS certificate. The admin UI is available at `https://localhost:8080/sauth/admin`.
 
 Grab the auto-generated admin key from the logs:
@@ -94,8 +92,6 @@ curl -k -X POST https://localhost:8080/sauth/api/admin/ldap/test \
 
 OIDC settings are configured at the instance level using environment variables or the config file:
 
-- `AUTH_CLIENT_ID` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
-- `AUTH_CLIENT_SECRET` -- **(Deprecated)** Accepted but not validated. Will be removed in v1.0.
 - `AUTH_REDIRECT_URI` -- Allowed redirect URI (single value)
 - `AUTH_REDIRECT_URIS` -- Allowed redirect URIs (comma-separated list, for multiple apps sharing one instance)
 
@@ -118,9 +114,7 @@ curl -k -X POST https://localhost:8080/sauth/api/auth/login \
   }'
 ```
 
-### Option B: OIDC password grant (standard OAuth2, deprecated)
-
-> **Deprecated:** The OIDC endpoints are deprecated and will be removed in v1.0. Use Option A (direct API) instead. `client_id` and `client_secret` are accepted but not validated.
+### Option B: OIDC password grant (standard OAuth2)
 
 ```bash
 curl -k -X POST \

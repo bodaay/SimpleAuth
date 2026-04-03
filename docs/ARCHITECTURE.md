@@ -237,18 +237,16 @@ If RT-1 is reused:
 
 ---
 
-## OIDC Compatibility Layer
+## OIDC Layer
 
-> **Deprecated:** The OIDC/Keycloak-compatible layer is deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id`, `client_secret`, and `realm` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
-
-SimpleAuth implements a Keycloak-compatible OIDC layer. This means any SDK or library that works with Keycloak works with SimpleAuth.
+SimpleAuth implements a standard OIDC layer. Any SDK or library that supports OIDC discovery works with SimpleAuth. The `client_id` is hardcoded to `simpleauth`.
 
 ### URL Mapping
 
 | Standard OIDC | SimpleAuth URL |
 |---|---|
 | Discovery | `/.well-known/openid-configuration` |
-| Discovery (Keycloak) | `/realms/{realm}/.well-known/openid-configuration` |
+| Discovery (realm) | `/realms/{realm}/.well-known/openid-configuration` |
 | Authorization | `/realms/{realm}/protocol/openid-connect/auth` |
 | Token | `/realms/{realm}/protocol/openid-connect/token` |
 | UserInfo | `/realms/{realm}/protocol/openid-connect/userinfo` |
@@ -275,7 +273,7 @@ Browser             Your App              SimpleAuth
   |  ----------------->|                      |
   |                    |  Redirect to:        |
   |                    |  /realms/.../auth     |
-  |                    |  ?client_id=...      |
+  |                    |  ?client_id=simpleauth|
   |                    |  &redirect_uri=...   |
   |                    |  &response_type=code |
   |  <-----------------------------------------

@@ -40,12 +40,10 @@ SimpleAuth looks for a config file in this order:
 | `data_dir` | `AUTH_DATA_DIR` | `./data` | Directory for the database, TLS certificates, and keytabs. |
 | `postgres_url` | `AUTH_POSTGRES_URL` | (none) | PostgreSQL connection string (e.g. `postgres://user:pass@host:5432/dbname?sslmode=disable`). When set, SimpleAuth uses Postgres instead of BoltDB. The target database is auto-created if it does not exist. Optional -- omit to use the embedded BoltDB backend. |
 | `admin_key` | `AUTH_ADMIN_KEY` | (auto-generated) | Master admin API key. If not set, a random key is generated on each startup and printed to logs. Set this to make it permanent. |
-| `client_id` | `AUTH_CLIENT_ID` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
-| `client_secret` | `AUTH_CLIENT_SECRET` | (none) | **Deprecated:** accepted for backward compatibility but not validated. Will be removed in v1.0. |
-| `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (single value). Backward compatible. |
+| `redirect_uri` | `AUTH_REDIRECT_URI` | (none) | Allowed OIDC redirect URI (single value). |
 | `redirect_uris` | `AUTH_REDIRECT_URIS` | (none) | Allowed OIDC redirect URIs (comma-separated list). Use this to allow multiple apps to share one SimpleAuth instance. Both `AUTH_REDIRECT_URI` and `AUTH_REDIRECT_URIS` can be set -- they are merged and deduplicated. Wildcard `*` suffix supported (e.g. `https://app.corp.local/*`). If neither is set, all redirects are **rejected** (only the hosted login page works). |
 | `deployment_name` | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (max 6 chars, letters only a-z/A-Z), used in AD service account naming (`svc-sauth-{deployment_name}`). Useful when running multiple SimpleAuth instances against the same AD. |
-| `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}/realms/{jwt_issuer}`. |
+| `jwt_issuer` | `AUTH_JWT_ISSUER` | `simpleauth` | JWT issuer claim and OIDC realm name. The OIDC issuer URL becomes `https://{hostname}{base_path}/realms/{jwt_issuer}`. |
 | `access_ttl` | `AUTH_JWT_ACCESS_TTL` | `15m` | Access token lifetime. Go duration format (e.g., `15m`, `1h`, `8h`). |
 | `refresh_ttl` | `AUTH_JWT_REFRESH_TTL` | `720h` | Refresh token lifetime (default 30 days). |
 | `impersonate_ttl` | `AUTH_IMPERSONATE_TTL` | `1h` | Token lifetime for impersonation tokens. |
@@ -93,9 +91,7 @@ data_dir: "/var/lib/simpleauth"
 # Master admin API key (generate one: openssl rand -hex 16)
 admin_key: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
-# OIDC client settings (deprecated: client_id and client_secret are accepted but not validated)
-# client_id: "my-web-app"       # optional, deprecated -- will be removed in v1.0
-# client_secret: "my-client-secret"  # optional, deprecated -- will be removed in v1.0
+# OIDC settings
 redirect_uri: "https://myapp.example.com/callback"
 # Multiple redirect URIs for multi-app deployments
 redirect_uris:
@@ -163,7 +159,6 @@ docker run -d \
   -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   -e AUTH_REDIRECT_URIS="https://app2.example.com/callback,https://app3.example.com/*" \
   -e AUTH_CORS_ORIGINS="https://app.corp.local" \
-  # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
   simpleauth
 ```
 
@@ -194,7 +189,6 @@ services:
       AUTH_HOSTNAME: "auth.corp.local"
       AUTH_JWT_ISSUER: "simpleauth"
       AUTH_JWT_ACCESS_TTL: "15m"
-      # AUTH_CLIENT_ID and AUTH_CLIENT_SECRET are deprecated (accepted but not validated)
       AUTH_REDIRECT_URI: "https://myapp.example.com/callback"
       AUTH_CORS_ORIGINS: "*"
     restart: unless-stopped
@@ -239,13 +233,9 @@ Generate a good key:
 openssl rand -hex 16
 ```
 
-### `client_id` / `client_secret` / `redirect_uri`
+### `redirect_uri` / `redirect_uris`
 
-> **Deprecated:** `client_id` and `client_secret` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value. They will be removed in v1.0.
-
-- `client_id` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
-- `client_secret` -- Accepted but not validated. Kept for backward compatibility with existing OIDC client configurations.
-- `redirect_uri` sets a single allowed redirect URI for the authorization code flow (backward compatible).
+- `redirect_uri` sets a single allowed redirect URI for the authorization code flow.
 - `redirect_uris` sets multiple allowed redirect URIs as a comma-separated list (env var) or YAML list (config file). This lets multiple applications on different domains share one SimpleAuth instance.
 - Both can be set simultaneously -- they are merged into one deduplicated allow-list.
 - Wildcard `*` suffix is supported (e.g. `https://app.corp.local/*` matches any path under that origin).
@@ -262,9 +252,9 @@ AUTH_REDIRECT_URIS=https://app2.corp.local/callback,https://app3.corp.local/*
 
 This value serves double duty:
 1. It becomes the `iss` claim in all JWTs (as part of the OIDC issuer URL)
-2. It becomes the OIDC realm name in Keycloak-compatible URLs
+2. It becomes the OIDC realm name in URLs
 
-The full OIDC issuer URL is: `https://{hostname}:{port}/realms/{jwt_issuer}`
+The full OIDC issuer URL is: `https://{hostname}:{port}{base_path}/realms/{jwt_issuer}`
 
 ### `access_ttl` / `refresh_ttl`
 

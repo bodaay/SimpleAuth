@@ -1,7 +1,5 @@
 # Migrating from Keycloak to SimpleAuth
 
-> **Deprecation notice:** The Keycloak-compatible OIDC layer (`/realms/...` endpoints) is deprecated and will be removed in v1.0. We recommend migrating to the direct `/api/auth/*` endpoints. `client_id`, `client_secret`, and `realm` are accepted for backward compatibility but not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
-
 You're running Keycloak. It works, but it's a lot of infrastructure for what you actually need: authenticate users against AD and issue JWTs. This guide gets you migrated.
 
 > **Base path:** SimpleAuth serves all routes under `/sauth` by default. All URLs in this guide include this prefix.
@@ -37,9 +35,7 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 | Keycloak | SimpleAuth | Notes |
 |---|---|---|
 | Realm | `jwt_issuer` config | SimpleAuth has one "realm" per instance. The OIDC URLs use it the same way: `/realms/{issuer}/...` |
-| Client | Instance-level config | `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated (accepted but not validated). Use `AUTH_REDIRECT_URI` (single) or `AUTH_REDIRECT_URIS` (multiple, comma-separated) to configure allowed redirect URIs. |
-| Client ID | `AUTH_CLIENT_ID` | Deprecated: accepted but not validated. Will be removed in v1.0. |
-| Client Secret | `AUTH_CLIENT_SECRET` | Deprecated: accepted but not validated. Will be removed in v1.0. |
+| Client | Instance-level config | The `client_id` is hardcoded to `simpleauth`. Use `AUTH_REDIRECT_URI` (single) or `AUTH_REDIRECT_URIS` (multiple, comma-separated) to configure allowed redirect URIs. |
 | User Federation (LDAP) | LDAP Provider | Created via `POST /sauth/api/admin/ldap` |
 | Realm Roles | Roles | Set per-user via `PUT /sauth/api/admin/users/{guid}/roles` (global per instance) |
 | Client Roles | Also Roles | SimpleAuth doesn't distinguish; roles are global per instance |
@@ -53,7 +49,7 @@ These aren't missing features. They're deliberate omissions that keep SimpleAuth
 
 ## URL Mapping
 
-SDKs now use direct `/api/auth/*` endpoints. The OIDC realm endpoints (`/realms/{realm}/...`) still work for backward compatibility, so existing OIDC libraries will continue to function during migration.
+SDKs now use direct `/api/auth/*` endpoints. The OIDC realm endpoints (`/realms/{realm}/...`) are also fully supported, so existing OIDC libraries will continue to function.
 
 **Recommended (direct API) endpoints:**
 
@@ -64,7 +60,7 @@ SDKs now use direct `/api/auth/*` endpoints. The OIDC realm endpoints (`/realms/
 | Logout | `https://simpleauth.example.com/sauth/api/auth/logout` |
 | JWKS | `https://simpleauth.example.com/sauth/.well-known/jwks.json` |
 
-**OIDC realm endpoints (backward-compatible):**
+**OIDC realm endpoints:**
 
 | Keycloak URL | SimpleAuth URL |
 |---|---|
@@ -97,7 +93,7 @@ docker run -d \
   simpleauth
 ```
 
-Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are no longer needed -- they are accepted for backward compatibility but not validated.
+Setting `jwt_issuer` to your Keycloak realm name keeps URLs compatible. The `client_id` is hardcoded to `simpleauth`.
 
 ### Step 2: Configure the same LDAP provider
 
@@ -149,7 +145,7 @@ curl -k -X PUT \
 
 ### Step 4: Update your application
 
-This is the core change. You need to update your app's OIDC configuration to point to SimpleAuth. `client_id` and `client_secret` are accepted in requests for backward compatibility but are not validated -- you can pass any value or omit them entirely.
+This is the core change. You need to update your app's OIDC configuration to point to SimpleAuth. The `client_id` is hardcoded to `simpleauth`.
 
 ---
 
@@ -164,7 +160,7 @@ This is the core change. You need to update your app's OIDC configuration to poi
 const keycloak = new Keycloak({
   url: 'https://keycloak.example.com',
   realm: 'myrealm',
-  clientId: 'my-app',
+  clientId: 'my-app',  // clientId/clientSecret are removed in SimpleAuth v1.0
 });
 ```
 
@@ -207,7 +203,7 @@ curl -k -X POST https://simpleauth.example.com/sauth/api/auth/login \
   -d '{"username": "user", "password": "pass"}'
 ```
 
-Uses the direct API endpoint. The OIDC realm endpoint (`/sauth/realms/myrealm/protocol/openid-connect/token`) also still works for backward compatibility.
+Uses the direct API endpoint. The OIDC realm endpoint (`/sauth/realms/myrealm/protocol/openid-connect/token`) also works.
 
 ### Client Credentials Grant
 
@@ -222,7 +218,7 @@ curl -X POST https://keycloak.example.com/realms/myrealm/protocol/openid-connect
 
 ```bash
 curl -k -X POST https://simpleauth.example.com/sauth/realms/myrealm/protocol/openid-connect/token \
-  -d "client_id=my-app&client_secret=my-client-secret&grant_type=client_credentials"
+  -d "client_id=simpleauth&grant_type=client_credentials"
 ```
 
 ### Token Verification
@@ -383,4 +379,4 @@ Keycloak requires PostgreSQL (or MySQL). SimpleAuth starts with an embedded Bolt
 
 ### What about multiple Keycloak clients?
 
-If you had multiple clients in Keycloak, you can now use a single SimpleAuth instance for all of them by setting `AUTH_REDIRECT_URIS` to a comma-separated list of all your apps' callback URLs (e.g. `AUTH_REDIRECT_URIS=https://app1.com/callback,https://app2.com/callback`). This keeps users centralized in one place. Alternatively, you can still run separate SimpleAuth instances, each with its own `AUTH_REDIRECT_URI`. (`AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` are deprecated and not validated.) All instances can point to the same LDAP provider(s).
+If you had multiple clients in Keycloak, you can now use a single SimpleAuth instance for all of them by setting `AUTH_REDIRECT_URIS` to a comma-separated list of all your apps' callback URLs (e.g. `AUTH_REDIRECT_URIS=https://app1.com/callback,https://app2.com/callback`). This keeps users centralized in one place. Alternatively, you can still run separate SimpleAuth instances, each with its own `AUTH_REDIRECT_URI`. (The `client_id` is hardcoded to `simpleauth`.) All instances can point to the same LDAP provider(s).

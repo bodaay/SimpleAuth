@@ -333,15 +333,13 @@ Diagnostic page for testing Kerberos/SPNEGO authentication. Shows the raw negoti
 
 ---
 
-## OIDC / Keycloak-Compatible Endpoints
+## OIDC Endpoints
 
-> **Deprecated:** The OIDC/Keycloak-compatible endpoints are deprecated and will be removed in v1.0. Use the direct `/api/auth/*` endpoints instead. `client_id` and `client_secret` are accepted but not validated. **All official SDKs (Go, JavaScript, Python, .NET) now use the direct API endpoints by default** (`POST /api/auth/login`, `POST /api/auth/refresh`, `GET /.well-known/jwks.json`, `GET /api/auth/userinfo`) and no longer use these OIDC realm URLs.
+SimpleAuth implements standard OIDC endpoints. All official SDKs (Go, JavaScript, Python, .NET) use the direct API endpoints by default (`POST /api/auth/login`, `POST /api/auth/refresh`, `GET /.well-known/jwks.json`, `GET /api/auth/userinfo`), but the OIDC endpoints are fully supported for use with any standard OIDC library.
 
-All OIDC endpoints follow the Keycloak URL pattern: `/realms/{realm}/protocol/openid-connect/...`
+All OIDC endpoints follow the URL pattern: `/realms/{realm}/protocol/openid-connect/...`
 
-The realm defaults to your `jwt_issuer` config value (default: `simpleauth`).
-
-OIDC client settings (`AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`) are accepted for backward compatibility but are not validated. SimpleAuth is single-app, single-instance -- these fields add no security value.
+The realm defaults to your `jwt_issuer` config value (default: `simpleauth`). The `client_id` is hardcoded to `simpleauth`.
 
 ### `GET /.well-known/openid-configuration`
 
@@ -416,7 +414,7 @@ curl -k https://localhost:8080/.well-known/jwks.json
 OAuth2 Authorization endpoint. Renders the hosted login page for the authorization code flow.
 
 **Query parameters:**
-- `client_id` (required) -- Must match the configured `AUTH_CLIENT_ID`
+- `client_id` (required) -- Must be `simpleauth`
 - `redirect_uri` -- Where to redirect after login (must match one of the allowed redirect URIs configured via `AUTH_REDIRECT_URI` and/or `AUTH_REDIRECT_URIS`; supports wildcard `*` suffix matching)
 - `response_type` -- Must be `code`
 - `state` -- CSRF protection value (passed through)
@@ -424,7 +422,7 @@ OAuth2 Authorization endpoint. Renders the hosted login page for the authorizati
 - `scope` -- Space-separated scopes (e.g., `openid profile email`)
 
 ```
-https://auth.example.com/realms/simpleauth/protocol/openid-connect/auth?client_id=my-app&redirect_uri=https://myapp.com/callback&response_type=code&state=xyz
+https://auth.example.com/realms/simpleauth/protocol/openid-connect/auth?client_id=simpleauth&redirect_uri=https://myapp.com/callback&response_type=code&state=xyz
 ```
 
 On successful login, redirects to `redirect_uri?code=AUTH_CODE&state=xyz`.
@@ -438,17 +436,17 @@ On successful login, redirects to `redirect_uri?code=AUTH_CODE&state=xyz`.
 OAuth2 Token endpoint. Supports four grant types.
 
 **Client authentication methods:**
-- HTTP Basic: `Authorization: Basic base64(client_id:client_secret)`
-- Form body: `client_id=...&client_secret=...`
+- HTTP Basic: `Authorization: Basic base64(simpleauth:any-value)`
+- Form body: `client_id=simpleauth`
 
-The `client_id` and `client_secret` must match the instance-level `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET`.
+The `client_id` is hardcoded to `simpleauth`. The `client_secret` field is accepted but not validated.
 
 #### Authorization Code Grant
 
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "my-app:my-secret" \
+  -u "simpleauth:" \
   -d "grant_type=authorization_code&code=AUTH_CODE&redirect_uri=https://myapp.com/callback"
 ```
 
@@ -457,7 +455,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "my-app:my-secret" \
+  -u "simpleauth:" \
   -d "grant_type=password&username=jsmith&password=secret&scope=openid profile email"
 ```
 
@@ -466,7 +464,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "my-app:my-secret" \
+  -u "simpleauth:" \
   -d "grant_type=client_credentials"
 ```
 
@@ -475,7 +473,7 @@ curl -k -X POST \
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "my-app:my-secret" \
+  -u "simpleauth:" \
   -d "grant_type=refresh_token&refresh_token=eyJ..."
 ```
 
@@ -544,7 +542,7 @@ RFC 7662 Token Introspection. Validates a token and returns its claims.
 ```bash
 curl -k -X POST \
   https://localhost:8080/realms/simpleauth/protocol/openid-connect/token/introspect \
-  -u "my-app:my-secret" \
+  -u "simpleauth:" \
   -d "token=eyJ..."
 ```
 
@@ -558,7 +556,7 @@ curl -k -X POST \
   "exp": 1700000000,
   "iat": 1699971200,
   "token_type": "Bearer",
-  "client_id": "my-app",
+  "client_id": "simpleauth",
   "scope": "openid profile email",
   "preferred_username": "jsmith@corp.local",
   "name": "John Smith",

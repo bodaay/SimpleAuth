@@ -55,7 +55,7 @@ This makes all routes available under `/auth/`:
 - `/auth/account` — user account page
 - `/auth/api/auth/login` — login API
 - `/auth/.well-known/openid-configuration` — OIDC discovery
-- `/auth/realms/{realm}/protocol/openid-connect/...` — OIDC endpoints
+- `/auth/realms/{realm}/protocol/openid-connect/...` -- OIDC endpoints
 
 Your nginx config should forward the path as-is (no stripping):
 

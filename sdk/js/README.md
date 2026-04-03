@@ -1,6 +1,6 @@
 # @simpleauth/js
 
-Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/your-org/simpleauth). Uses direct API endpoints (not OIDC realm URLs). Works in Node.js (18+) and browsers.
+Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/your-org/simpleauth). Works in Node.js (18+) and browsers.
 
 ## Installation
 

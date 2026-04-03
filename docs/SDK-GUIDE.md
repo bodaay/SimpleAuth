@@ -1,6 +1,6 @@
 # SimpleAuth SDK Guide
 
-Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs use direct API endpoints (`/api/auth/login`, `/api/auth/refresh`, `/.well-known/jwks.json`, `/api/auth/userinfo`) instead of OIDC realm URLs. All SDKs follow the same patterns: authenticate, verify tokens, check roles, and use middleware.
+Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs use direct API endpoints (`/api/auth/login`, `/api/auth/refresh`, `/.well-known/jwks.json`, `/api/auth/userinfo`) and support OIDC flows. All SDKs follow the same patterns: authenticate, verify tokens, check roles, and use middleware.
 
 ---
 

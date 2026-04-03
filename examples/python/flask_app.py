@@ -27,7 +27,7 @@ from simpleauth.middleware import flask_middleware
 # Configuration
 # ---------------------------------------------------------------------------
 
-SIMPLEAUTH_URL = "https://auth.example.com"
+SIMPLEAUTH_URL = "https://auth.example.com/sauth"
 
 auth = SimpleAuth(
     url=SIMPLEAUTH_URL,

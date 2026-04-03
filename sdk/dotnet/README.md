@@ -1,6 +1,6 @@
 # SimpleAuth .NET SDK
 
-.NET 8 SDK for the SimpleAuth authentication server. Uses direct API endpoints (not OIDC realm URLs). Provides JWT verification with JWKS caching, admin operations, and ASP.NET Core middleware.
+.NET 8 SDK for the SimpleAuth authentication server. Provides JWT verification with JWKS caching, admin operations, and ASP.NET Core middleware.
 
 ## Installation
 
