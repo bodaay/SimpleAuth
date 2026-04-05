@@ -16,13 +16,14 @@ func generateCSRFToken() string {
 	return hex.EncodeToString(b)
 }
 
-func setCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
-	secure := r.TLS != nil ||
-		r.Header.Get("X-Forwarded-Proto") == "https" ||
-		strings.HasPrefix(r.Header.Get("Origin"), "https://")
-	sameSite := http.SameSiteLaxMode
-	if secure {
-		sameSite = http.SameSiteStrictMode
+func (h *Handler) setCSRFCookie(w http.ResponseWriter, token string) {
+	// Secure=true only when TLS is active (not disabled in config).
+	// When TLS is disabled (air-gapped HTTP), Secure must be false or
+	// the browser silently drops the cookie on form POST.
+	secure := !h.cfg.TLSDisabled
+	sameSite := http.SameSiteStrictMode
+	if !secure {
+		sameSite = http.SameSiteLaxMode
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "__csrf",
@@ -81,7 +82,7 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	csrfToken := generateCSRFToken()
-	setCSRFCookie(w, r, csrfToken)
+	h.setCSRFCookie(w, csrfToken)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// %[1]s = redirectURI, %[2]s = errorHTML, %[3]s = ssoLink, %[4]s = csrfToken,
