@@ -37,7 +37,9 @@ Each instance serves one application. Users are auto-created on first login from
 ```bash
 docker run -d -p 8080:8080 \
   -e AUTH_HOSTNAME=auth.example.com \
-  -e AUTH_REDIRECT_URIS=https://myapp.example.com/callback \
+  -e AUTH_ADMIN_KEY=my-secret-admin-key \
+  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback,https://myapp.example.com/*" \
+  -e AUTH_CORS_ORIGINS="https://myapp.example.com" \
   -v simpleauth-data:/data \
   simpleauth
 ```
@@ -46,11 +48,327 @@ docker run -d -p 8080:8080 \
 
 ```bash
 ./simpleauth init-config     # generates simpleauth.yaml
-vim simpleauth.yaml          # set hostname + redirect URIs
+vim simpleauth.yaml          # set hostname, redirect URIs, admin key
 ./simpleauth                 # running
 ```
 
-Admin UI is at `https://<hostname>/sauth/admin`. Admin key is auto-generated on first run and printed to stdout.
+Admin UI is at `https://<hostname>/sauth/admin`. Enter your admin key to log in.
+
+If you omit `AUTH_ADMIN_KEY`, one is auto-generated on first run and printed to stdout -- check your logs.
+
+> **Required for any real deployment:** `AUTH_HOSTNAME`, `AUTH_ADMIN_KEY`, and `AUTH_REDIRECT_URIS`. Without redirect URIs, all login redirects are rejected.
+
+---
+
+## Integration Guide
+
+This section explains how to add SimpleAuth to your app, step by step. No prior knowledge of OAuth2 or OIDC is needed.
+
+### What You Need to Know First
+
+- **What is SimpleAuth?** -- It is an authentication server. Your app talks to it over HTTP. SimpleAuth stores users, handles passwords, and issues tokens that prove a user is logged in. Your app never touches passwords directly.
+
+- **What is a JWT?** -- A JWT (JSON Web Token) is a signed string your app receives after a user logs in. It contains the user's name, email, roles, and an expiration time (15 minutes by default). Your app sends it in the `Authorization: Bearer <token>` header on every API request to prove the user is authenticated.
+
+- **What is a redirect URI?** -- When a user logs in through SimpleAuth's hosted login page, SimpleAuth needs to send them back to YOUR app with the tokens. The redirect URI is the URL in your app where SimpleAuth sends the user after login. You MUST tell SimpleAuth which URLs are allowed (via `AUTH_REDIRECT_URIS`), or it rejects the redirect for security.
+
+- **What is CORS?** -- If your frontend JavaScript (running in a browser) calls SimpleAuth directly (not through your backend), the browser blocks the request unless SimpleAuth explicitly allows your frontend's domain. Set `AUTH_CORS_ORIGINS` to your frontend's URL to allow this.
+
+- **What is the base path?** -- SimpleAuth serves everything under `/sauth` by default. Every URL starts with `https://your-host/sauth/...`. Do not forget this prefix -- it is the most common integration mistake.
+
+- **What is the admin key?** -- A secret string that grants access to the admin API and admin UI. Set it via `AUTH_ADMIN_KEY`. If you do not set it, SimpleAuth auto-generates one on first run and prints it to stdout (check your container logs).
+
+### Step-by-Step: Integrate with Any App
+
+All examples below use `https://auth.example.com` as the SimpleAuth host (assuming a reverse proxy handles TLS on port 443). Replace it with your actual hostname.
+
+---
+
+#### Step 1: Deploy SimpleAuth
+
+```bash
+docker run -d -p 8080:8080 \
+  -e AUTH_HOSTNAME=auth.example.com \
+  -e AUTH_ADMIN_KEY=my-secret-admin-key \
+  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback,https://myapp.example.com/*" \
+  -e AUTH_CORS_ORIGINS="https://myapp.example.com" \
+  -v simpleauth-data:/data \
+  simpleauth
+```
+
+| Variable | What it does |
+|----------|-------------|
+| `AUTH_HOSTNAME` | The public domain name where SimpleAuth is reachable (used for TLS cert and token issuer). |
+| `AUTH_ADMIN_KEY` | Secret key to access the admin UI and admin API -- keep it safe. |
+| `AUTH_REDIRECT_URIS` | Comma-separated list of URLs where SimpleAuth is allowed to redirect users after login (supports `*` wildcards). |
+| `AUTH_CORS_ORIGINS` | Comma-separated list of frontend domains allowed to call SimpleAuth from the browser. |
+| `-v simpleauth-data:/data` | Persistent volume for the database, RSA keys, and TLS certs -- do not lose this. |
+
+---
+
+#### Step 2: Create a User
+
+**Option A: Admin UI**
+
+Open `https://auth.example.com/sauth/admin` in your browser. Enter your admin key. Click "Users" and create a user.
+
+**Option B: Bootstrap API (curl)**
+
+The bootstrap endpoint is idempotent -- safe to call on every app startup.
+
+```bash
+curl -X POST https://auth.example.com/sauth/api/admin/bootstrap \
+  -H "Authorization: Bearer my-secret-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "permissions": ["read", "write"],
+    "role_permissions": {
+      "admin": ["read", "write"],
+      "viewer": ["read"]
+    },
+    "users": [
+      {
+        "username": "alice",
+        "password": "secret123",
+        "display_name": "Alice Smith",
+        "email": "alice@example.com",
+        "roles": ["admin"]
+      }
+    ]
+  }'
+```
+
+Response:
+
+```json
+{
+  "users": [
+    { "username": "alice", "guid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "created": true }
+  ],
+  "permissions_count": 2,
+  "role_permissions_count": 2
+}
+```
+
+---
+
+#### Step 3: Log In and Get Tokens
+
+There are three ways to log in. Pick the one that fits your app.
+
+**Flow A: Direct API (your backend calls SimpleAuth)**
+
+Best for: mobile apps, SPAs that talk to your backend, server-to-server.
+
+```bash
+curl -X POST https://auth.example.com/sauth/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"secret123"}'
+```
+
+Response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIs...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIs...",
+  "expires_in": 900,
+  "token_type": "Bearer"
+}
+```
+
+- `access_token` -- send this in the `Authorization: Bearer <token>` header on every request. Expires in 900 seconds (15 minutes).
+- `refresh_token` -- use this to get a new access token when the old one expires (see Step 5).
+- `expires_in` -- seconds until the access token expires.
+
+**Flow B: Hosted Login Page (redirect users to SimpleAuth)**
+
+Best for: web apps that do not want to build their own login form.
+
+1. Your app redirects the user's browser to:
+   ```
+   https://auth.example.com/sauth/login?redirect_uri=https://myapp.example.com/callback
+   ```
+2. The user sees SimpleAuth's login page and enters their username/password (or is auto-logged in via Kerberos SSO).
+3. After successful login, SimpleAuth redirects the user's browser to:
+   ```
+   https://myapp.example.com/callback#access_token=eyJ...&refresh_token=eyJ...&expires_in=900&token_type=Bearer
+   ```
+4. Your app extracts the tokens from the URL fragment (the part after `#`). In JavaScript:
+   ```javascript
+   const params = new URLSearchParams(window.location.hash.substring(1));
+   const accessToken = params.get('access_token');
+   const refreshToken = params.get('refresh_token');
+   ```
+
+**Flow C: OIDC (standard OAuth2 authorization code flow)**
+
+Best for: apps using an OIDC client library (any language), or when you need an `id_token`.
+
+1. **Discovery** -- your OIDC library fetches this automatically:
+   ```
+   GET https://auth.example.com/sauth/.well-known/openid-configuration
+   ```
+
+2. **Redirect the user** to the authorization endpoint:
+   ```
+   https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/auth?client_id=simpleauth&redirect_uri=https://myapp.example.com/callback&response_type=code&state=RANDOM_STRING
+   ```
+   - `client_id` is always `simpleauth`. No client secret needed.
+   - `state` is a random string you generate to prevent CSRF. Your app must verify it matches when the user comes back.
+
+3. **User logs in** and SimpleAuth redirects to:
+   ```
+   https://myapp.example.com/callback?code=AUTH_CODE_HERE&state=RANDOM_STRING
+   ```
+
+4. **Exchange the code for tokens** (your backend calls SimpleAuth):
+   ```bash
+   curl -X POST https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token \
+     -d "grant_type=authorization_code" \
+     -d "code=AUTH_CODE_HERE" \
+     -d "redirect_uri=https://myapp.example.com/callback" \
+     -d "client_id=simpleauth"
+   ```
+
+5. **Response** contains `access_token`, `refresh_token`, and `id_token`.
+
+---
+
+#### Step 4: Verify Tokens
+
+Your app needs to verify that the access token is valid and not expired.
+
+**Option A: Local verification (recommended)**
+
+Fetch the public keys once from the JWKS endpoint and verify the RS256 signature locally. Every JWT library supports this.
+
+```
+JWKS URL: https://auth.example.com/sauth/.well-known/jwks.json
+```
+
+This is the fastest option -- no network call on every request. Cache the JWKS keys and refresh them periodically (e.g., every hour).
+
+**Option B: UserInfo endpoint**
+
+Call SimpleAuth on every request to validate the token and get user info:
+
+```bash
+curl https://auth.example.com/sauth/api/auth/userinfo \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..."
+```
+
+Response:
+
+```json
+{
+  "guid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "preferred_username": "alice",
+  "display_name": "Alice Smith",
+  "email": "alice@example.com",
+  "department": "Engineering",
+  "company": "Example Corp",
+  "job_title": "Developer",
+  "roles": ["admin"],
+  "permissions": ["read", "write"],
+  "groups": ["Domain Users"],
+  "auth_source": "local"
+}
+```
+
+---
+
+#### Step 5: Refresh Tokens
+
+Access tokens expire in 15 minutes. Use the refresh token to get a new access token without asking the user to log in again.
+
+```bash
+curl -X POST https://auth.example.com/sauth/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"eyJhbGciOiJSUzI1NiIs..."}'
+```
+
+Response:
+
+```json
+{
+  "access_token": "eyJ_NEW_ACCESS_TOKEN...",
+  "refresh_token": "eyJ_NEW_REFRESH_TOKEN...",
+  "expires_in": 900,
+  "token_type": "Bearer"
+}
+```
+
+**IMPORTANT:** SimpleAuth uses refresh token rotation. Each time you refresh, you get a NEW refresh token. The old refresh token is revoked. Always store and use the latest refresh token from the response. If you accidentally use an old refresh token, SimpleAuth revokes the entire token family for security.
+
+---
+
+#### Step 6: Logout
+
+Redirect the user to SimpleAuth's logout endpoint:
+
+```
+https://auth.example.com/sauth/logout?redirect_uri=https://myapp.example.com/
+```
+
+This clears the user's SSO cookies and redirects them back to the login page (or to your app if you provide a redirect URI).
+
+On your app's side, delete the stored access token and refresh token.
+
+---
+
+### Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Forgetting `/sauth` in URLs | Every SimpleAuth URL starts with `/sauth` (e.g., `/sauth/api/auth/login`, not `/api/auth/login`). |
+| Not setting `AUTH_REDIRECT_URIS` | Without this, all redirects are rejected. Set it to your app's callback URL(s). |
+| Not refreshing tokens | Access tokens expire in 15 minutes. Your app must call the refresh endpoint before they expire. |
+| Reusing old refresh tokens | After refreshing, always use the NEW refresh token from the response. The old one is revoked (token rotation). |
+| Not setting `AUTH_TRUSTED_PROXIES` | If SimpleAuth is behind nginx/Traefik/Caddy, rate limiting sees the proxy's IP instead of the client's. Set `AUTH_TRUSTED_PROXIES` to your proxy's CIDR (e.g., `172.16.0.0/12`). |
+| Not setting `AUTH_CORS_ORIGINS` | If your browser-based frontend calls SimpleAuth directly, set this to your frontend's origin (e.g., `https://myapp.example.com`). Without it, browsers block the requests. |
+| Using `http` instead of `https` in redirect URIs | Redirect URIs must match exactly, including the scheme. If your app uses `https`, the redirect URI must use `https`. |
+
+---
+
+### JWT Token Structure
+
+When you decode an access token (using any JWT library or [jwt.io](https://jwt.io)), the payload looks like this:
+
+```json
+{
+  "sub": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "guid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "preferred_username": "alice",
+  "name": "Alice Smith",
+  "email": "alice@example.com",
+  "department": "Engineering",
+  "company": "Example Corp",
+  "job_title": "Developer",
+  "roles": ["admin"],
+  "permissions": ["read", "write"],
+  "groups": ["Domain Users"],
+  "iss": "https://auth.example.com/sauth/realms/simpleauth",
+  "exp": 1234567890,
+  "iat": 1234567000
+}
+```
+
+| Claim | Description |
+|-------|-------------|
+| `sub` | User's unique GUID (same as `guid`). Never changes, even if the username changes. |
+| `preferred_username` | The user's login name (e.g., `alice`). |
+| `name` | Display name. |
+| `email` | Email address. |
+| `roles` | Array of role names assigned to the user. |
+| `permissions` | Array of permission strings resolved from the user's roles. |
+| `groups` | LDAP/AD group memberships (empty for local-only users). |
+| `department`, `company`, `job_title` | Profile fields synced from LDAP/AD or set manually. |
+| `iss` | Issuer URL. Always `https://<hostname>/sauth/realms/simpleauth`. |
+| `exp` | Expiration time (Unix timestamp). |
+| `iat` | Issued-at time (Unix timestamp). |
+
+---
 
 ## Features
 

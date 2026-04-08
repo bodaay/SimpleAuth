@@ -1,6 +1,11 @@
 # simpleauth-go
 
-Go SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth) — a lightweight authentication server with direct API endpoints.
+Go SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth) — a lightweight authentication server.
+
+> **Important:**
+> - Access tokens expire in **15 minutes** — implement token refresh
+> - URL must include the base path `/sauth` (e.g. `https://auth.example.com/sauth`)
+> - `AdminKey` is required for admin operations (roles, permissions, bootstrap)
 
 Zero external dependencies. Uses only the Go standard library.
 

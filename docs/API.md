@@ -1,8 +1,12 @@
 # SimpleAuth API Reference
 
-Complete reference for every endpoint. All endpoints return JSON. All request bodies are JSON unless noted otherwise.
+> **Base URL:** All endpoints are served under the base path (default: `/sauth`).
+> Example: `https://auth.example.com/sauth/api/auth/login`
+>
+> **Admin endpoints** require `Authorization: Bearer <admin-key>` header.
+> **User endpoints** require `Authorization: Bearer <access-token>` header.
 
-**Base URL:** `https://your-simpleauth-server:port` (if `AUTH_BASE_PATH` is set, e.g., `/auth`, prefix all paths: `https://your-simpleauth-server:port/auth/api/...`)
+Complete reference for every endpoint. All endpoints return JSON. All request bodies are JSON unless noted otherwise.
 
 **Authentication types:**
 - **Admin Key** -- `Authorization: Bearer YOUR_ADMIN_KEY` (the master admin key from config)
@@ -22,11 +26,19 @@ Complete reference for every endpoint. All endpoints return JSON. All request bo
 Health check endpoint.
 
 ```bash
-curl -k https://localhost:8080/health
+curl -k https://auth.example.com/sauth/health
 ```
+
+**Response (200):**
 
 ```json
 {"status": "ok"}
+```
+
+**Error response (503):**
+
+```json
+{"status": "unavailable"}
 ```
 
 ### `GET /api/admin/server-info`
@@ -37,8 +49,10 @@ Returns server configuration details.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/server-info
+  https://auth.example.com/sauth/api/admin/server-info
 ```
+
+**Response (200):**
 
 ```json
 {
@@ -48,6 +62,12 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
   "version": "dev",
   "redirect_uri": "https://myapp.example.com/callback"
 }
+```
+
+**Error response (401):**
+
+```json
+{"error": "unauthorized"}
 ```
 
 ---
@@ -62,19 +82,21 @@ Authenticate a user with username/password. Tries local password first, falls ba
 
 **Request:**
 
-```json
-{
-  "username": "jsmith",
-  "password": "secret"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "jsmith",
+    "password": "secret"
+  }'
 ```
 
 **Response (200):**
 
 ```json
 {
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ...",
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJpc3MiOiJzaW1wbGVhdXRoIiwiZXhwIjoxNzAwMDAwMDAwfQ...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJmYW1pbHlfaWQiOiJmYW0teHh4eCIsInNlcSI6MX0...",
   "user": {
     "guid": "550e8400-e29b-41d4-a716-446655440000",
     "display_name": "John Smith",
@@ -102,11 +124,31 @@ When the user has a forced password change pending, the response includes an add
 
 Clients should check for `force_password_change: true` and redirect the user to a password change flow before allowing normal access.
 
-**Error responses:**
-- `400` -- `{"error": "username and password required"}`
-- `401` -- `{"error": "invalid credentials"}`
-- `403` -- `{"error": "account disabled"}`
-- `429` -- `{"error": "too many login attempts"}` (with `Retry-After` header)
+**Error response (400):**
+
+```json
+{"error": "username and password required"}
+```
+
+**Error response (401):**
+
+```json
+{"error": "invalid credentials"}
+```
+
+**Error response (403):**
+
+```json
+{"error": "account disabled"}
+```
+
+**Error response (429):**
+
+Returns a `Retry-After` header indicating how many seconds to wait.
+
+```json
+{"error": "too many login attempts"}
+```
 
 ---
 
@@ -116,26 +158,36 @@ Clients should check for `force_password_change: true` and redirect the user to 
 
 Exchange a refresh token for a new access token. Implements refresh token rotation with family-based reuse detection.
 
-**Request:**
+> **Important:** Each call returns a NEW `refresh_token`. You MUST store and use this new refresh token for subsequent refresh calls. The old refresh token is invalidated immediately. If you replay an old refresh token, SimpleAuth treats it as a token theft attempt and revokes the entire token family (all sessions for that login).
 
-```json
-{
-  "refresh_token": "eyJ..."
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJmYW1pbHlfaWQiOiJmYW0teHh4eCIsInNlcSI6MX0..."
+  }'
 ```
 
 **Response (200):**
 
 ```json
 {
-  "access_token": "eyJ...(new)",
-  "refresh_token": "eyJ...(new, rotated)"
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NTBlODQwMCIsImlzcyI6InNpbXBsZWF1dGgiLCJleHAiOjE3MDAwMjg4MDB9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJmYW1pbHlfaWQiOiJmYW0teHh4eCIsInNlcSI6Mn0..."
 }
 ```
 
-**Error responses:**
-- `401` -- `{"error": "invalid refresh token"}` (expired or malformed)
-- `401` -- `{"error": "token reuse detected, all sessions revoked"}` (replay attack detected)
+**Error response (401 -- expired or malformed):**
+
+```json
+{"error": "invalid refresh token"}
+```
+
+**Error response (401 -- replay attack detected):**
+
+```json
+{"error": "token reuse detected, all sessions revoked"}
+```
 
 > **Security note:** If a refresh token is reused (replayed), SimpleAuth revokes the entire token family, invalidating all sessions for that login. This protects against token theft.
 
@@ -149,14 +201,14 @@ Returns user information from a valid access token.
 
 ```bash
 curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
-  https://localhost:8080/api/auth/userinfo
+  https://auth.example.com/sauth/api/auth/userinfo
 ```
 
 **Response (200):**
 
 ```json
 {
-  "guid": "550e8400-...",
+  "guid": "550e8400-e29b-41d4-a716-446655440000",
   "preferred_username": "jsmith",
   "display_name": "John Smith",
   "email": "jsmith@corp.local",
@@ -175,6 +227,12 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 | `preferred_username` | Local username, falls back to email or display name |
 | `auth_source` | `"local"` for password-based users, `"ldap"` for AD/LDAP users |
 
+**Error response (401):**
+
+```json
+{"error": "invalid token"}
+```
+
 ---
 
 ### `POST /api/auth/impersonate`
@@ -183,12 +241,13 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 
 Generate an access token for any user. Useful for testing and support scenarios.
 
-**Request:**
-
-```json
-{
-  "target_guid": "550e8400-..."
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/auth/impersonate \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_guid": "550e8400-e29b-41d4-a716-446655440000"
+  }'
 ```
 
 **Response (200):**
@@ -204,6 +263,12 @@ Generate an access token for any user. Useful for testing and support scenarios.
 
 The token has a shorter TTL (`impersonate_ttl`, default 1 hour).
 
+**Error response (401):**
+
+```json
+{"error": "unauthorized"}
+```
+
 ---
 
 ### `GET /api/auth/negotiate`
@@ -211,6 +276,11 @@ The token has a shorter TTL (`impersonate_ttl`, default 1 hour).
 **Auth:** None (Kerberos SPNEGO)
 
 Kerberos/SPNEGO authentication endpoint. The client sends an `Authorization: Negotiate <base64-token>` header. On success, returns JWT tokens.
+
+```bash
+curl -k --negotiate -u : \
+  https://auth.example.com/sauth/api/auth/negotiate
+```
 
 **Response (200):**
 
@@ -222,8 +292,9 @@ Kerberos/SPNEGO authentication endpoint. The client sends an `Authorization: Neg
 }
 ```
 
-**Error responses:**
-- `401` -- `WWW-Authenticate: Negotiate` header (prompts browser to send Kerberos ticket)
+**Error response (401):**
+
+Returns `WWW-Authenticate: Negotiate` header (prompts browser to send Kerberos ticket).
 
 ---
 
@@ -235,13 +306,14 @@ Change the authenticated user's password. Requires a valid access token. If the 
 
 Enforces the configured password policy (minimum length, complexity requirements). Rejects passwords that appear in the user's password history (based on `history_count` setting). On success, clears the `force_password_change` flag.
 
-**Request:**
-
-```json
-{
-  "current_password": "oldpass",
-  "new_password": "newpass"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/auth/reset-password \
+  -H "Authorization: Bearer ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "current_password": "oldpass",
+    "new_password": "N3wP@ssw0rd!"
+  }'
 ```
 
 **Response (200):**
@@ -250,12 +322,29 @@ Enforces the configured password policy (minimum length, complexity requirements
 {"status": "password updated"}
 ```
 
-**Error responses:**
-- `401` -- `{"error": "authorization required"}` or `{"error": "invalid token"}`
-- `400` -- `{"error": "new_password required"}` or `{"error": "new_password must be at least 6 characters"}`
-- `400` -- `{"error": "password does not meet policy requirements: ..."}` (policy violation details)
-- `400` -- `{"error": "password was recently used"}` (password history check)
-- `403` -- `{"error": "current password is incorrect"}`
+**Error response (401):**
+
+```json
+{"error": "authorization required"}
+```
+
+**Error response (400 -- policy violation):**
+
+```json
+{"error": "password does not meet policy requirements: must contain at least one uppercase letter"}
+```
+
+**Error response (400 -- history check):**
+
+```json
+{"error": "password was recently used"}
+```
+
+**Error response (403):**
+
+```json
+{"error": "current password is incorrect"}
+```
 
 ---
 
@@ -289,7 +378,7 @@ Logout endpoint. Clears SSO cookies and redirects to the login page with `manual
 **Behavior:**
 
 ```
-GET /logout?redirect_uri=https://myapp.example.com/callback
+GET https://auth.example.com/sauth/logout?redirect_uri=https://myapp.example.com/callback
   -> clears SSO cookies
   -> 302 redirect to /login?manual=1&redirect_uri=https://myapp.example.com/callback
 ```
@@ -339,7 +428,7 @@ SimpleAuth implements standard OIDC endpoints. All official SDKs (Go, JavaScript
 
 All OIDC endpoints follow the URL pattern: `/realms/{realm}/protocol/openid-connect/...`
 
-The realm defaults to your `jwt_issuer` config value (default: `simpleauth`). The `client_id` is hardcoded to `simpleauth`.
+The realm defaults to your `jwt_issuer` config value (default: `simpleauth`). The `client_id` is always `simpleauth` -- no `client_secret` is needed (the field is accepted but not validated).
 
 ### `GET /.well-known/openid-configuration`
 
@@ -348,20 +437,20 @@ The realm defaults to your `jwt_issuer` config value (default: `simpleauth`). Th
 OIDC Discovery document. Also available at `/realms/{realm}/.well-known/openid-configuration`.
 
 ```bash
-curl -k https://localhost:8080/.well-known/openid-configuration
+curl -k https://auth.example.com/sauth/.well-known/openid-configuration
 ```
 
 **Response (200):**
 
 ```json
 {
-  "issuer": "https://localhost:8080/realms/simpleauth",
-  "authorization_endpoint": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/auth",
-  "token_endpoint": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/token",
-  "userinfo_endpoint": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/userinfo",
-  "jwks_uri": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/certs",
-  "introspection_endpoint": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/token/introspect",
-  "end_session_endpoint": "https://localhost:8080/realms/simpleauth/protocol/openid-connect/logout",
+  "issuer": "https://auth.example.com/sauth/realms/simpleauth",
+  "authorization_endpoint": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/auth",
+  "token_endpoint": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token",
+  "userinfo_endpoint": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/userinfo",
+  "jwks_uri": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/certs",
+  "introspection_endpoint": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token/introspect",
+  "end_session_endpoint": "https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/logout",
   "response_types_supported": ["code"],
   "grant_types_supported": ["authorization_code", "client_credentials", "password", "refresh_token"],
   "subject_types_supported": ["public"],
@@ -385,7 +474,7 @@ curl -k https://localhost:8080/.well-known/openid-configuration
 JSON Web Key Set. Contains the RSA public keys used to sign JWTs. Also available at `/realms/{realm}/protocol/openid-connect/certs`.
 
 ```bash
-curl -k https://localhost:8080/.well-known/jwks.json
+curl -k https://auth.example.com/sauth/.well-known/jwks.json
 ```
 
 **Response (200):**
@@ -398,11 +487,17 @@ curl -k https://localhost:8080/.well-known/jwks.json
       "use": "sig",
       "kid": "key-id-here",
       "alg": "RS256",
-      "n": "...",
+      "n": "0vx7agoebGcQSuu...",
       "e": "AQAB"
     }
   ]
 }
+```
+
+**Error response (500):**
+
+```json
+{"error": "failed to load signing key"}
 ```
 
 ---
@@ -421,11 +516,23 @@ OAuth2 Authorization endpoint. Renders the hosted login page for the authorizati
 - `nonce` -- Replay protection for ID tokens
 - `scope` -- Space-separated scopes (e.g., `openid profile email`)
 
+**Complete URL with all query parameters:**
+
 ```
-https://auth.example.com/realms/simpleauth/protocol/openid-connect/auth?client_id=simpleauth&redirect_uri=https://myapp.com/callback&response_type=code&state=xyz
+https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/auth?client_id=simpleauth&redirect_uri=https%3A%2F%2Fmyapp.example.com%2Fcallback&response_type=code&state=random-csrf-state-value&nonce=random-nonce-value&scope=openid%20profile%20email
 ```
 
-On successful login, redirects to `redirect_uri?code=AUTH_CODE&state=xyz`.
+On successful login, redirects to:
+
+```
+https://myapp.example.com/callback?code=AUTH_CODE_HERE&state=random-csrf-state-value
+```
+
+**Error response (400 -- invalid client_id):**
+
+```json
+{"error": "invalid_request", "error_description": "invalid client_id"}
+```
 
 ---
 
@@ -439,50 +546,110 @@ OAuth2 Token endpoint. Supports four grant types.
 - HTTP Basic: `Authorization: Basic base64(simpleauth:any-value)`
 - Form body: `client_id=simpleauth`
 
-The `client_id` is hardcoded to `simpleauth`. The `client_secret` field is accepted but not validated.
+The `client_id` is always `simpleauth`. No `client_secret` is needed (the field is accepted but not validated).
 
 #### Authorization Code Grant
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "simpleauth:" \
-  -d "grant_type=authorization_code&code=AUTH_CODE&redirect_uri=https://myapp.com/callback"
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token \
+  -d "grant_type=authorization_code" \
+  -d "code=AUTH_CODE_FROM_REDIRECT" \
+  -d "redirect_uri=https://myapp.example.com/callback" \
+  -d "client_id=simpleauth"
+```
+
+**Response (200):**
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NTBlODQwMCIsImlzcyI6InNpbXBsZWF1dGgiLCJleHAiOjE3MDAwMjg4MDB9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJmYW1pbHlfaWQiOiJmYW0teHh4eCIsInNlcSI6MX0...",
+  "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NTBlODQwMCIsIm5hbWUiOiJKb2huIFNtaXRoIn0...",
+  "token_type": "Bearer",
+  "expires_in": 28800,
+  "scope": "openid profile email"
+}
+```
+
+**Error response (400):**
+
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "authorization code expired or already used"
+}
 ```
 
 #### Resource Owner Password Grant
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "simpleauth:" \
-  -d "grant_type=password&username=jsmith&password=secret&scope=openid profile email"
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "username=jsmith" \
+  -d "password=secret" \
+  -d "scope=openid profile email" \
+  -d "client_id=simpleauth"
+```
+
+**Response (200):**
+
+```json
+{
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
+  "id_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 28800,
+  "scope": "openid profile email"
+}
+```
+
+**Error response (401):**
+
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "invalid credentials"
+}
 ```
 
 #### Client Credentials Grant
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "simpleauth:" \
-  -d "grant_type=client_credentials"
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=simpleauth"
+```
+
+**Response (200):**
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 28800
+}
 ```
 
 #### Refresh Token Grant
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token \
-  -u "simpleauth:" \
-  -d "grant_type=refresh_token&refresh_token=eyJ..."
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token \
+  -d "grant_type=refresh_token" \
+  -d "refresh_token=eyJ..." \
+  -d "client_id=simpleauth"
 ```
 
-**Response (200) -- all grant types:**
+**Response (200):**
 
 ```json
 {
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ...",
+  "access_token": "eyJ...(new)",
+  "refresh_token": "eyJ...(new, rotated)",
   "id_token": "eyJ...",
   "token_type": "Bearer",
   "expires_in": 28800,
@@ -511,14 +678,14 @@ OIDC UserInfo endpoint.
 
 ```bash
 curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/userinfo
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/userinfo
 ```
 
 **Response (200):**
 
 ```json
 {
-  "sub": "550e8400-...",
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
   "name": "John Smith",
   "email": "jsmith@corp.local",
   "preferred_username": "jsmith@corp.local",
@@ -531,6 +698,12 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 }
 ```
 
+**Error response (401):**
+
+```json
+{"error": "invalid token"}
+```
+
 ---
 
 ### `POST /realms/{realm}/protocol/openid-connect/token/introspect`
@@ -541,9 +714,9 @@ RFC 7662 Token Introspection. Validates a token and returns its claims.
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/token/introspect \
-  -u "simpleauth:" \
-  -d "token=eyJ..."
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/token/introspect \
+  -d "token=eyJ..." \
+  -d "client_id=simpleauth"
 ```
 
 **Response (200) -- active token:**
@@ -551,8 +724,8 @@ curl -k -X POST \
 ```json
 {
   "active": true,
-  "sub": "550e8400-...",
-  "iss": "https://localhost:8080/realms/simpleauth",
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "iss": "https://auth.example.com/sauth/realms/simpleauth",
   "exp": 1700000000,
   "iat": 1699971200,
   "token_type": "Bearer",
@@ -584,8 +757,14 @@ OIDC End Session endpoint. Revokes all sessions for the user.
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/realms/simpleauth/protocol/openid-connect/logout \
-  -d "id_token_hint=eyJ...&post_logout_redirect_uri=https://myapp.com"
+  https://auth.example.com/sauth/realms/simpleauth/protocol/openid-connect/logout \
+  -d "id_token_hint=eyJ...&post_logout_redirect_uri=https://myapp.example.com"
+```
+
+**Error response (400):**
+
+```json
+{"error": "invalid_request", "error_description": "id_token_hint is required"}
 ```
 
 ---
@@ -606,14 +785,14 @@ List all users. Password hashes are stripped from the response.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/users
+  https://auth.example.com/sauth/api/admin/users
 ```
 
 **With identities:**
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  "https://localhost:8080/api/admin/users?include=identities"
+  "https://auth.example.com/sauth/api/admin/users?include=identities"
 ```
 
 Each entry in the `identities` array contains:
@@ -639,6 +818,12 @@ Each entry in the `identities` array contains:
 ]
 ```
 
+**Error response (401):**
+
+```json
+{"error": "unauthorized"}
+```
+
 ---
 
 ### `POST /api/admin/users`
@@ -647,18 +832,19 @@ Each entry in the `identities` array contains:
 
 Create a local user.
 
-**Request:**
-
-```json
-{
-  "username": "jsmith",
-  "password": "a-strong-password",
-  "display_name": "John Smith",
-  "email": "jsmith@example.com",
-  "department": "Engineering",
-  "company": "Acme Corp",
-  "job_title": "Senior Engineer"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "jsmith",
+    "password": "a-strong-password",
+    "display_name": "John Smith",
+    "email": "jsmith@example.com",
+    "department": "Engineering",
+    "company": "Acme Corp",
+    "job_title": "Senior Engineer"
+  }'
 ```
 
 The `username` field creates a `local` identity mapping (e.g., `local:jsmith`). The `password` field is optional — if omitted, the user can only authenticate via LDAP. If a password is provided, it must satisfy the configured password policy (minimum length, complexity requirements).
@@ -667,10 +853,16 @@ The `username` field creates a `local` identity mapping (e.g., `local:jsmith`). 
 
 ```json
 {
-  "guid": "550e8400-...",
+  "guid": "550e8400-e29b-41d4-a716-446655440000",
   "display_name": "John Smith",
   "email": "jsmith@example.com"
 }
+```
+
+**Error response (400):**
+
+```json
+{"error": "username already exists"}
 ```
 
 ---
@@ -689,7 +881,7 @@ Get a single user by GUID.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  "https://localhost:8080/api/admin/users/{guid}?include=identities"
+  "https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000?include=identities"
 ```
 
 See [`GET /api/admin/users`](#get-apiadminusers) for the `identities` array format.
@@ -709,6 +901,12 @@ See [`GET /api/admin/users`](#get-apiadminusers) for the `identities` array form
 | `failed_login_attempts` | integer | Number of consecutive failed login attempts |
 | `locked_until` | datetime, nullable | Timestamp until which the account is locked (null if not locked) |
 
+**Error response (404):**
+
+```json
+{"error": "user not found"}
+```
+
 ---
 
 ### `PUT /api/admin/users/{guid}`
@@ -717,16 +915,23 @@ See [`GET /api/admin/users`](#get-apiadminusers) for the `identities` array form
 
 Update user fields. Only provided fields are updated.
 
-**Request:**
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "Jonathan Smith",
+    "email": "jonathan.smith@example.com",
+    "department": "Platform",
+    "company": "Acme Corp",
+    "job_title": "Staff Engineer"
+  }'
+```
+
+**Error response (404):**
 
 ```json
-{
-  "display_name": "Jonathan Smith",
-  "email": "jonathan.smith@example.com",
-  "department": "Platform",
-  "company": "Acme Corp",
-  "job_title": "Staff Engineer"
-}
+{"error": "user not found"}
 ```
 
 ---
@@ -737,6 +942,18 @@ Update user fields. Only provided fields are updated.
 
 Delete a user.
 
+```bash
+curl -k -X DELETE \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000
+```
+
+**Error response (404):**
+
+```json
+{"error": "user not found"}
+```
+
 ---
 
 ### `PUT /api/admin/users/{guid}/password`
@@ -745,19 +962,26 @@ Delete a user.
 
 Set a user's password (admin override, no current password required).
 
-**Request:**
-
-```json
-{
-  "password": "new-password-here",
-  "force_change": true
-}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/password \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "password": "new-password-here",
+    "force_change": true
+  }'
 ```
 
 | Field | Description |
 |---|---|
 | `password` | The new password to set |
 | `force_change` | Optional boolean. If `true`, the user will be required to change their password on next login |
+
+**Error response (400):**
+
+```json
+{"error": "password does not meet policy requirements: must be at least 8 characters"}
+```
 
 ---
 
@@ -766,6 +990,12 @@ Set a user's password (admin override, no current password required).
 **Auth:** Admin Key
 
 Clears failed login attempts and lockout for a user. Use this to manually unlock an account that has been locked due to too many failed login attempts.
+
+```bash
+curl -k -X PUT \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/unlock
+```
 
 **Response (200):**
 
@@ -781,16 +1011,17 @@ Clears failed login attempts and lockout for a user. Use this to manually unlock
 
 Enable or disable a user account. Disabled users cannot log in.
 
-**Request:**
-
-```json
-{"disabled": true}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/disabled \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"disabled": true}'
 ```
 
 **Response (200):**
 
 ```json
-{"guid": "550e8400-...", "disabled": true}
+{"guid": "550e8400-e29b-41d4-a716-446655440000", "disabled": true}
 ```
 
 ---
@@ -801,14 +1032,15 @@ Enable or disable a user account. Disabled users cannot log in.
 
 Merge multiple user records into one. This is useful when the same person has separate accounts from different identity sources. Identity mappings, roles, and permissions are all merged.
 
-**Request:**
-
-```json
-{
-  "source_guids": ["guid-1", "guid-2"],
-  "display_name": "John Smith",
-  "email": "jsmith@corp.local"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/users/merge \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_guids": ["guid-1", "guid-2"],
+    "display_name": "John Smith",
+    "email": "jsmith@corp.local"
+  }'
 ```
 
 **Response (200):**
@@ -820,6 +1052,12 @@ Merge multiple user records into one. This is useful when the same person has se
 }
 ```
 
+**Error response (400):**
+
+```json
+{"error": "at least 2 source GUIDs required"}
+```
+
 ---
 
 ### `POST /api/admin/users/{guid}/unmerge`
@@ -828,6 +1066,12 @@ Merge multiple user records into one. This is useful when the same person has se
 
 Reverse a merge operation. The user record has its `merged_into` pointer cleared.
 
+```bash
+curl -k -X POST \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/unmerge
+```
+
 ---
 
 ### `GET /api/admin/users/{guid}/sessions`
@@ -835,6 +1079,11 @@ Reverse a merge operation. The user record has its `merged_into` pointer cleared
 **Auth:** Admin Key
 
 List active sessions (non-expired, non-used refresh tokens) for a user.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/sessions
+```
 
 **Response (200):**
 
@@ -856,6 +1105,18 @@ List active sessions (non-expired, non-used refresh tokens) for a user.
 
 Revoke all sessions for a user. This revokes **both** refresh tokens and access tokens. Active access tokens are added to a blacklist and checked on every authenticated request, so revocation is immediate -- there is no waiting for token expiry. Forces the user to log in again everywhere.
 
+```bash
+curl -k -X DELETE \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/sessions
+```
+
+**Response (200):**
+
+```json
+{"status": "ok"}
+```
+
 ---
 
 ## Roles & Permissions Model
@@ -874,6 +1135,11 @@ Roles and permissions are global per SimpleAuth instance.
 
 Get a user's roles.
 
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/roles
+```
+
 **Response (200):**
 
 ```json
@@ -890,10 +1156,17 @@ Set a user's roles. Replaces the entire role list.
 
 > **Note:** All roles must be defined in the role registry first (via `PUT /api/admin/role-permissions`), otherwise a `400` error is returned.
 
-**Request body:** Array of strings.
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/roles \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '["admin", "user", "manager"]'
+```
+
+**Error response (400):**
 
 ```json
-["admin", "user", "manager"]
+{"error": "unknown roles: [manager]"}
 ```
 
 ---
@@ -903,6 +1176,11 @@ Set a user's roles. Replaces the entire role list.
 **Auth:** Admin Key
 
 Get a user's permissions.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/permissions
+```
 
 **Response (200):**
 
@@ -920,10 +1198,17 @@ Set a user's permissions.
 
 > **Note:** All permissions must be defined in the permissions registry first (via `PUT /api/admin/permissions`), otherwise a `400` error is returned.
 
-**Request body:** Array of strings.
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/permissions \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '["read:reports", "write:config", "delete:users"]'
+```
+
+**Error response (400):**
 
 ```json
-["read:reports", "write:config", "delete:users"]
+{"error": "unknown permissions: [delete:users]"}
 ```
 
 ---
@@ -933,6 +1218,11 @@ Set a user's permissions.
 **Auth:** Admin Key
 
 Get default roles that are automatically assigned to new users when they first log in. Can also be set via the `AUTH_DEFAULT_ROLES` environment variable.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/defaults/roles
+```
 
 ---
 
@@ -944,10 +1234,11 @@ Set default roles for new users.
 
 > **Note:** Default roles must be defined in the role registry first (via `PUT /api/admin/role-permissions`).
 
-**Request body:** Array of strings.
-
-```json
-["user", "viewer"]
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/defaults/roles \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '["user", "viewer"]'
 ```
 
 ---
@@ -957,6 +1248,11 @@ Set default roles for new users.
 **Auth:** Admin Key
 
 Get the role-to-permissions mapping. This defines which permissions are automatically granted by each role.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/role-permissions
+```
 
 ---
 
@@ -968,14 +1264,15 @@ Set the role-to-permissions mapping.
 
 > **Note:** All permissions referenced in the mapping must be defined in the permissions registry first (via `PUT /api/admin/permissions`).
 
-**Request body:** Object mapping role names to permission arrays.
-
-```json
-{
-  "admin": ["read:all", "write:all", "delete:all"],
-  "editor": ["read:all", "write:all"],
-  "viewer": ["read:all"]
-}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/role-permissions \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "admin": ["read:all", "write:all", "delete:all"],
+    "editor": ["read:all", "write:all"],
+    "viewer": ["read:all"]
+  }'
 ```
 
 ---
@@ -988,7 +1285,7 @@ Returns all defined roles from the role registry.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/roles
+  https://auth.example.com/sauth/api/admin/roles
 ```
 
 ```json
@@ -1005,7 +1302,7 @@ Returns all defined permissions from the permissions registry.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/permissions
+  https://auth.example.com/sauth/api/admin/permissions
 ```
 
 ```json
@@ -1020,10 +1317,11 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 Sets the master permissions list. Replaces the entire permissions registry.
 
-**Request body:** Array of strings.
-
-```json
-["read:all", "write:all", "delete:all", "read:reports", "write:config"]
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/permissions \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '["read:all", "write:all", "delete:all", "read:reports", "write:config"]'
 ```
 
 **Response (200):**
@@ -1044,7 +1342,7 @@ Returns the current password policy configuration.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/password-policy
+  https://auth.example.com/sauth/api/admin/password-policy
 ```
 
 **Response (200):**
@@ -1081,30 +1379,6 @@ Idempotent endpoint for app startup. Defines permissions, roles, and ensures use
 
 All fields are optional. Only include what you need.
 
-**Request:**
-
-```json
-{
-  "permissions": ["posts:read", "posts:write", "users:manage", "admin:access"],
-  "role_permissions": {
-    "viewer": ["posts:read"],
-    "editor": ["posts:read", "posts:write"],
-    "admin": ["posts:read", "posts:write", "users:manage", "admin:access"]
-  },
-  "users": [
-    {
-      "username": "root",
-      "password": "from-env-var",
-      "display_name": "Root Admin",
-      "email": "root@example.com",
-      "roles": ["admin"],
-      "permissions": ["admin:access"],
-      "force_password": true
-    }
-  ]
-}
-```
-
 | Field | Type | Description |
 |---|---|---|
 | `permissions` | string[] | Master permissions list. Replaces the permissions registry (same as `PUT /api/admin/permissions`) |
@@ -1129,22 +1403,32 @@ All fields are optional. Only include what you need.
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/api/admin/bootstrap \
+  https://auth.example.com/sauth/api/admin/bootstrap \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "permissions": ["posts:read", "posts:write", "admin:access"],
+    "permissions": ["posts:read", "posts:write", "users:manage", "admin:access"],
     "role_permissions": {
       "viewer": ["posts:read"],
-      "admin": ["posts:read", "posts:write", "admin:access"]
+      "editor": ["posts:read", "posts:write"],
+      "admin": ["posts:read", "posts:write", "users:manage", "admin:access"]
     },
     "users": [
       {
         "username": "root",
-        "password": "'"$ROOT_PASSWORD"'",
+        "password": "R00t@dmin!2024",
         "display_name": "Root Admin",
+        "email": "root@example.com",
         "roles": ["admin"],
+        "permissions": ["admin:access"],
         "force_password": true
+      },
+      {
+        "username": "editor1",
+        "password": "Ed1t0r!Pass",
+        "display_name": "Content Editor",
+        "email": "editor@example.com",
+        "roles": ["editor"]
       }
     ]
   }'
@@ -1159,10 +1443,15 @@ curl -k -X POST \
       "username": "root",
       "guid": "550e8400-e29b-41d4-a716-446655440000",
       "created": false
+    },
+    {
+      "username": "editor1",
+      "guid": "660e8400-e29b-41d4-a716-446655440001",
+      "created": true
     }
   ],
-  "permissions_count": 3,
-  "role_permissions_count": 2
+  "permissions_count": 4,
+  "role_permissions_count": 3
 }
 ```
 
@@ -1171,6 +1460,12 @@ curl -k -X POST \
 | `users` | array | One entry per user in the request. `created` is `true` if the user was newly created, `false` if it already existed |
 | `permissions_count` | integer | Number of permissions defined (only present if `permissions` was provided) |
 | `role_permissions_count` | integer | Number of roles defined (only present if `role_permissions` was provided) |
+
+**Error response (400):**
+
+```json
+{"error": "unknown roles: [nonexistent-role]"}
+```
 
 ---
 
@@ -1184,6 +1479,11 @@ SimpleAuth supports a single LDAP/Active Directory configuration. All LDAP endpo
 
 Get the current LDAP configuration. Returns `null` if not configured. The bind password is masked in the response.
 
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/ldap
+```
+
 ---
 
 ### `PUT /api/admin/ldap`
@@ -1192,24 +1492,25 @@ Get the current LDAP configuration. Returns `null` if not configured. The bind p
 
 Save or update the LDAP configuration.
 
-**Request:**
-
-```json
-{
-  "url": "ldaps://dc01.corp.local:636",
-  "base_dn": "DC=corp,DC=local",
-  "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
-  "bind_password": "ServiceAccountPassword",
-  "username_attr": "sAMAccountName",
-  "use_tls": true,
-  "skip_tls_verify": false,
-  "display_name_attr": "displayName",
-  "email_attr": "mail",
-  "department_attr": "department",
-  "company_attr": "company",
-  "job_title_attr": "title",
-  "groups_attr": "memberOf"
-}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/ldap \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "ldaps://dc01.corp.local:636",
+    "base_dn": "DC=corp,DC=local",
+    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
+    "bind_password": "ServiceAccountPassword",
+    "username_attr": "sAMAccountName",
+    "use_tls": true,
+    "skip_tls_verify": false,
+    "display_name_attr": "displayName",
+    "email_attr": "mail",
+    "department_attr": "department",
+    "company_attr": "company",
+    "job_title_attr": "title",
+    "groups_attr": "memberOf"
+  }'
 ```
 
 | Field | Description |
@@ -1228,6 +1529,12 @@ If the bind password is sent as `••••••••`, the existing passwor
 
 Remove the LDAP configuration.
 
+```bash
+curl -k -X DELETE \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/ldap
+```
+
 ---
 
 ### `POST /api/admin/ldap/test`
@@ -1236,13 +1543,19 @@ Remove the LDAP configuration.
 
 Test connectivity and bind credentials for the saved LDAP configuration.
 
+```bash
+curl -k -X POST \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/ldap/test
+```
+
 **Response (200):**
 
 ```json
 {"status": "ok"}
 ```
 
-Or on error:
+**Error response (200 with error status):**
 
 ```json
 {"status": "error", "error": "connection refused"}
@@ -1256,10 +1569,11 @@ Or on error:
 
 Search for a user in LDAP and preview the mapped attributes. Useful for verifying attribute mapping before importing users.
 
-**Request:**
-
-```json
-{"username": "alice"}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/test-user \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice"}'
 ```
 
 **Response (200):**
@@ -1278,6 +1592,12 @@ Search for a user in LDAP and preview the mapped attributes. Useful for verifyin
 }
 ```
 
+**Error response (404):**
+
+```json
+{"status": "error", "error": "user not found"}
+```
+
 ---
 
 ### `POST /api/admin/ldap/auto-discover`
@@ -1286,14 +1606,15 @@ Search for a user in LDAP and preview the mapped attributes. Useful for verifyin
 
 Auto-discover LDAP configuration by connecting to a server, querying RootDSE for the base DN, and detecting whether it's Active Directory or OpenLDAP (to choose the correct `username_attr`). Saves the configuration on success.
 
-**Request:**
-
-```json
-{
-  "server": "dc01.corp.local",
-  "username": "svc-simpleauth",
-  "password": "ServicePassword"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/auto-discover \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server": "dc01.corp.local",
+    "username": "svc-simpleauth",
+    "password": "ServicePassword"
+  }'
 ```
 
 The server can be a hostname, `hostname:port`, or full URL (`ldap://` or `ldaps://`). Default port is 389 for ldap, 636 for ldaps.
@@ -1308,18 +1629,19 @@ The server can be a hostname, `hostname:port`, or full URL (`ldap://` or `ldaps:
 
 Import LDAP configuration from the PowerShell setup script JSON output.
 
-**Request:**
-
-```json
-{
-  "server": "dc01.corp.local",
-  "username": "svc-simpleauth",
-  "password": "ServicePassword",
-  "domain": "corp.local",
-  "base_dn": "DC=corp,DC=local",
-  "service_hostname": "auth.corp.local",
-  "spn": "HTTP/auth.corp.local"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/import \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "server": "dc01.corp.local",
+    "username": "svc-simpleauth",
+    "password": "ServicePassword",
+    "domain": "corp.local",
+    "base_dn": "DC=corp,DC=local",
+    "service_hostname": "auth.corp.local",
+    "spn": "HTTP/auth.corp.local"
+  }'
 ```
 
 If `service_hostname` is provided, Kerberos setup is automatically triggered after the LDAP config is saved.
@@ -1332,13 +1654,14 @@ If `service_hostname` is provided, Kerberos setup is automatically triggered aft
 
 Search the LDAP directory for users matching a query string. Searches across username, display name, and email attributes. Returns whether each user is already imported into SimpleAuth.
 
-**Request:**
-
-```json
-{
-  "query": "john",
-  "limit": 50
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/search-users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "john",
+    "limit": 50
+  }'
 ```
 
 **Response (200):**
@@ -1380,12 +1703,13 @@ Search the LDAP directory for users matching a query string. Searches across use
 
 Import one or more LDAP users into SimpleAuth. For each username, looks up the user in LDAP, creates a SimpleAuth user record, creates an `ldap` identity mapping, and assigns default roles.
 
-**Request:**
-
-```json
-{
-  "usernames": ["alice", "bob", "charlie"]
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/import-users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "usernames": ["alice", "bob", "charlie"]
+  }'
 ```
 
 **Response (200):**
@@ -1408,15 +1732,9 @@ Status values: `imported` (newly created), `exists` (already imported), `error` 
 
 Sync a single user's profile from LDAP. Looks up the user by their configured username attribute in the LDAP directory, then updates their SimpleAuth profile (display name, email, department, company, job title).
 
-**Request:**
-
-```json
-{"username": "jsmith"}
-```
-
 ```bash
 curl -k -X POST \
-  https://localhost:8080/api/admin/ldap/sync-user \
+  https://auth.example.com/sauth/api/admin/ldap/sync-user \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"username": "jsmith"}'
@@ -1431,6 +1749,12 @@ curl -k -X POST \
 }
 ```
 
+**Error response (404):**
+
+```json
+{"status": "error", "error": "user not found in LDAP"}
+```
+
 ---
 
 ### `POST /api/admin/ldap/sync-all`
@@ -1441,7 +1765,7 @@ Sync all users that have `ldap` identity mappings. Iterates all non-merged users
 
 ```bash
 curl -k -X POST \
-  https://localhost:8080/api/admin/ldap/sync-all \
+  https://auth.example.com/sauth/api/admin/ldap/sync-all \
   -H "Authorization: Bearer ADMIN_KEY"
 ```
 
@@ -1466,13 +1790,14 @@ The `errors` array is only present when there are failures.
 
 Set up Kerberos/SPNEGO authentication using the LDAP provider's AD credentials. Creates the SPN and generates a keytab.
 
-**Request:**
-
-```json
-{
-  "admin_username": "admin@CORP.LOCAL",
-  "admin_password": "AdminPassword"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/setup-kerberos \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "admin_username": "admin@CORP.LOCAL",
+    "admin_password": "AdminPassword"
+  }'
 ```
 
 ---
@@ -1483,6 +1808,12 @@ Set up Kerberos/SPNEGO authentication using the LDAP provider's AD credentials. 
 
 Remove Kerberos configuration (delete SPN, clean up keytab).
 
+```bash
+curl -k -X POST \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/ldap/cleanup-kerberos
+```
+
 ---
 
 ### `GET /api/admin/kerberos/status`
@@ -1490,6 +1821,11 @@ Remove Kerberos configuration (delete SPN, clean up keytab).
 **Auth:** Admin Key
 
 Check the status of Kerberos configuration (keytab exists, SPN configured, etc.).
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/kerberos/status
+```
 
 ---
 
@@ -1504,6 +1840,11 @@ Download an interactive PowerShell script for AD setup. The script has the Simpl
 - Config JSON export for one-click import into the admin UI
 
 Returns a `.ps1` file with UTF-8 BOM encoding.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/setup-script -o setup-ad.ps1
+```
 
 ---
 
@@ -1520,6 +1861,11 @@ Identity mappings link external identities (LDAP usernames, local usernames) to 
 **Auth:** Admin Key
 
 List all identity mappings.
+
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/mappings
+```
 
 **Response (200):**
 
@@ -1546,6 +1892,11 @@ List all identity mappings.
 
 Get all identity mappings for a specific user.
 
+```bash
+curl -k -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/mappings
+```
+
 ---
 
 ### `PUT /api/admin/users/{guid}/mappings`
@@ -1554,13 +1905,14 @@ Get all identity mappings for a specific user.
 
 Create or update an identity mapping.
 
-**Request:**
-
-```json
-{
-  "provider": "ldap",
-  "external_id": "jsmith"
-}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/mappings \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "ldap",
+    "external_id": "jsmith"
+  }'
 ```
 
 ---
@@ -1570,6 +1922,12 @@ Create or update an identity mapping.
 **Auth:** Admin Key
 
 Delete an identity mapping.
+
+```bash
+curl -k -X DELETE \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4-a716-446655440000/mappings/ldap/jsmith
+```
 
 ---
 
@@ -1585,13 +1943,19 @@ Resolve an external identity to a SimpleAuth user GUID.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  "https://localhost:8080/api/admin/mappings/resolve?provider=local&external_id=jsmith"
+  "https://auth.example.com/sauth/api/admin/mappings/resolve?provider=local&external_id=jsmith"
 ```
 
 **Response (200):**
 
 ```json
 {"guid": "550e8400-..."}
+```
+
+**Error response (404):**
+
+```json
+{"error": "mapping not found"}
 ```
 
 ---
@@ -1606,7 +1970,7 @@ Download a complete database backup as a binary file.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/backup -o backup.db
+  https://auth.example.com/sauth/api/admin/backup -o backup.db
 ```
 
 ---
@@ -1620,7 +1984,7 @@ Restore from a backup file. Multipart form upload. **This replaces the entire da
 ```bash
 curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
   -F "file=@backup.db" \
-  https://localhost:8080/api/admin/restore
+  https://auth.example.com/sauth/api/admin/restore
 ```
 
 **Response (200):**
@@ -1649,7 +2013,7 @@ Query the audit log. All authentication events, admin actions, and security even
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  "https://localhost:8080/api/admin/audit?event=login_failed&from=2024-01-01&limit=50"
+  "https://auth.example.com/sauth/api/admin/audit?event=login_failed&from=2024-01-01&limit=50"
 ```
 
 **Response (200):**
@@ -1713,7 +2077,7 @@ Returns the current runtime settings.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/settings
+  https://auth.example.com/sauth/api/admin/settings
 ```
 
 **Response (200):**
@@ -1746,6 +2110,12 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 }
 ```
 
+**Error response (401):**
+
+```json
+{"error": "unauthorized"}
+```
+
 ---
 
 ### `PUT /api/admin/settings`
@@ -1754,37 +2124,44 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 Update runtime settings. Only provided fields are updated.
 
-**Request:**
-
-```json
-{
-  "redirect_uris": ["https://myapp.example.com/callback", "https://other.example.com/callback"],
-  "cors_origins": ["https://myapp.example.com"],
-  "password_policy": {
-    "min_length": 12,
-    "require_uppercase": true,
-    "require_lowercase": true,
-    "require_digit": true,
-    "require_special": true,
-    "history_count": 10
-  },
-  "lockout": {
-    "max_attempts": 3,
-    "duration_minutes": 30
-  },
-  "rate_limiting": {
-    "enabled": true,
-    "requests_per_second": 5
-  },
-  "default_roles": ["user", "viewer"],
-  "audit_retention_days": 180,
-  "deployment_name": "prod-auth",
-  "auto_sso": true,
-  "auto_sso_delay": 5
-}
+```bash
+curl -k -X PUT https://auth.example.com/sauth/api/admin/settings \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "redirect_uris": ["https://myapp.example.com/callback", "https://other.example.com/callback"],
+    "cors_origins": ["https://myapp.example.com"],
+    "password_policy": {
+      "min_length": 12,
+      "require_uppercase": true,
+      "require_lowercase": true,
+      "require_digit": true,
+      "require_special": true,
+      "history_count": 10
+    },
+    "lockout": {
+      "max_attempts": 3,
+      "duration_minutes": 30
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "requests_per_second": 5
+    },
+    "default_roles": ["user", "viewer"],
+    "audit_retention_days": 180,
+    "deployment_name": "prod-auth",
+    "auto_sso": true,
+    "auto_sso_delay": 5
+  }'
 ```
 
 **Response (200):** Returns the full updated `RuntimeSettings` JSON (same shape as `GET`).
+
+**Error response (401):**
+
+```json
+{"error": "unauthorized"}
+```
 
 ---
 
@@ -1798,7 +2175,7 @@ Triggers a graceful server restart. Active connections are allowed to complete b
 
 ```bash
 curl -k -X POST -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/restart
+  https://auth.example.com/sauth/api/admin/restart
 ```
 
 **Response (200):**
@@ -1819,7 +2196,7 @@ Returns information about the current database backend.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/database/info
+  https://auth.example.com/sauth/api/admin/database/info
 ```
 
 **Response (200):**
@@ -1847,12 +2224,13 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 Test connectivity to a Postgres database. If the specified database does not exist, it is automatically created.
 
-**Request:**
-
-```json
-{
-  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/database/test \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
+  }'
 ```
 
 **Response (200):**
@@ -1871,11 +2249,14 @@ Start a database migration between backends.
 
 **Request (migrate to Postgres):**
 
-```json
-{
-  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable",
-  "direction": "to_postgres"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/database/migrate \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable",
+    "direction": "to_postgres"
+  }'
 ```
 
 **Request (migrate to BoltDB):**
@@ -1902,7 +2283,7 @@ Returns the current migration progress.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/database/migrate/status
+  https://auth.example.com/sauth/api/admin/database/migrate/status
 ```
 
 **Response (200):**
@@ -1938,11 +2319,14 @@ Switch the active database backend. Saves the backend choice to `db.json` and au
 
 **Request (switch to Postgres):**
 
-```json
-{
-  "backend": "postgres",
-  "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
-}
+```bash
+curl -k -X POST https://auth.example.com/sauth/api/admin/database/switch \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "backend": "postgres",
+    "postgres_url": "postgres://user:pass@localhost:5432/simpleauth?sslmode=disable"
+  }'
 ```
 
 **Request (switch to BoltDB):**
@@ -1975,7 +2359,7 @@ Returns a `.sh` file.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
-  https://localhost:8080/api/admin/linux-setup-script -o linux-sso-setup.sh
+  https://auth.example.com/sauth/api/admin/linux-setup-script -o linux-sso-setup.sh
 ```
 
 ---

@@ -1,6 +1,11 @@
 # @simpleauth/js
 
-Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/your-org/simpleauth). Works in Node.js (18+) and browsers.
+Zero-dependency JavaScript/TypeScript SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth). Works in Node.js (18+) and browsers.
+
+> **Important:**
+> - Access tokens expire in **15 minutes** — implement token refresh
+> - URL must include the base path `/sauth` (e.g. `https://auth.example.com/sauth`)
+> - `adminKey` is required for admin operations (roles, permissions, bootstrap)
 
 ## Installation
 

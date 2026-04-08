@@ -15,6 +15,7 @@ Usage:
   python basic_login.py
 """
 
+import os
 import sys
 
 from simpleauth.client import (
@@ -28,7 +29,7 @@ from simpleauth.client import (
 # Configuration -- replace with your SimpleAuth server details
 # ---------------------------------------------------------------------------
 
-SIMPLEAUTH_URL = "https://auth.example.com/sauth"
+SIMPLEAUTH_URL = os.environ.get("SIMPLEAUTH_URL", "https://auth.example.com/sauth")
 
 # Create the client once and reuse it (thread-safe, caches JWKS keys)
 auth = SimpleAuth(

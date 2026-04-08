@@ -1,6 +1,11 @@
 # SimpleAuth SDK Guide
 
-Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs use direct API endpoints (`/api/auth/login`, `/api/auth/refresh`, `/.well-known/jwks.json`, `/api/auth/userinfo`) and support OIDC flows. All SDKs follow the same patterns: authenticate, verify tokens, check roles, and use middleware.
+Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All SDKs use direct API endpoints and support OIDC flows.
+
+> **Important:**
+> - Access tokens expire in **15 minutes** — implement token refresh
+> - URL must include the base path `/sauth` (e.g. `https://auth.example.com/sauth`)
+> - `AdminKey` / `admin_key` is required for admin operations (roles, permissions, bootstrap)
 
 ---
 
@@ -8,7 +13,7 @@ Official SDKs for JavaScript/TypeScript, Go, Python, and .NET. All four SDKs use
 
 | Feature | JavaScript/TS | Go | Python | .NET |
 |---|---|---|---|---|
-| **Install** | `npm i @simpleauth/js` | `go get simpleauth/sdk/go` | `pip install simpleauth` | `dotnet add package SimpleAuth` |
+| **Install** | `npm i @simpleauth/js` | `go get github.com/bodaay/simpleauth-go` | `pip install simpleauth` | `dotnet add package SimpleAuth` |
 | **Zero deps** | Yes | Yes | `requests`, `cryptography` | System.Text.Json |
 | **Token verify** | `auth.verify(token)` | `client.Verify(token)` | `auth.verify(token)` | `await client.VerifyAsync(token)` |
 | **Middleware** | Express | net/http | FastAPI, Flask, Django | ASP.NET Core |

@@ -1,6 +1,11 @@
 # SimpleAuth Python SDK
 
-Python SDK for [SimpleAuth](https://github.com/bodaay/simpleauth) -- a lightweight authentication server with direct API endpoints.
+Python SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth) — a lightweight authentication server.
+
+> **Important:**
+> - Access tokens expire in **15 minutes** — implement token refresh
+> - URL must include the base path `/sauth` (e.g. `https://auth.example.com/sauth`)
+> - `admin_key` is required for admin operations (roles, permissions, bootstrap)
 
 ## Installation
 

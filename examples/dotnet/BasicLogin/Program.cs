@@ -23,7 +23,7 @@ using SimpleAuth;
 
 var options = new SimpleAuthOptions
 {
-    Url = "https://auth.example.com/sauth",
+    Url = Environment.GetEnvironmentVariable("SIMPLEAUTH_URL") ?? "https://auth.example.com/sauth",
     ValidateSsl = true, // set false for self-signed certs in development
 };
 

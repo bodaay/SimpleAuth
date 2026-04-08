@@ -1,6 +1,11 @@
 # SimpleAuth .NET SDK
 
-.NET 8 SDK for the SimpleAuth authentication server. Provides JWT verification with JWKS caching, admin operations, and ASP.NET Core middleware.
+.NET 8 SDK for [SimpleAuth](https://github.com/bodaay/SimpleAuth). JWT verification with JWKS caching, admin operations, and ASP.NET Core middleware.
+
+> **Important:**
+> - Access tokens expire in **15 minutes** — implement token refresh
+> - URL must include the base path `/sauth` (e.g. `https://auth.example.com/sauth`)
+> - `AdminKey` is required for admin operations (roles, permissions, bootstrap)
 
 ## Installation
 
