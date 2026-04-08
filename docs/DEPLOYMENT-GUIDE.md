@@ -4,6 +4,160 @@ Real-world deployment scenarios, common mistakes, and how to avoid them.
 
 ---
 
+## The #1 Pattern: Bootstrap on Every Startup
+
+If your app relies on SimpleAuth for roles and permissions, your app MUST call the bootstrap endpoint **on every startup** to ensure the roles, permissions, and default admin user exist.
+
+**Why:** SimpleAuth is the authority for roles and permissions. Your app defines what roles/permissions it needs. If SimpleAuth doesn't have them (first deploy, database reset, new permission added), your app breaks. The bootstrap endpoint is **idempotent** — calling it 100 times is the same as calling it once.
+
+### How It Works
+
+Add this to your app's startup code (runs before serving requests):
+
+```bash
+# Call this on EVERY app startup — it's idempotent
+curl -X POST https://auth.example.com/sauth/api/admin/bootstrap \
+  -H "Authorization: Bearer $AUTH_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "permissions": [
+      "documents:read",
+      "documents:write",
+      "documents:delete",
+      "users:manage",
+      "settings:manage"
+    ],
+    "role_permissions": {
+      "ADMIN": ["documents:read", "documents:write", "documents:delete", "users:manage", "settings:manage"],
+      "EDITOR": ["documents:read", "documents:write"],
+      "VIEWER": ["documents:read"]
+    },
+    "users": [
+      {
+        "username": "admin",
+        "password": "'$ROOT_PASSWORD'",
+        "display_name": "System Administrator",
+        "roles": ["ADMIN"],
+        "force_password": true
+      }
+    ]
+  }'
+```
+
+### What This Does
+
+1. **Permissions** — ensures all permissions exist in SimpleAuth. If they already exist, nothing changes. If you add a new permission to the list, it gets registered.
+2. **Role-permissions mapping** — ensures all roles exist with the correct permissions. If a role already exists, its permissions are updated to match.
+3. **Users** — creates the user if they don't exist. If `force_password: true`, the password is reset to the configured value on EVERY startup (so the env var / config always dictates the root password).
+
+### Code Examples
+
+**Go:**
+```go
+func bootstrapAuth(simpleauthURL, adminKey, rootPassword string) error {
+    body := map[string]interface{}{
+        "permissions": []string{"documents:read", "documents:write", "users:manage"},
+        "role_permissions": map[string][]string{
+            "ADMIN":  {"documents:read", "documents:write", "users:manage"},
+            "VIEWER": {"documents:read"},
+        },
+        "users": []map[string]interface{}{
+            {
+                "username":       "admin",
+                "password":       rootPassword,
+                "roles":          []string{"ADMIN"},
+                "force_password": true,
+            },
+        },
+    }
+    data, _ := json.Marshal(body)
+    req, _ := http.NewRequest("POST", simpleauthURL+"/api/admin/bootstrap", bytes.NewReader(data))
+    req.Header.Set("Authorization", "Bearer "+adminKey)
+    req.Header.Set("Content-Type", "application/json")
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 {
+        body, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("bootstrap failed: %s", body)
+    }
+    return nil
+}
+
+// Call in main() before starting your server:
+// bootstrapAuth(os.Getenv("SIMPLEAUTH_URL"), os.Getenv("AUTH_ADMIN_KEY"), os.Getenv("ROOT_PASSWORD"))
+```
+
+**JavaScript/TypeScript:**
+```typescript
+async function bootstrapAuth(simpleauthUrl: string, adminKey: string, rootPassword: string) {
+  const resp = await fetch(`${simpleauthUrl}/api/admin/bootstrap`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${adminKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      permissions: ['documents:read', 'documents:write', 'users:manage'],
+      role_permissions: {
+        ADMIN: ['documents:read', 'documents:write', 'users:manage'],
+        VIEWER: ['documents:read'],
+      },
+      users: [{
+        username: 'admin',
+        password: rootPassword,
+        roles: ['ADMIN'],
+        force_password: true,
+      }],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Bootstrap failed: ${await resp.text()}`);
+}
+
+// Call before app.listen():
+// await bootstrapAuth(process.env.SIMPLEAUTH_URL, process.env.AUTH_ADMIN_KEY, process.env.ROOT_PASSWORD);
+```
+
+**Python:**
+```python
+import requests
+
+def bootstrap_auth(simpleauth_url: str, admin_key: str, root_password: str):
+    resp = requests.post(
+        f"{simpleauth_url}/api/admin/bootstrap",
+        headers={"Authorization": f"Bearer {admin_key}", "Content-Type": "application/json"},
+        json={
+            "permissions": ["documents:read", "documents:write", "users:manage"],
+            "role_permissions": {
+                "ADMIN": ["documents:read", "documents:write", "users:manage"],
+                "VIEWER": ["documents:read"],
+            },
+            "users": [{
+                "username": "admin",
+                "password": root_password,
+                "roles": ["ADMIN"],
+                "force_password": True,
+            }],
+        },
+    )
+    resp.raise_for_status()
+
+# Call at app startup:
+# bootstrap_auth(os.environ["SIMPLEAUTH_URL"], os.environ["AUTH_ADMIN_KEY"], os.environ["ROOT_PASSWORD"])
+```
+
+### Key Rules
+
+- **Call it on EVERY startup** — don't skip it, don't put it behind a flag, don't check "if first run"
+- **`force_password: true`** for the root user — this means the password in your env var ALWAYS wins. If someone changes it in the UI, the next restart resets it. This is intentional — the config is the source of truth.
+- **`force_password: false`** (or omitted) for regular users — password is only set on first creation, not overwritten on subsequent startups
+- **Add new permissions freely** — just add them to the array and restart. Existing permissions are untouched, new ones are registered.
+- **The admin key comes from env var** — never hardcode it in your app code. Use `os.Getenv("AUTH_ADMIN_KEY")` / `process.env.AUTH_ADMIN_KEY`.
+
+---
+
 ## How SimpleAuth Works With Your App
 
 SimpleAuth handles **authentication** (who is this user?) and **authorization** (what can they do?). Your app talks to SimpleAuth via HTTP.

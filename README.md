@@ -328,6 +328,8 @@ On your app's side, delete the stored access token and refresh token.
 | Not setting `AUTH_TRUSTED_PROXIES` | If SimpleAuth is behind nginx/Traefik/Caddy, rate limiting sees the proxy's IP instead of the client's. Set `AUTH_TRUSTED_PROXIES` to your proxy's CIDR (e.g., `172.16.0.0/12`). |
 | Not setting `AUTH_CORS_ORIGINS` | If your browser-based frontend calls SimpleAuth directly, set this to your frontend's origin (e.g., `https://myapp.example.com`). Without it, browsers block the requests. |
 | Using `http` instead of `https` in redirect URIs | Redirect URIs must match exactly, including the scheme. If your app uses `https`, the redirect URI must use `https`. |
+| Not bootstrapping on startup | If your app defines roles/permissions, call `POST /sauth/api/admin/bootstrap` on EVERY startup. It's idempotent. See [Deployment Guide](docs/DEPLOYMENT-GUIDE.md). |
+| Hardcoding admin key in code | Use environment variables (`AUTH_ADMIN_KEY`). Never commit secrets to source control. |
 
 ---
 
