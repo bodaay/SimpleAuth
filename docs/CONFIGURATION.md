@@ -2,6 +2,72 @@
 
 SimpleAuth uses a layered configuration system: **defaults < config file < environment variables**. Environment variables always win.
 
+> **Ports:** Binary defaults to port `9090`. Docker defaults to port `8080`. Set `AUTH_PORT` to change.
+
+---
+
+## Required for Production
+
+These MUST be set before deploying:
+
+| Variable | Why |
+|----------|-----|
+| `AUTH_HOSTNAME` | Your public domain. Used in TLS cert, JWT issuer, OIDC discovery, redirect URLs. |
+| `AUTH_ADMIN_KEY` | Secret for admin API and admin UI. If not set, a random one is generated each startup — making automation impossible. |
+| `AUTH_REDIRECT_URIS` | Allowed callback URLs. **If empty, ALL login redirects are rejected.** |
+| `AUTH_TRUSTED_PROXIES` | **Required if behind nginx/traefik/load balancer.** Without this, rate limiting sees all requests from the proxy IP and locks everyone out. Set to your proxy's CIDR (e.g. `172.16.0.0/12`). |
+
+---
+
+## Where to Set Parameters
+
+SimpleAuth has two tiers of configuration:
+
+### Tier 1: Startup Config (env vars / config file ONLY)
+
+These settings affect SimpleAuth's ability to START and serve the admin UI. They CANNOT be changed from the admin UI — they must be set via environment variables or the config file BEFORE SimpleAuth starts.
+
+| Parameter | Why it's startup-only |
+|-----------|----------------------|
+| `AUTH_HOSTNAME` | Determines TLS certificate, JWT issuer URL |
+| `AUTH_PORT` | Binds the network listener at startup |
+| `AUTH_BASE_PATH` | Registers all HTTP routes at startup |
+| `AUTH_ADMIN_KEY` | Protects the admin UI itself |
+| `AUTH_TLS_CERT`, `AUTH_TLS_KEY` | TLS listener config |
+| `AUTH_TLS_DISABLED` | HTTP vs HTTPS mode |
+| `AUTH_DATA_DIR` | Database and key file locations |
+| `AUTH_POSTGRES_URL` | Database connection |
+| `AUTH_JWT_ISSUER` | JWT signing identity |
+
+**Do NOT hardcode these in your app code.** They belong in your Docker Compose, Kubernetes manifest, or `.env` file.
+
+### Tier 2: Runtime Settings (admin UI / admin API)
+
+These settings can be changed at any time from the admin UI (Settings page) or via `PUT /api/admin/settings`. They take effect immediately without restart.
+
+| Parameter | Admin UI location |
+|-----------|-------------------|
+| Redirect URIs | Settings → Redirect URIs |
+| CORS Origins | Settings → CORS |
+| Password Policy | Settings → Password Policy |
+| Account Lockout | Settings → Account Lockout |
+| Rate Limiting | Settings → Rate Limiting |
+| Default Roles | Settings → Default Roles |
+| Audit Retention | Settings → Audit Log |
+| Auto-SSO | Settings → Single Sign-On |
+| SSO Delay | Settings → Single Sign-On |
+| Deployment Name | Settings → General |
+
+### Priority Order
+
+```
+Admin UI / API (highest) → Environment Variable → Config File → Code Default (lowest)
+```
+
+On **first run**, env vars seed the runtime settings into the database. After that, the database (admin UI) owns these values. Changing the env var after first run has NO effect — use the admin UI or API instead.
+
+**Exception:** Tier 1 (startup) settings always come from env vars / config file. The admin UI cannot change them.
+
 ---
 
 ## Quick Start

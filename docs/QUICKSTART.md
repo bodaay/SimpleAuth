@@ -2,36 +2,58 @@
 
 **Get a production-grade authentication server running in 5 minutes.**
 
-SimpleAuth is a lightweight authentication server that connects to Active Directory (or works standalone with local users) and issues JWTs your apps can verify. It speaks OIDC, so any library that works with Keycloak or Auth0 works with SimpleAuth. One binary, one database file, zero external dependencies.
+## Prerequisites
 
-One SimpleAuth instance serves one application. Need multiple apps? Run multiple instances -- they're tiny.
+- **Docker** (recommended) or **Go 1.24+** (for binary)
+- A **hostname** for SimpleAuth (even `localhost` for development)
+- Your app's **callback URL** (where users return after login)
 
-> **Base path:** SimpleAuth serves all routes under `/sauth` by default. All URLs in this guide include this prefix.
+> **Ports:** Docker defaults to port **8080**. Binary defaults to port **9090**. Set `AUTH_PORT` to change.
+>
+> **Base path:** All URLs are under `/sauth` by default (e.g. `https://hostname/sauth/api/auth/login`).
 
 ---
 
-## 1. Start SimpleAuth
+## 1. Deploy SimpleAuth
 
 ### Docker (recommended)
 
 ```bash
-docker run -d \
-  --name simpleauth \
-  -p 8080:8080 \
+docker run -d --name simpleauth -p 8080:8080 \
+  -e AUTH_HOSTNAME=auth.example.com \
+  -e AUTH_ADMIN_KEY=change-me-to-a-strong-secret \
+  -e AUTH_REDIRECT_URIS="https://myapp.example.com/callback" \
+  -e AUTH_CORS_ORIGINS="https://myapp.example.com" \
   -v simpleauth-data:/data \
-  -e AUTH_REDIRECT_URI="https://myapp.example.com/callback" \
   simpleauth
 ```
 
-That's it. SimpleAuth is running at `https://localhost:8080/sauth` with a self-signed TLS certificate. The admin UI is available at `https://localhost:8080/sauth/admin`.
+| Variable | Required | What it does |
+|----------|----------|-------------|
+| `AUTH_HOSTNAME` | Yes | Public domain name (used in TLS cert, JWT issuer, redirects) |
+| `AUTH_ADMIN_KEY` | Yes | Secret key for admin UI and admin API. If omitted, one is auto-generated — check `docker logs simpleauth` |
+| `AUTH_REDIRECT_URIS` | Yes | Allowed callback URLs for login redirects (comma-separated). **If not set, all redirects are rejected** |
+| `AUTH_CORS_ORIGINS` | If browser calls SimpleAuth | Frontend domains allowed to call SimpleAuth from JavaScript |
+| `-v simpleauth-data:/data` | Yes | Persistent storage for database, RSA keys, TLS certs |
 
-Grab the auto-generated admin key from the logs:
+### Binary
 
 ```bash
-docker logs simpleauth 2>&1 | grep "admin_key"
+./simpleauth init-config     # generates simpleauth.yaml
+vim simpleauth.yaml          # set hostname, admin_key, redirect_uris
+./simpleauth                 # starts on port 9090
 ```
 
-Save that key. You'll need it for admin operations.
+### Verify it's running
+
+```bash
+curl -sk https://localhost:8080/sauth/health
+# {"status":"ok","version":"1.0.2"}
+```
+
+### Open the admin UI
+
+Go to `https://auth.example.com/sauth/admin` and enter your admin key.
 
 ### Binary
 
