@@ -264,6 +264,7 @@ Response:
 {
   "guid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "preferred_username": "alice",
+  "samaccountname": "alice",
   "display_name": "Alice Smith",
   "email": "alice@example.com",
   "department": "Engineering",
@@ -342,6 +343,7 @@ When you decode an access token (using any JWT library or [jwt.io](https://jwt.i
   "sub": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "guid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "preferred_username": "alice",
+  "samaccountname": "alice",
   "name": "Alice Smith",
   "email": "alice@example.com",
   "department": "Engineering",
@@ -359,9 +361,10 @@ When you decode an access token (using any JWT library or [jwt.io](https://jwt.i
 | Claim | Description |
 |-------|-------------|
 | `sub` | User's unique GUID (same as `guid`). Never changes, even if the username changes. |
-| `preferred_username` | The user's login name (e.g., `alice`). |
+| `preferred_username` | The user's login name (e.g., `alice`). Best-effort — may be UPN-shaped (`user@domain`) in some AD deployments. Do NOT use for authz lookups in authn-only apps. |
+| `samaccountname` | **Authoritative AD sAMAccountName.** Captured from LDAP on every login, stable across email/UPN/display-name changes. The correct key for apps that maintain their own authz tables. Absent for local (non-AD) users. Self-heals on next login for users who existed before this claim. See [docs/API.md](docs/API.md#pattern-authn-only-apps-with-their-own-authz-table). |
 | `name` | Display name. |
-| `email` | Email address. |
+| `email` | Email address. In many AD deployments admins reuse this for role accounts — do NOT use as a stable authz key. |
 | `roles` | Array of role names assigned to the user. |
 | `permissions` | Array of permission strings resolved from the user's roles. |
 | `groups` | LDAP/AD group memberships (empty for local-only users). |
