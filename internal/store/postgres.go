@@ -93,6 +93,17 @@ func (s *PostgresStore) migrate() error {
 		user_guid TEXT PRIMARY KEY,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS sa_sessions (
+		id TEXT PRIMARY KEY,
+		user_guid TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL,
+		last_used_at TIMESTAMPTZ NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL,
+		user_agent TEXT,
+		ip TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_sa_sessions_user ON sa_sessions(user_guid);
+	CREATE INDEX IF NOT EXISTS idx_sa_sessions_exp ON sa_sessions(expires_at);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -102,6 +113,7 @@ func (s *PostgresStore) migrate() error {
 // a clean target. Do NOT call this on a running Postgres store with live data.
 func (s *PostgresStore) ResetSchema() error {
 	drops := `
+	DROP TABLE IF EXISTS sa_sessions CASCADE;
 	DROP TABLE IF EXISTS sa_revoked_users CASCADE;
 	DROP TABLE IF EXISTS sa_revoked_tokens CASCADE;
 	DROP TABLE IF EXISTS sa_oidc_auth_codes CASCADE;
@@ -1003,4 +1015,49 @@ func (s *PostgresStore) DatabaseInfo() (*DatabaseInfo, error) {
 	}
 
 	return info, nil
+}
+
+// --- SSO Sessions ---
+
+func (s *PostgresStore) CreateSession(sess *Session) error {
+	_, err := s.db.Exec(
+		`INSERT INTO sa_sessions (id, user_guid, created_at, last_used_at, expires_at, user_agent, ip) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		sess.ID, sess.UserGUID, sess.CreatedAt, sess.LastUsedAt, sess.ExpiresAt, sess.UserAgent, sess.IP,
+	)
+	return err
+}
+
+func (s *PostgresStore) GetSession(id string) (*Session, error) {
+	var sess Session
+	err := s.db.QueryRow(
+		`SELECT id, user_guid, created_at, last_used_at, expires_at, COALESCE(user_agent, ''), COALESCE(ip, '') FROM sa_sessions WHERE id = $1`,
+		id,
+	).Scan(&sess.ID, &sess.UserGUID, &sess.CreatedAt, &sess.LastUsedAt, &sess.ExpiresAt, &sess.UserAgent, &sess.IP)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("session not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sess, nil
+}
+
+func (s *PostgresStore) TouchSession(id string, lastUsed time.Time) error {
+	_, err := s.db.Exec(`UPDATE sa_sessions SET last_used_at = $1 WHERE id = $2`, lastUsed, id)
+	return err
+}
+
+func (s *PostgresStore) DeleteSession(id string) error {
+	_, err := s.db.Exec(`DELETE FROM sa_sessions WHERE id = $1`, id)
+	return err
+}
+
+func (s *PostgresStore) DeleteUserSessions(userGUID string) error {
+	_, err := s.db.Exec(`DELETE FROM sa_sessions WHERE user_guid = $1`, userGUID)
+	return err
+}
+
+func (s *PostgresStore) CleanExpiredSessions() error {
+	_, err := s.db.Exec(`DELETE FROM sa_sessions WHERE expires_at < NOW()`)
+	return err
 }

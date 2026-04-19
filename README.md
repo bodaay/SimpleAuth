@@ -377,6 +377,7 @@ When you decode an access token (using any JWT library or [jwt.io](https://jwt.i
 ### Authentication
 - **Kerberos/SPNEGO** -- transparent Windows SSO with auto-configured keytab
 - **Auto-SSO** -- optional automatic SSO attempt with countdown animation and cancel button (`AUTH_AUTO_SSO=true`)
+- **Shared SSO session cookie** -- optional (`AUTH_ENABLE_SESSION_SSO=true`). Once logged in via any flow (password/Kerberos/OIDC), the browser carries a scoped HttpOnly cookie on the SimpleAuth host. Subsequent redirects from any participating app skip the login page entirely. Two TTLs: idle (8h default, bumped on every SimpleAuth visit) and absolute max (30 days default). Single-logout and admin-revocation supported. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#shared-sso-session-cookie).
 - **LDAP bind** -- form-based login for non-domain users
 - **Local passwords** -- bcrypt-hashed, configurable policy (length, complexity, history)
 - **Account lockout** -- automatic lockout after repeated failures
@@ -615,6 +616,9 @@ Generate a config file with `./simpleauth init-config`. Environment variables al
 | `AUTH_CORS_ORIGINS` | | CORS origins (comma-separated or `*`) |
 | `AUTH_AUTO_SSO` | `false` | Auto-attempt Kerberos SSO on login page |
 | `AUTH_AUTO_SSO_DELAY` | `3` | Seconds before auto-SSO redirect (with cancel) |
+| `AUTH_ENABLE_SESSION_SSO` | `false` | Shared SSO session cookie — skip login page on subsequent app redirects |
+| `AUTH_SESSION_SSO_IDLE_TTL` | `8h` | Session idle timeout (bumped on every SimpleAuth hit) |
+| `AUTH_SESSION_SSO_MAX_TTL` | `720h` | Session absolute max lifetime (30 days) |
 | `AUTH_DATA_DIR` | `./data` | Data directory for DB, certs, keytabs |
 | `AUTH_DEPLOYMENT_NAME` | `sauth` | Deployment name (for service account naming) |
 

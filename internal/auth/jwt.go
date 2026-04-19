@@ -33,6 +33,11 @@ type Claims struct {
 	Department     string   `json:"department,omitempty"`
 	Company        string   `json:"company,omitempty"`
 	JobTitle       string   `json:"job_title,omitempty"`
+	// SAMAccountName is the authoritative AD sAMAccountName, captured at auth
+	// time from the LDAP search result. Stable across email/UPN/display-name
+	// changes. Apps doing authn-only should key their authz table on this
+	// claim rather than `email` or `preferred_username`.
+	SAMAccountName string   `json:"samaccountname,omitempty"`
 	Roles          []string `json:"roles,omitempty"`
 	Permissions    []string `json:"permissions,omitempty"`
 	Groups         []string `json:"groups,omitempty"`

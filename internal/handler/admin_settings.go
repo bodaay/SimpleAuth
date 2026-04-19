@@ -54,6 +54,9 @@ func (h *Handler) initRuntimeSettings() {
 		AuditRetentionDays:       int(h.cfg.AuditRetention.Hours() / 24),
 		AutoSSO:                  h.cfg.AutoSSO,
 		AutoSSODelay:             h.cfg.AutoSSODelay,
+		EnableSessionSSO:         h.cfg.EnableSessionSSO,
+		SessionSSOIdleHours:      int(h.cfg.SessionSSOIdleTTL.Hours()),
+		SessionSSOMaxHours:       int(h.cfg.SessionSSOMaxTTL.Hours()),
 	}
 	h.store.SaveRuntimeSettings(rs)
 	h.runtimeSettings.set(rs)
@@ -116,6 +119,33 @@ func (h *Handler) getDefaultRedirectURI() string {
 		return uris[0]
 	}
 	return h.cfg.RedirectURI
+}
+
+func (h *Handler) getSessionSSOEnabled() bool {
+	if rs := h.runtimeSettings.get(); rs != nil {
+		return rs.EnableSessionSSO
+	}
+	return h.cfg.EnableSessionSSO
+}
+
+func (h *Handler) getSessionSSOIdleTTL() time.Duration {
+	if rs := h.runtimeSettings.get(); rs != nil && rs.SessionSSOIdleHours > 0 {
+		return time.Duration(rs.SessionSSOIdleHours) * time.Hour
+	}
+	if h.cfg.SessionSSOIdleTTL > 0 {
+		return h.cfg.SessionSSOIdleTTL
+	}
+	return 8 * time.Hour
+}
+
+func (h *Handler) getSessionSSOMaxTTL() time.Duration {
+	if rs := h.runtimeSettings.get(); rs != nil && rs.SessionSSOMaxHours > 0 {
+		return time.Duration(rs.SessionSSOMaxHours) * time.Hour
+	}
+	if h.cfg.SessionSSOMaxTTL > 0 {
+		return h.cfg.SessionSSOMaxTTL
+	}
+	return 720 * time.Hour
 }
 
 // --- Admin API: Settings ---

@@ -161,7 +161,20 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Assign default roles
 	h.assignDefaultRoles(user.GUID)
 
-	// Generate authorization code
+	// Seed shared SSO session cookie (no-op if feature disabled)
+	h.issueSessionCookie(w, r, user.GUID)
+
+	h.audit("oidc_authorize", user.GUID, ip, map[string]interface{}{
+		"flow": "authorization_code",
+	})
+
+	h.issueOIDCCodeRedirect(w, r, user, redirectURI, scope, state, nonce)
+}
+
+// issueOIDCCodeRedirect mints an OIDC auth code for `user` and redirects the
+// browser to `redirectURI?code=...&state=...`. Used by both the normal POST
+// login path and the session-cookie fast path.
+func (h *Handler) issueOIDCCodeRedirect(w http.ResponseWriter, r *http.Request, user *store.User, redirectURI, scope, state, nonce string) {
 	codeBytes := make([]byte, 32)
 	rand.Read(codeBytes)
 	code := hex.EncodeToString(codeBytes)
@@ -180,11 +193,6 @@ func (h *Handler) handleOIDCAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit("oidc_authorize", user.GUID, ip, map[string]interface{}{
-		"flow": "authorization_code",
-	})
-
-	// Redirect with code
 	redirectTarget := redirectURI
 	if redirectTarget == "" {
 		redirectTarget = h.getDefaultRedirectURI()
@@ -213,6 +221,19 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	nonce := r.URL.Query().Get("nonce")
 	scope := r.URL.Query().Get("scope")
 	errorMsg := r.URL.Query().Get("error")
+	prompt := r.URL.Query().Get("prompt")
+
+	// Session SSO: if the browser has a valid session cookie AND the client
+	// didn't ask for prompt=login, skip the login page and issue an auth code
+	// directly. This is the OIDC equivalent of the hosted-login auto-redirect.
+	if errorMsg == "" && prompt != "login" {
+		if guid := h.resolveSessionCookie(w, r); guid != "" {
+			if user, err := h.store.ResolveUser(guid); err == nil && !user.Disabled {
+				h.issueOIDCCodeRedirect(w, r, user, redirectURI, scope, state, nonce)
+				return
+			}
+		}
+	}
 
 	errorHTML := ""
 	if errorMsg != "" {
@@ -567,19 +588,20 @@ func (h *Handler) buildOIDCAccessClaims(user *store.User, roles, perms, groups [
 	}
 
 	claims := auth.Claims{
-		Name:             user.DisplayName,
-		Email:            user.Email,
-		Department:       user.Department,
-		Company:          user.Company,
-		JobTitle:         user.JobTitle,
-		Roles:            roles,
-		Permissions:      perms,
-		Groups:           groups,
+		Name:              user.DisplayName,
+		Email:             user.Email,
+		Department:        user.Department,
+		Company:           user.Company,
+		JobTitle:          user.JobTitle,
+		SAMAccountName:    user.SAMAccountName,
+		Roles:             roles,
+		Permissions:       perms,
+		Groups:            groups,
 		PreferredUsername: preferredUsername,
-		Typ:              "Bearer",
-		Azp:              h.oidcClientID(),
-		Scope:            scope,
-		RealmAccess:      &auth.RealmAccess{Roles: roles},
+		Typ:               "Bearer",
+		Azp:               h.oidcClientID(),
+		Scope:             scope,
+		RealmAccess:       &auth.RealmAccess{Roles: roles},
 		ResourceAccess: map[string]*auth.ResourceAccess{
 			h.oidcClientID(): {Roles: roles},
 		},
@@ -634,6 +656,9 @@ func (h *Handler) handleOIDCUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if user.JobTitle != "" {
 		resp["job_title"] = user.JobTitle
+	}
+	if user.SAMAccountName != "" {
+		resp["samaccountname"] = user.SAMAccountName
 	}
 	if claims.Roles != nil {
 		resp["roles"] = claims.Roles
@@ -718,9 +743,14 @@ func (h *Handler) handleOIDCLogout(w http.ResponseWriter, r *http.Request) {
 			for _, s := range sessions {
 				h.store.RevokeTokenFamily(s.FamilyID)
 			}
+			// Kill the shared SSO session for this user too
+			h.store.DeleteUserSessions(claims.Subject)
 			h.audit("oidc_logout", claims.Subject, getClientIP(r), nil)
 		}
 	}
+
+	// Clear cookie on this browser regardless of id_token_hint
+	h.deleteCurrentSession(w, r)
 
 	if postLogoutURI != "" {
 		http.Redirect(w, r, postLogoutURI, http.StatusFound)

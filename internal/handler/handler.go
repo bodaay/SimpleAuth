@@ -301,6 +301,9 @@ func (h *Handler) StartAuditPruner() {
 			if err := h.store.CleanExpiredRevocations(); err != nil {
 				log.Printf("revocation cleanup error: %v", err)
 			}
+			if err := h.store.CleanExpiredSessions(); err != nil {
+				log.Printf("session cleanup error: %v", err)
+			}
 		}
 	}()
 }

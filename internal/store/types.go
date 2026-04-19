@@ -12,9 +12,15 @@ type User struct {
 	Department   string    `json:"department,omitempty"`
 	Company      string    `json:"company,omitempty"`
 	JobTitle     string    `json:"job_title,omitempty"`
-	Disabled     bool      `json:"disabled"`
-	MergedInto   string    `json:"merged_into,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	// SAMAccountName is the authoritative AD sAMAccountName, populated on every
+	// successful LDAP or Kerberos authentication. Stable across UPN/email/
+	// display-name changes in AD. Apps doing authn-only should key their
+	// internal authz table on this field (via the JWT `samaccountname` claim)
+	// rather than `email` or `preferred_username`.
+	SAMAccountName string    `json:"sam_account_name,omitempty"`
+	Disabled       bool      `json:"disabled"`
+	MergedInto     string    `json:"merged_into,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 
 	// Password security
 	ForcePasswordChange bool       `json:"force_password_change,omitempty"`
@@ -112,6 +118,19 @@ type TableInfo struct {
 	SizeMB float64 `json:"size_mb,omitempty"`
 }
 
+// Session represents an active SSO session cookie.
+// When EnableSessionSSO is on, a valid session cookie lets the user
+// auto-authenticate to any app redirecting to SimpleAuth.
+type Session struct {
+	ID         string    `json:"id"`
+	UserGUID   string    `json:"user_guid"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	ExpiresAt  time.Time `json:"expires_at"` // absolute max (hard limit)
+	UserAgent  string    `json:"user_agent,omitempty"`
+	IP         string    `json:"ip,omitempty"`
+}
+
 // RuntimeSettings holds configuration managed via the Admin UI.
 // Stored in the DB config bucket under "runtime_settings".
 type RuntimeSettings struct {
@@ -132,4 +151,7 @@ type RuntimeSettings struct {
 	AuditRetentionDays       int      `json:"audit_retention_days"`
 	AutoSSO                  bool     `json:"auto_sso"`
 	AutoSSODelay             int      `json:"auto_sso_delay"` // seconds, default 3
+	EnableSessionSSO         bool     `json:"enable_session_sso"`
+	SessionSSOIdleHours      int      `json:"session_sso_idle_hours"` // default 8
+	SessionSSOMaxHours       int      `json:"session_sso_max_hours"`  // default 720 (30 days)
 }

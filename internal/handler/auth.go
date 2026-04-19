@@ -146,17 +146,25 @@ func (h *Handler) authenticateUser(username, password string) (string, []string,
 				} else {
 					// JIT provisioning
 					newUser := &store.User{
-						DisplayName: result.DisplayName,
-						Email:       result.Email,
-						Department:  result.Department,
-						Company:     result.Company,
-						JobTitle:    result.JobTitle,
+						DisplayName:    result.DisplayName,
+						Email:          result.Email,
+						Department:     result.Department,
+						Company:        result.Company,
+						JobTitle:       result.JobTitle,
+						SAMAccountName: result.Username,
 					}
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
 					h.store.SetIdentityMapping("ldap", username, userGUID)
 					h.store.SetIdentityMapping("local", username, userGUID)
-					log.Printf("[auth] JIT provisioned user=%q guid=%s name=%q email=%q", username, newUser.GUID, result.DisplayName, result.Email)
+					// Also map under the real sAMAccountName so future lookups
+					// by the authoritative AD identifier work, regardless of
+					// what string the user originally typed into the form.
+					if result.Username != "" && result.Username != username {
+						h.store.SetIdentityMapping("ldap", result.Username, userGUID)
+						h.store.SetIdentityMapping("local", result.Username, userGUID)
+					}
+					log.Printf("[auth] JIT provisioned user=%q guid=%s name=%q email=%q sam=%q", username, newUser.GUID, result.DisplayName, result.Email, result.Username)
 				}
 			}
 		}
@@ -247,6 +255,9 @@ func (h *Handler) passwordPolicy() auth.PasswordPolicy {
 }
 
 // syncUserFromLDAP updates a user's profile fields from LDAP result (non-empty fields only).
+// Also backfills SAMAccountName — this is the self-healing path for users who
+// were provisioned before SAMAccountName existed on the User struct, or who
+// were created via admin UI without LDAP enrichment.
 func (h *Handler) syncUserFromLDAP(user *store.User, result *auth.LDAPResult) {
 	changed := false
 	if result.DisplayName != "" && result.DisplayName != user.DisplayName {
@@ -269,8 +280,23 @@ func (h *Handler) syncUserFromLDAP(user *store.User, result *auth.LDAPResult) {
 		user.JobTitle = result.JobTitle
 		changed = true
 	}
+	if result.Username != "" && result.Username != user.SAMAccountName {
+		user.SAMAccountName = result.Username
+		changed = true
+	}
 	if changed {
 		h.store.UpdateUser(user)
+	}
+	// Opportunistic mapping backfill: make sure the real sAMAccountName is
+	// also a valid lookup key, so future admin API calls and future JIT
+	// collision checks work by the authoritative AD identity.
+	if result.Username != "" {
+		if existing, _ := h.store.ResolveMapping("ldap", result.Username); existing == "" {
+			h.store.SetIdentityMapping("ldap", result.Username, user.GUID)
+		}
+		if existing, _ := h.store.ResolveMapping("local", result.Username); existing == "" {
+			h.store.SetIdentityMapping("local", result.Username, user.GUID)
+		}
 	}
 }
 
@@ -303,10 +329,11 @@ func (h *Handler) issueTokenPair(user *store.User, roles []string, perms []strin
 		Department:        user.Department,
 		Company:           user.Company,
 		JobTitle:          user.JobTitle,
+		SAMAccountName:    user.SAMAccountName,
 		Roles:             roles,
 		Permissions:       perms,
 		Groups:            groups,
-		PreferredUsername:  h.resolvePreferredUsername(user),
+		PreferredUsername: h.resolvePreferredUsername(user),
 	}
 	claims.Subject = user.GUID
 
@@ -447,9 +474,10 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		Department:        user.Department,
 		Company:           user.Company,
 		JobTitle:          user.JobTitle,
+		SAMAccountName:    user.SAMAccountName,
 		Roles:             roles,
 		Permissions:       perms,
-		PreferredUsername:  h.resolvePreferredUsername(user),
+		PreferredUsername: h.resolvePreferredUsername(user),
 	}
 	newClaims.Subject = user.GUID
 
@@ -517,6 +545,7 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{
 		"guid":               user.GUID,
 		"preferred_username": h.resolvePreferredUsername(user),
+		"samaccountname":     user.SAMAccountName,
 		"display_name":       user.DisplayName,
 		"email":              user.Email,
 		"department":         user.Department,
@@ -558,10 +587,11 @@ func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		GUID:              target.GUID,
 		Name:              target.DisplayName,
 		Email:             target.Email,
-		PreferredUsername:  h.resolvePreferredUsername(target),
+		PreferredUsername: h.resolvePreferredUsername(target),
 		Department:        target.Department,
 		Company:           target.Company,
 		JobTitle:          target.JobTitle,
+		SAMAccountName:    target.SAMAccountName,
 		Roles:             roles,
 		Permissions:       perms,
 		Impersonated:      true,
@@ -1102,6 +1132,9 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	// Clear SSO-attempted cookie on success so future auto-SSO works
 	http.SetCookie(w, &http.Cookie{Name: "__sso_attempted", Value: "", Path: "/", MaxAge: -1})
 
+	// Seed shared SSO session cookie (no-op if feature disabled)
+	h.issueSessionCookie(w, r, user.GUID)
+
 	// OIDC flow: issue auth code and redirect with ?code=X&state=Z
 	if r.URL.Query().Get("oidc") == "1" {
 		state := r.URL.Query().Get("state")
@@ -1198,8 +1231,15 @@ func (h *Handler) extractKerberosUsername(tokenBytes []byte, kt *keytab.Keytab) 
 	return cname, nil
 }
 
-// resolveKerberosUser looks up a Kerberos-authenticated user by sAMAccountName,
-// creates via JIT provisioning if needed, and returns the user GUID and LDAP groups.
+// resolveKerberosUser looks up a Kerberos-authenticated user by the Kerberos
+// cname (stripped of realm), creates via JIT provisioning if needed, and
+// returns the user GUID and LDAP groups.
+//
+// The Kerberos cname is NOT guaranteed to equal sAMAccountName — in many AD
+// deployments it is the userPrincipalName (UPN) which can look like an email
+// (e.g. `itdirector@shit.org`). We use the cname only for LDAP lookup and
+// store the authoritative sAMAccountName (from the LDAP result) on the user
+// record and as the primary identity mapping.
 func (h *Handler) resolveKerberosUser(username string) (string, []string, error) {
 	ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 	if ldapErr != nil {
@@ -1216,7 +1256,7 @@ func (h *Handler) resolveKerberosUser(username string) (string, []string, error)
 				result, err := auth.LDAPSearchUser(cfg, "sAMAccountName", username)
 				if err == nil {
 					groups = result.Groups
-					h.syncUserFromLDAP(user, result)
+					h.syncUserFromLDAP(user, result) // self-heals SAMAccountName + mappings
 				}
 				return user.GUID, groups, nil
 			}
@@ -1229,23 +1269,43 @@ func (h *Handler) resolveKerberosUser(username string) (string, []string, error)
 		return "", nil, fmt.Errorf("user %q not found in LDAP: %v", username, err)
 	}
 
-	// Double-check: ensure no existing user with this LDAP identity before creating
+	// Double-check: ensure no existing user with the authoritative sAMAccountName
+	// before creating. If the cname differs from sAMAccountName (common with UPN-
+	// based principals), this prevents duplicate accounts from being provisioned.
+	samName := result.Username
+	if samName == "" {
+		samName = username
+	}
+	if existingGUID, err := h.store.ResolveMapping("ldap", samName); err == nil {
+		log.Printf("[sso] JIT: user %q already mapped to %s via ldap/sAMAccountName, reusing", samName, existingGUID)
+		if samName != username {
+			h.store.SetIdentityMapping("ldap", username, existingGUID) // remember the cname form too
+		}
+		return existingGUID, result.Groups, nil
+	}
 	if existingGUID, err := h.store.ResolveMapping("ldap", username); err == nil {
-		log.Printf("[sso] JIT: user %q already mapped to %s via ldap, reusing", username, existingGUID)
+		log.Printf("[sso] JIT: user %q already mapped to %s via ldap/cname, reusing", username, existingGUID)
 		return existingGUID, result.Groups, nil
 	}
 
 	newUser := &store.User{
-		DisplayName: result.DisplayName,
-		Email:       result.Email,
-		Department:  result.Department,
-		Company:     result.Company,
-		JobTitle:    result.JobTitle,
+		DisplayName:    result.DisplayName,
+		Email:          result.Email,
+		Department:     result.Department,
+		Company:        result.Company,
+		JobTitle:       result.JobTitle,
+		SAMAccountName: result.Username,
 	}
 	h.store.CreateUser(newUser)
-	h.store.SetIdentityMapping("ldap", username, newUser.GUID)
-	h.store.SetIdentityMapping("local", username, newUser.GUID)
-	log.Printf("[sso] JIT provisioned user %q (GUID=%s) from LDAP", username, newUser.GUID)
+	// Map by the authoritative sAMAccountName (primary lookup key).
+	h.store.SetIdentityMapping("ldap", samName, newUser.GUID)
+	h.store.SetIdentityMapping("local", samName, newUser.GUID)
+	// Also map by the cname if it differs, so Kerberos re-logins find the user.
+	if username != samName {
+		h.store.SetIdentityMapping("ldap", username, newUser.GUID)
+		h.store.SetIdentityMapping("local", username, newUser.GUID)
+	}
+	log.Printf("[sso] JIT provisioned user guid=%s cname=%q sam=%q from LDAP", newUser.GUID, username, samName)
 	return newUser.GUID, result.Groups, nil
 }
 

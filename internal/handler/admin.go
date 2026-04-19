@@ -354,8 +354,11 @@ func (h *Handler) handleRevokeSessions(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(h.cfg.AccessTTL)
 	h.store.RevokeAllUserAccessTokens(guid, expiresAt)
 
+	// And destroy all shared SSO session cookies for this user
+	h.store.DeleteUserSessions(guid)
+
 	h.audit("sessions_revoked", "admin", getClientIP(r), map[string]interface{}{"target_guid": guid})
-	jsonResp(w, map[string]string{"status": "all sessions revoked (access + refresh tokens)"}, http.StatusOK)
+	jsonResp(w, map[string]string{"status": "all sessions revoked (access + refresh tokens + SSO sessions)"}, http.StatusOK)
 }
 
 // --- Identity Mappings ---

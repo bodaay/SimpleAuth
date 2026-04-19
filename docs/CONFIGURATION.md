@@ -56,6 +56,9 @@ These settings can be changed at any time from the admin UI (Settings page) or v
 | Audit Retention | Settings → Audit Log |
 | Auto-SSO | Settings → Single Sign-On |
 | SSO Delay | Settings → Single Sign-On |
+| Enable shared SSO session cookie | Settings → Single Sign-On |
+| Session idle timeout (hours) | Settings → Single Sign-On |
+| Session absolute max (hours) | Settings → Single Sign-On |
 | Deployment Name | Settings → General |
 
 ### Priority Order
@@ -135,6 +138,9 @@ SimpleAuth looks for a config file in this order:
 | `account_lockout_duration` | `AUTH_ACCOUNT_LOCKOUT_DURATION` | `30m` | How long an account stays locked after hitting the lockout threshold. Go duration format. |
 | `auto_sso` | `AUTH_AUTO_SSO` | `false` | When enabled, the login page automatically attempts Kerberos SSO without user interaction. Shows a "Attempting Single Sign-On..." spinner and redirects on success. Falls back to the manual login form if SSO fails. |
 | `auto_sso_delay` | `AUTH_AUTO_SSO_DELAY` | `3` | Seconds to show the countdown animation before auto-redirecting to SSO. The user can cancel during the countdown. |
+| `enable_session_sso` | `AUTH_ENABLE_SESSION_SSO` | `false` | Enables a shared SSO session cookie. After a successful login, SimpleAuth sets an HttpOnly cookie on its own host. On subsequent redirects from any app, the login page is skipped and fresh tokens are issued immediately. Works across different subdomains — apps never see the cookie; only SimpleAuth does. See [Session SSO](#shared-sso-session-cookie) below. |
+| `session_sso_idle_ttl` | `AUTH_SESSION_SSO_IDLE_TTL` | `8h` | Session dies after this duration of inactivity. Bumped every time a user's browser hits SimpleAuth (each redirect from an app counts). Go duration format. |
+| `session_sso_max_ttl` | `AUTH_SESSION_SSO_MAX_TTL` | `720h` | Absolute maximum lifetime regardless of activity. After this, the user must re-authenticate. Default is 30 days. Go duration format. |
 
 ---
 
@@ -478,3 +484,60 @@ simpleauth init-config [path]
 # Start the server (default behavior)
 simpleauth
 ```
+
+---
+
+## Shared SSO Session Cookie
+
+> **Status:** Optional. Disabled by default. Enable via `AUTH_ENABLE_SESSION_SSO=true` or the admin UI.
+
+When a single SimpleAuth instance hosts multiple apps (often linked together, possibly iframed), re-entering credentials every time the user bounces between apps is painful — especially when access tokens are deliberately short-lived (15 min). The session SSO cookie solves this without introducing multi-realm complexity.
+
+### How it works
+
+1. User logs in to **App A** (password, Kerberos, OIDC — any flow). SimpleAuth sets a browser cookie `__sa_sso` on its own host (e.g. `auth.example.com`), scoped to that host only (no `Domain=` attribute).
+2. User opens **App B**. App B's access token is expired. App B redirects to `https://auth.example.com/login?redirect_uri=https://app-b.example.com/callback`.
+3. SimpleAuth sees the cookie, validates the session, and redirects back to App B immediately with fresh tokens in the URL fragment. The login page is never shown.
+4. Each redirect to SimpleAuth bumps the session's `last_used_at`, so active users stay signed in indefinitely (up to `session_sso_max_ttl`).
+
+### Why it works across different subdomains
+
+The cookie lives on `auth.example.com` only. Apps on `app-a.corp.local` and `app-b.corp.local` never see it — they don't need to. The browser redirects to `auth.example.com`, and only SimpleAuth reads the cookie. The result goes back to the app via URL fragment (tokens). Because SimpleAuth is the only authority, every app participates in the same single sign-on with no cookie-domain tricks.
+
+### Why this does not weaken security
+
+| Concern | Mitigation |
+|---------|------------|
+| Cookie theft via XSS | `HttpOnly` — inaccessible from JS. |
+| Cookie theft in transit | `Secure` — only sent over TLS. (Auto-disabled if `AUTH_TLS_DISABLED=true`, but then the reverse proxy is expected to terminate TLS.) |
+| CSRF via `/login?redirect_uri=` | `redirect_uri` is validated against the allowlist. Attacker-controlled URIs are rejected. |
+| Cross-site cookie use | `SameSite=Strict` (TLS) / `SameSite=Lax` (HTTP fallback). |
+| Compromised account | Admin can destroy all SSO sessions via `DELETE /api/admin/users/{guid}/sessions`. |
+| Disabled/merged user | Resolver re-checks every hit — disabled accounts cannot use an old cookie. |
+| User-level revocation | Resolver checks `IsUserAccessRevoked` on every hit. |
+| Unbounded session growth | Background cleanup task deletes expired sessions hourly. |
+| Entropy | 32 bytes (256 bits) from `crypto/rand`. |
+
+### Single logout
+
+When the user hits SimpleAuth's `/logout` endpoint, the cookie is cleared on the browser **and** the session row is deleted from the DB. Subsequent auto-login redirects will fail, forcing a fresh login. The OIDC end-session endpoint (`/realms/{realm}/protocol/openid-connect/logout`) with an `id_token_hint` additionally destroys **all** sessions for that user across every browser (kills mobile + desktop sessions in one call).
+
+### Admin revocation
+
+`DELETE /api/admin/users/{guid}/sessions` now destroys:
+- All refresh tokens for the user
+- A blacklist entry for the user's access tokens (until they expire)
+- **All shared SSO session cookies for that user on every browser**
+
+Combined, this means an admin can fully sign a user out of every app in under a second.
+
+### Two TTLs explained
+
+- **`session_sso_idle_ttl` (default 8h)**: activity timer. Reset every time the user's browser hits SimpleAuth. A user who's actively bouncing between apps will stay signed in indefinitely.
+- **`session_sso_max_ttl` (default 720h / 30 days)**: hard cap. Regardless of activity, the session expires. This protects long-stolen cookies from being valid forever.
+
+### When NOT to enable this
+
+- Single-app deployments with only one redirect URI — the login page is shown exactly once per access-token window; the cookie adds complexity without benefit.
+- Kiosks / shared devices where each user must re-authenticate. If you do enable it on kiosks, set `session_sso_idle_ttl` to something aggressive like `15m`.
+- Deployments where `/logout` is not called reliably (e.g. apps that only clear local tokens). The cookie survives client-side logout unless SimpleAuth's logout endpoint is hit.

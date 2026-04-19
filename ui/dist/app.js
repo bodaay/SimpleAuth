@@ -1692,6 +1692,15 @@ function SettingsPage() {
         <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">When enabled, the login page shows a countdown then attempts Kerberos SSO automatically. User can cancel during countdown. Falls back to manual login if SSO fails.</p>
         ${field('SSO countdown delay (seconds)', 'auto_sso_delay', 'number')}
         <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">How many seconds to wait before auto-attempting SSO. Default: 3.</p>
+
+        <hr style="margin: 16px 0; border: none; border-top: 1px solid var(--border);" />
+
+        ${field('Enable shared SSO session cookie', 'enable_session_sso', 'boolean')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">Issues a browser cookie on login. Subsequent visits to SimpleAuth (from any app) skip the login page and auto-issue tokens. Cookie is HttpOnly, scoped to this host only.</p>
+        ${field('Session idle timeout (hours)', 'session_sso_idle_hours', 'number')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">Session ends after this many hours with no SimpleAuth activity. Bumped every time a user is redirected here by an app. Default: 8.</p>
+        ${field('Session absolute max (hours)', 'session_sso_max_hours', 'number')}
+        <p style="font-size: 0.75rem; color: var(--muted); margin-top: -8px;">Hard limit regardless of activity. After this, user must re-authenticate. Default: 720 (30 days).</p>
       </div>
     </div>
 

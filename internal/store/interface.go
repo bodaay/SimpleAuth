@@ -85,6 +85,14 @@ type Store interface {
 	// Database Info
 	DatabaseInfo() (*DatabaseInfo, error)
 
+	// SSO Sessions (cross-app session cookie)
+	CreateSession(s *Session) error
+	GetSession(id string) (*Session, error)
+	TouchSession(id string, lastUsed time.Time) error
+	DeleteSession(id string) error
+	DeleteUserSessions(userGUID string) error
+	CleanExpiredSessions() error
+
 	// Token Revocation (access token blacklist)
 	RevokeAccessToken(jti string, expiresAt time.Time) error
 	IsAccessTokenRevoked(jti string) (bool, error)

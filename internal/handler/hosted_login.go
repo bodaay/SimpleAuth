@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"simpleauth/internal/store"
 )
 
 func generateCSRFToken() string {
@@ -53,6 +55,18 @@ func (h *Handler) handleHostedLoginPage(w http.ResponseWriter, r *http.Request) 
 	if redirectURI != "" && !isAllowedRedirect(h.getRedirectURIs(), redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
+	}
+
+	// Session SSO: if the browser already has a valid session cookie,
+	// skip the login form entirely and issue fresh tokens. manual=1 bypasses
+	// this (for "Sign in as different user" flows and post-logout safety).
+	if r.URL.Query().Get("manual") != "1" && errorMsg == "" {
+		if guid := h.resolveSessionCookie(w, r); guid != "" {
+			if user, err := h.store.ResolveUser(guid); err == nil && !user.Disabled {
+				h.completeHostedLoginWithSession(w, r, user, redirectURI)
+				return
+			}
+		}
 	}
 
 	errorHTML := ""
@@ -171,6 +185,9 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 	log.Printf("[hosted-login] Success user=%q guid=%s name=%q ip=%s", username, user.GUID, user.DisplayName, ip)
 	h.auditLogin(user, ip, map[string]interface{}{"flow": "hosted"})
 
+	// Seed SSO session cookie (no-op if feature disabled)
+	h.issueSessionCookie(w, r, user.GUID)
+
 	if redirectURI != "" {
 		// Redirect with tokens in fragment
 		fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
@@ -188,6 +205,35 @@ func (h *Handler) handleHostedLoginSubmit(w http.ResponseWriter, r *http.Request
 		url.QueryEscape(refreshToken),
 		expiresIn,
 	)
+	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
+}
+
+// completeHostedLoginWithSession mirrors the successful-login branch of
+// handleHostedLoginSubmit, but without re-authenticating the user (the SSO
+// session cookie already did that). Called when a valid session cookie is
+// presented to GET /login.
+func (h *Handler) completeHostedLoginWithSession(w http.ResponseWriter, r *http.Request, user *store.User, redirectURI string) {
+	ip := getClientIP(r)
+	roles, _ := h.store.GetUserRoles(user.GUID)
+	perms := h.resolveUserPermissions(user.GUID, roles)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, nil)
+	if err != nil {
+		h.redirectToLoginError(w, r, redirectURI, "Token generation failed")
+		return
+	}
+
+	log.Printf("[hosted-login] Session-cookie auto-login user=%s ip=%s", user.GUID, ip)
+	h.auditLogin(user, ip, map[string]interface{}{"flow": "hosted", "method": "session_sso"})
+
+	fragment := fmt.Sprintf("access_token=%s&refresh_token=%s&expires_in=%d&token_type=Bearer",
+		url.QueryEscape(accessToken),
+		url.QueryEscape(refreshToken),
+		expiresIn,
+	)
+	if redirectURI != "" {
+		http.Redirect(w, r, redirectURI+"#"+fragment, http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
 }
 
@@ -231,6 +277,10 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Clear any existing SSO-attempted cookie
 	http.SetCookie(w, &http.Cookie{Name: "__sso_attempted", Value: "", Path: "/", MaxAge: -1})
+
+	// Single logout: delete the shared SSO session (if any) so the user
+	// is signed out of every other app that shares this SimpleAuth.
+	h.deleteCurrentSession(w, r)
 
 	// Redirect to login with manual=1 to prevent auto-SSO on this page load only
 	u := h.url("/login") + "?manual=1"

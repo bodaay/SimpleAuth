@@ -324,6 +324,78 @@ volumes:
   simpleauth-data:
 ```
 
+### Docker Compose with PostgreSQL (healthcheck required)
+
+> **CRITICAL:** If you use Postgres, SimpleAuth MUST wait for Postgres to be healthy before starting. Otherwise SimpleAuth's retry+fallback logic may either refuse to start or (in very old deployments) silently fall back to a stale BoltDB — losing recent LDAP/user/settings changes.
+>
+> Since v1.0.2 SimpleAuth refuses to fall back silently when `db.json` says Postgres, but the deployment still stalls. The fix is a standard `depends_on: condition: service_healthy` + Postgres `healthcheck`.
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_DB: simpleauth
+      POSTGRES_USER: simpleauth
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    # Healthcheck is REQUIRED — SimpleAuth depends on it
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simpleauth -d simpleauth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  simpleauth:
+    image: simpleauth
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy    # <-- the critical part
+    environment:
+      AUTH_HOSTNAME: auth.example.com
+      AUTH_ADMIN_KEY: "your-secret-admin-key"
+      AUTH_POSTGRES_URL: "postgres://simpleauth:change-me@postgres:5432/simpleauth?sslmode=disable"
+      AUTH_TLS_DISABLED: "true"
+      AUTH_TRUSTED_PROXIES: "172.16.0.0/12"
+      AUTH_REDIRECT_URIS: "https://myapp.example.com/callback"
+      AUTH_CORS_ORIGINS: "https://myapp.example.com"
+    volumes:
+      - simpleauth-data:/data
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - simpleauth
+
+volumes:
+  pg-data:
+  simpleauth-data:
+```
+
+**Why all three pieces matter:**
+
+| Piece | Without it |
+|-------|-----------|
+| `healthcheck` on Postgres | Docker has no way to know when Postgres is ready. `depends_on` only ensures process start, not readiness. |
+| `condition: service_healthy` on SimpleAuth's `depends_on` | SimpleAuth starts before Postgres accepts connections. It retries 5× with exponential backoff, but on slow hosts that's still not enough. |
+| `restart: always` on both | If either crashes (OOM, kernel panic, node reboot), neither will come back. |
+
+**Symptom checklist — did you skip the healthcheck?**
+
+- On first boot, SimpleAuth logs `failed to connect to postgres after 5 retries — refusing to start` → set the healthcheck and restart.
+- LDAP config "disappeared" after a restart — previously this meant SimpleAuth fell back to BoltDB (a separate DB file) and served stale data. Since v1.0.2 it refuses to start, so you'll see the error in logs instead. Fix the healthcheck.
+- Admin settings changed but didn't persist — same root cause.
+
 ---
 
 ## Security: Don't Use Wildcards

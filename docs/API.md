@@ -2370,3 +2370,112 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 - **CSRF protection on login forms** -- Login form submissions include CSRF tokens to prevent cross-site request forgery.
 - **Rate limiting behind reverse proxies** -- If SimpleAuth is deployed behind a reverse proxy (nginx, Caddy, etc.), configure `AUTH_TRUSTED_PROXIES` so that rate limiting uses the real client IP from `X-Forwarded-For` headers instead of the proxy's IP.
 - **Redirect URI validation** -- If the configured redirect URI list is empty, all redirect requests are rejected. This is a secure default -- you must explicitly allow at least one redirect URI for OAuth/OIDC flows to work.
+
+---
+
+## JWT Claims Reference
+
+Every field below is `omitempty`. Missing LDAP attributes result in missing claims, not broken tokens. Your app should tolerate absent optional fields.
+
+### Always present
+
+| Claim | Type | Meaning |
+|-------|------|---------|
+| `iss` | string | Issuer URL (OIDC issuer or JWT issuer depending on endpoint) |
+| `sub` | string | User's SimpleAuth GUID — stable across LDAP resyncs, username changes, and merges |
+| `aud` | string/array | Audience (usually `simpleauth` or the OIDC client_id) |
+| `exp` | int | Expiry (Unix seconds) |
+| `iat` | int | Issued-at (Unix seconds) |
+| `jti` | string | Unique token ID — used for per-token revocation |
+| `typ` | string | `Bearer`, `ID`, or `Refresh` |
+
+### User identity (from LDAP if mapped, otherwise from local DB)
+
+| Claim | Source | LDAP attribute |
+|-------|--------|----------------|
+| `guid` | SimpleAuth user GUID (same as `sub`) | — |
+| `name` | DisplayName | `DisplayNameAttr` (default `displayName`) |
+| `email` | Email | `EmailAttr` (default `mail`) |
+| `preferred_username` | local mapping → ldap mapping → email → display_name. Best-effort, may be UPN-shaped (`user@example.com`) in AD deployments that use enterprise principals. **Do NOT use for authz lookups in authn-only apps** — use `samaccountname` instead. | — |
+| `samaccountname` | Authoritative AD `sAMAccountName`, captured from the LDAP search result at auth time. Stable across email/UPN/display-name changes. **Preferred key for authn-only apps that maintain their own authz tables.** Absent for local (non-AD) users. Self-healing — populated on the user's next LDAP or Kerberos login. | `sAMAccountName` |
+| `department` | Department | `DepartmentAttr` (default `department`) |
+| `company` | Company | `CompanyAttr` (default `company`) |
+| `job_title` | JobTitle | `JobTitleAttr` (default `title`) |
+
+**If your LDAP schema uses non-standard attribute names**, update them in the admin UI (LDAP page) or via LDAP config API. SimpleAuth does NOT guess — if `DisplayNameAttr` is wrong, `name` will be missing.
+
+### Authorization
+
+| Claim | Type | Notes |
+|-------|------|-------|
+| `roles` | string[] | From SimpleAuth's role assignments. **NOT** a direct mirror of LDAP groups — an admin must map groups to roles, or `default_roles` must be configured. |
+| `permissions` | string[] | Merged: role-derived + direct user permissions |
+| `groups` | string[] | Raw LDAP groups (from `GroupsAttr`, default `memberOf`). Pass-through for apps that key off AD groups directly. |
+| `realm_access.roles` | string[] | Keycloak-compat mirror of `roles` |
+| `resource_access.{client_id}.roles` | string[] | Keycloak-compat mirror of `roles` |
+
+### Refresh-token hygiene
+
+| Claim | Meaning |
+|-------|---------|
+| `family_id` | All refresh tokens derived from one login share a family. Reuse of a used token revokes the entire family. |
+
+### Impersonation
+
+| Claim | Set when |
+|-------|----------|
+| `impersonated` | `true` when an admin is impersonating |
+| `impersonated_by` | Admin identifier |
+
+### OIDC-only (ID tokens / OIDC access tokens)
+
+| Claim | Meaning |
+|-------|---------|
+| `nonce` | Client-supplied nonce from `/authorize` |
+| `at_hash` | Hash of access token (binding) |
+| `azp` | Authorized party (client_id) |
+| `scope` | Granted scopes |
+| `session_state` | OIDC session marker |
+
+### Minimal-claims example
+
+Even with zero LDAP fields populated, this is the minimum token you'll receive:
+
+```json
+{
+  "iss": "https://auth.example.com/sauth/realms/simpleauth",
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "aud": "simpleauth",
+  "exp": 1735689600,
+  "iat": 1735688700,
+  "jti": "ab12cd34",
+  "typ": "Bearer",
+  "guid": "550e8400-e29b-41d4-a716-446655440000",
+  "roles": ["user"],
+  "realm_access": {"roles": ["user"]},
+  "resource_access": {"simpleauth": {"roles": ["user"]}}
+}
+```
+
+Your apps should treat `sub`/`guid` and `roles`/`permissions` as the only reliable fields. Everything else is best-effort from LDAP and may be absent.
+
+### Pattern: authn-only apps with their own authz table
+
+Many apps use SimpleAuth just for authentication and maintain their own role/permission tables keyed on a stable user identifier. In AD-heavy environments two pitfalls are common:
+
+1. **Don't key on `email`.** AD admins routinely reuse mail addresses for role accounts (`itdirector@corp.local`), leave them blank, or point several users at a distribution list. Your authz table collides every time someone rotates through the role.
+2. **Don't key on `preferred_username` in AD-UPN environments.** When AD uses enterprise-principal Kerberos or the user authenticates with a UPN, `preferred_username` can be UPN-shaped (`itdirector@corp.local`), which is not the real sAMAccountName.
+
+**Do this instead:** key on the new `samaccountname` claim.
+
+```jsonc
+// JWT payload (fragment)
+{
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "preferred_username": "itdirector@corp.local",   // may be wrong in shitty AD setups
+  "email": "itdirector@corp.local",                // shared role email — NOT a stable key
+  "samaccountname": "jsmith"                       // ← the real AD identifier, use THIS
+}
+```
+
+Existing users who authenticated before this claim existed will self-heal on their next LDAP or Kerberos login — the claim becomes available automatically, no admin action needed. For local (non-AD) users the claim is absent; fall back to `preferred_username` or `sub`.

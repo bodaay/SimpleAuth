@@ -27,6 +27,7 @@ var (
 	bucketOIDCAuthCodes    = []byte("oidc_auth_codes")
 	bucketRevokedTokens    = []byte("revoked_tokens")
 	bucketRevokedUsers     = []byte("revoked_users")
+	bucketSessions         = []byte("sessions")
 )
 
 // BoltStore implements the Store interface using BoltDB (bbolt).
@@ -68,6 +69,7 @@ func (s *BoltStore) init() error {
 			bucketOIDCAuthCodes,
 			bucketRevokedTokens,
 			bucketRevokedUsers,
+			bucketSessions,
 		} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
@@ -1213,4 +1215,94 @@ func (s *BoltStore) DatabaseInfo() (*DatabaseInfo, error) {
 	})
 
 	return info, nil
+}
+
+// --- SSO Sessions ---
+
+func (s *BoltStore) CreateSession(sess *Session) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		data, err := json.Marshal(sess)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketSessions).Put([]byte(sess.ID), data)
+	})
+}
+
+func (s *BoltStore) GetSession(id string) (*Session, error) {
+	var sess Session
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketSessions).Get([]byte(id))
+		if data == nil {
+			return fmt.Errorf("session not found")
+		}
+		return json.Unmarshal(data, &sess)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &sess, nil
+}
+
+func (s *BoltStore) TouchSession(id string, lastUsed time.Time) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketSessions)
+		data := b.Get([]byte(id))
+		if data == nil {
+			return fmt.Errorf("session not found")
+		}
+		var sess Session
+		if err := json.Unmarshal(data, &sess); err != nil {
+			return err
+		}
+		sess.LastUsedAt = lastUsed
+		updated, err := json.Marshal(&sess)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), updated)
+	})
+}
+
+func (s *BoltStore) DeleteSession(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketSessions).Delete([]byte(id))
+	})
+}
+
+func (s *BoltStore) DeleteUserSessions(userGUID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketSessions)
+		var toDelete [][]byte
+		b.ForEach(func(k, v []byte) error {
+			var sess Session
+			if json.Unmarshal(v, &sess) == nil && sess.UserGUID == userGUID {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			b.Delete(k)
+		}
+		return nil
+	})
+}
+
+func (s *BoltStore) CleanExpiredSessions() error {
+	now := time.Now()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketSessions)
+		var toDelete [][]byte
+		b.ForEach(func(k, v []byte) error {
+			var sess Session
+			if json.Unmarshal(v, &sess) == nil && sess.ExpiresAt.Before(now) {
+				toDelete = append(toDelete, k)
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			b.Delete(k)
+		}
+		return nil
+	})
 }
