@@ -320,4 +320,7 @@ AUTH_TRUSTED_PROXIES="172.16.0.0/12"
 proxy_buffer_size          128k;
 proxy_buffers              4 256k;
 large_client_header_buffers 4 64k;
+client_header_buffer_size  64k;
 ```
+
+**Why both `client_header_buffer_size` and `large_client_header_buffers`?** nginx allocates `client_header_buffer_size` for *every* incoming request. If the very first request line (with the `Authorization: Negotiate ...` header) exceeds that size, nginx falls back to `large_client_header_buffers`. Some nginx builds silently drop oversized headers if only one is set — set both to be safe.

@@ -280,7 +280,9 @@ SimpleAuth's login form uses CSRF cookies. When TLS is disabled (proxy handles T
 
 ```nginx
 # In your http {} block (or top of server {})
+# BOTH directives are required — see note below
 large_client_header_buffers 4 64k;
+client_header_buffer_size   64k;
 
 server {
     listen 443 ssl;
@@ -313,6 +315,8 @@ server {
 - Network tab shows the request to `/sauth/login/sso` either failing or never sending the Authorization header
 
 **Why:** The browser's `Authorization: Negotiate <huge-base64-token>` header exceeds nginx's default 4 KB buffer. nginx drops the request before it reaches SimpleAuth, so there's nothing to log.
+
+**Why both `client_header_buffer_size` and `large_client_header_buffers`?** nginx uses `client_header_buffer_size` for the initial header read on every request. If a header line is bigger than that, nginx tries `large_client_header_buffers` as overflow. On some nginx builds — especially when the request line *itself* is small but the `Authorization` header is huge — the overflow path doesn't kick in and the request is silently dropped. Setting both to 64k covers all builds.
 
 ### Docker Compose Example
 

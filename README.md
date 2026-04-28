@@ -331,7 +331,7 @@ On your app's side, delete the stored access token and refresh token.
 | Using `http` instead of `https` in redirect URIs | Redirect URIs must match exactly, including the scheme. If your app uses `https`, the redirect URI must use `https`. |
 | Not bootstrapping on startup | If your app defines roles/permissions, call `POST /sauth/api/admin/bootstrap` on EVERY startup. It's idempotent. See [Deployment Guide](docs/DEPLOYMENT-GUIDE.md). |
 | Hardcoding admin key in code | Use environment variables (`AUTH_ADMIN_KEY`). Never commit secrets to source control. |
-| **Kerberos SSO silently fails behind nginx** | nginx's default `proxy_buffer_size` (4KB) is too small for Negotiate headers. Click does nothing, no logs anywhere. Add `proxy_buffer_size 128k`, `proxy_buffers 4 256k`, `large_client_header_buffers 4 64k` to your nginx config. See [Deployment Guide](docs/DEPLOYMENT-GUIDE.md#nginx-example). |
+| **Kerberos SSO silently fails behind nginx** | nginx's default buffers (4KB) are too small for Negotiate headers. Click does nothing, no logs anywhere. Add **all four**: `proxy_buffer_size 128k`, `proxy_buffers 4 256k`, `large_client_header_buffers 4 64k`, `client_header_buffer_size 64k`. The last two are both needed — some nginx builds drop oversized headers if only one is set. See [Deployment Guide](docs/DEPLOYMENT-GUIDE.md#nginx-example). |
 
 ---
 
