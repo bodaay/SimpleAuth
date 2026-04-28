@@ -276,7 +276,12 @@ SimpleAuth's login form uses CSRF cookies. When TLS is disabled (proxy handles T
 
 ### nginx Example
 
+> **CRITICAL for Kerberos SSO:** nginx's default buffer sizes (4 KB) are too small for SPNEGO/Negotiate headers (often 8–16 KB). Without the buffer settings below, SSO clicks **silently fail** — no errors in browser, no logs in SimpleAuth. Password login still works.
+
 ```nginx
+# In your http {} block (or top of server {})
+large_client_header_buffers 4 64k;
+
 server {
     listen 443 ssl;
     server_name auth.example.com;
@@ -285,6 +290,13 @@ server {
     ssl_certificate_key /path/to/key.pem;
 
     location /sauth/ {
+        # Required for Kerberos — large response/request buffers
+        proxy_buffer_size       128k;
+        proxy_buffers           4 256k;
+        proxy_busy_buffers_size 256k;
+        proxy_buffering         off;
+        proxy_request_buffering off;
+
         proxy_pass http://simpleauth:8080/sauth/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -293,6 +305,14 @@ server {
     }
 }
 ```
+
+**Symptoms of missing buffer config:**
+- Password login works fine
+- SSO button click does nothing — no errors in browser console, no SimpleAuth logs
+- Browser may show 502 Bad Gateway, or just a blank page after clicking SSO
+- Network tab shows the request to `/sauth/login/sso` either failing or never sending the Authorization header
+
+**Why:** The browser's `Authorization: Negotiate <huge-base64-token>` header exceeds nginx's default 4 KB buffer. nginx drops the request before it reaches SimpleAuth, so there's nothing to log.
 
 ### Docker Compose Example
 
