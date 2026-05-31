@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fastapi = ["fastapi>=0.100", "starlette>=0.27"]
+fastapi = ["fastapi>=0.136.3", "starlette>=0.27"]
 flask = ["flask>=2.3"]
 django = ["django>=4.2"]
 dev = ["pytest", "pytest-asyncio", "httpx", "respx"]
