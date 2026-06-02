@@ -757,3 +757,15 @@ tr:hover td { background: var(--bg-hover); }
   .roles-layout { grid-template-columns: 1fr; min-height: auto; }
   .roles-sidebar { border-right: none; border-bottom: 1px solid var(--border-default); }
 }
+
+/* Aliases for custom properties referenced by app.js but never defined (a latent
+   bug — they previously fell back to inherited values). Defining them fixes muted
+   text and accent color across the console. */
+:root {
+  --muted: var(--text-muted);
+  --burgundy: var(--btn-primary-bg);
+  --border: var(--border-default);
+}
+
+/* Modal body wrapper (.modal-footer is already defined above). */
+.modal-body { padding: var(--sp-2) 0; }

@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SimpleAuth</title>
+  <script>
+    // Apply the saved theme before first paint to avoid a flash of the wrong
+    // theme (FOUC) while app.js loads and mounts.
+    (function () { try { var t = localStorage.getItem('simpleauth_theme'); if (t && t !== 'auto') document.documentElement.setAttribute('data-theme', t); } catch (e) {} })();
+  </script>
   <link rel="stylesheet" href="/style.css">
   <script type="importmap">
   {

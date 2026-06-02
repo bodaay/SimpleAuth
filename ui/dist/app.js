@@ -1,5 +1,5 @@
 import { h, render, Component } from 'preact';
-import { useState, useEffect, useCallback } from 'preact/hooks';
+import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import htm from 'htm';
 
 const html = htm.bind(h);
@@ -23,10 +23,51 @@ async function api(method, path, body) {
     headers: { 'Authorization': `Bearer ${getApiKey()}`, 'Content-Type': 'application/json' },
   };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(BASE_PATH + path, opts);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  let res;
+  try {
+    res = await fetch(BASE_PATH + path, opts);
+  } catch (e) {
+    throw new Error('Network error — is the server reachable?');
+  }
+  // A mid-session 401 means the admin key expired/was revoked: clear it and let
+  // the app bounce to the login screen instead of spraying error toasts.
+  if (res.status === 401) {
+    clearApiKey();
+    window.dispatchEvent(new CustomEvent('sa-auth-expired'));
+    throw new Error('Session expired — please sign in again');
+  }
+  // Tolerate non-JSON responses (e.g. a 502 HTML page from a proxy) so the UI
+  // shows a friendly message rather than a raw "Unexpected token <" crash.
+  const ct = res.headers.get('content-type') || '';
+  let data = null;
+  if (ct.includes('application/json')) {
+    data = await res.json().catch(() => null);
+  } else {
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw new Error(`Server error (${res.status})${text ? ': ' + text.slice(0, 140) : ''}`);
+    return text;
+  }
+  if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
   return data;
+}
+
+// === Data hooks ===
+// useResource gives every screen consistent {data, loading, error, reload}
+// instead of each page re-hand-rolling fetch + loading + swallowed errors.
+function useResource(method, path, deps = []) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const reload = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    return api(method, path)
+      .then((d) => { setData(d); return d; })
+      .catch((e) => { setError(e.message || 'Failed to load'); throw e; })
+      .finally(() => setLoading(false));
+  }, [method, path]);
+  useEffect(() => { reload().catch(() => {}); }, deps); // eslint-disable-line
+  return { data, loading, error, reload, setData };
 }
 
 // === Icons (inline SVG) ===
@@ -56,17 +97,55 @@ function Toast({ message, type }) {
 }
 
 // === Modal ===
-function Modal({ title, onClose, children }) {
+// Accessible dialog: role/aria, Escape-to-close, focus the first field on open,
+// trap Tab inside, and restore focus to the trigger on close. Every modal in the
+// app uses this, so the whole console gets keyboard accessibility for free.
+function Modal({ title, onClose, children, size }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const prev = document.activeElement;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); return; }
+      if (e.key !== 'Tab' || !ref.current) return;
+      const f = ref.current.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    const el = ref.current && ref.current.querySelector('input:not([type=hidden]), select, textarea, button');
+    if (el) setTimeout(() => el.focus(), 0);
+    return () => { document.removeEventListener('keydown', onKey); if (prev && prev.focus) prev.focus(); };
+  }, []);
   return html`
     <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal">
+      <div class="modal" ref=${ref} role="dialog" aria-modal="true" aria-label=${title} style=${size === 'lg' ? 'max-width:780px' : ''}>
         <div class="modal-header">
           <h3>${title}</h3>
-          <button class="btn-icon" onClick=${onClose}>${icons.close}</button>
+          <button class="btn-icon" aria-label="Close" onClick=${onClose}>${icons.close}</button>
         </div>
         ${children}
       </div>
     </div>
+  `;
+}
+
+// === ConfirmModal ===
+// One consistent, context-bearing confirmation for destructive actions, replacing
+// the mix of native confirm()/inline "Sure?"/nothing. Pages set a `confirm` state
+// object {title, message, confirmLabel, danger, onConfirm} to trigger it.
+function ConfirmModal({ title, message, confirmLabel, danger, busy, onConfirm, onClose }) {
+  return html`
+    <${Modal} title=${title} onClose=${busy ? () => {} : onClose}>
+      <div class="modal-body">
+        <p style="color:var(--text);line-height:1.55;margin:0">${message}</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onClick=${onClose} disabled=${busy}>Cancel</button>
+        <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" onClick=${onConfirm} disabled=${busy}>${busy ? 'Working…' : (confirmLabel || 'Confirm')}</button>
+      </div>
+    <//>
   `;
 }
 
@@ -394,16 +473,38 @@ function UsersPage() {
   const [search, setSearch] = useState('');
   const [roleDefs, setRoleDefs] = useState({});
   const [definedPermsList, setDefinedPermsList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const load = () => {
-    api('GET', '/api/admin/users?include=identities').then(setUsers).catch(() => {});
-  };
+  const load = () => { setLoading(true); setError(null); return api('GET', '/api/admin/users?include=identities').then(setUsers).catch(e => setError(e.message)).finally(() => setLoading(false)); };
   useEffect(load, []);
+
+  const isLocked = (u) => !!(u && u.locked_until && new Date(u.locked_until) > new Date());
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
     clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => setToast(null), 3000);
+  };
+
+  const unlock = async (guid) => {
+    try {
+      await api('PUT', `/api/admin/users/${guid}/unlock`);
+      load();
+      if (detail && detail.guid === guid) setDetail({ ...detail, locked_until: null, failed_login_attempts: 0 });
+      showToast('Account unlocked');
+    } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  const updateProfile = async () => {
+    try {
+      const body = { display_name: form.display_name, email: form.email, department: form.department, job_title: form.job_title, company: form.company };
+      await api('PUT', `/api/admin/users/${detail.guid}`, body);
+      setModal(null);
+      setDetail({ ...detail, ...body });
+      load();
+      showToast('Profile updated');
+    } catch (e) { showToast(e.message, 'error'); }
   };
 
   const createUser = async () => {
@@ -542,8 +643,12 @@ function UsersPage() {
       <table>
         <thead><tr><th>Identities</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>
-          ${filtered.length === 0
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>No users found</p></div></td></tr>`
+          ${loading
+            ? html`<tr><td colspan="6"><div class="empty-state"><p>Loading users…</p></div></td></tr>`
+            : error
+            ? html`<tr><td colspan="6"><div class="empty-state"><p style="color:var(--burgundy)">Failed to load users — ${error}</p><button class="btn btn-sm btn-secondary" onClick=${load}>Retry</button></div></td></tr>`
+            : filtered.length === 0
+            ? html`<tr><td colspan="6"><div class="empty-state"><p>${search ? 'No users match your search.' : 'No users yet — create one or import from LDAP.'}</p></div></td></tr>`
             : filtered.map(u => html`
               <tr style="cursor:pointer" onClick=${() => openDetail(u)}>
                 <td>${(u.identities || []).length > 0
@@ -557,12 +662,15 @@ function UsersPage() {
                     ? html`<span class="badge badge-warning">Merged</span>`
                     : u.disabled
                       ? html`<span class="badge badge-error">Disabled</span>`
-                      : html`<span class="badge badge-success">Active</span>`
+                      : isLocked(u)
+                        ? html`<span class="badge badge-warning">Locked</span>`
+                        : html`<span class="badge badge-success">Active</span>`
                   }
                 </td>
                 <td style="font-size:0.75rem;color:var(--text-muted)">${new Date(u.created_at).toLocaleDateString()}</td>
-                <td onClick=${e => e.stopPropagation()}>
-                  <button class="btn btn-sm btn-secondary" onClick=${() => toggleDisabled(u)}>${u.disabled ? 'Enable' : 'Disable'}</button>
+                <td onClick=${e => e.stopPropagation()} style="white-space:nowrap">
+                  ${isLocked(u) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => unlock(u.guid)}>Unlock</button>` : ''}
+                  <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => toggleDisabled(u)}>${u.disabled ? 'Enable' : 'Disable'}</button>
                   <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteUser(u.guid)}>Delete</button>
                 </td>
               </tr>
@@ -622,11 +730,19 @@ function UsersPage() {
           <span style="color:var(--text-muted)">Department</span><span>${detail.department || '—'}</span>
           <span style="color:var(--text-muted)">Company</span><span>${detail.company || '—'}</span>
           <span style="color:var(--text-muted)">Job Title</span><span>${detail.job_title || '—'}</span>
-          <span style="color:var(--text-muted)">Status</span><span>${detail.disabled ? 'Disabled' : detail.merged_into ? 'Merged into ' + detail.merged_into.substring(0,8) + '...' : 'Active'}</span>
+          <span style="color:var(--text-muted)">Status</span><span>${detail.disabled
+            ? html`<span class="badge badge-error">Disabled</span>`
+            : detail.merged_into
+              ? html`Merged into <code>${detail.merged_into.substring(0,8)}…</code>`
+              : isLocked(detail)
+                ? html`<span class="badge badge-warning">Locked</span> <span style="color:var(--text-muted)">until ${new Date(detail.locked_until).toLocaleString()}</span>`
+                : html`<span class="badge badge-success">Active</span>`}${detail.failed_login_attempts ? html` <span style="color:var(--text-muted)">· ${detail.failed_login_attempts} failed login${detail.failed_login_attempts > 1 ? 's' : ''}</span>` : ''}</span>
         </div>
 
-        <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4)">
+        <div style="display:flex;gap:var(--sp-2);margin-bottom:var(--sp-4);flex-wrap:wrap">
+          <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({ display_name: detail.display_name, email: detail.email, department: detail.department, job_title: detail.job_title, company: detail.company }); setModal('editProfile'); }}>Edit Profile</button>
           <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({}); setModal('password'); }}>Set Password</button>
+          ${isLocked(detail) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => unlock(detail.guid)}>Unlock Account</button>` : ''}
           <button class="btn btn-sm btn-danger" onClick=${revokeSessions}>Revoke All Sessions</button>
         </div>
 
@@ -697,6 +813,24 @@ function UsersPage() {
         <div class="modal-footer">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
           <button class="btn btn-primary" onClick=${setPassword}>Set Password</button>
+        </div>
+      <//>
+    `}
+
+    ${modal === 'editProfile' && detail && html`
+      <${Modal} title="Edit Profile" onClose=${() => setModal(null)}>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Display Name</label><input class="form-input" value=${form.display_name || ''} onInput=${e => setForm({ ...form, display_name: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-input" type="email" value=${form.email || ''} onInput=${e => setForm({ ...form, email: e.target.value })} /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Department</label><input class="form-input" value=${form.department || ''} onInput=${e => setForm({ ...form, department: e.target.value })} /></div>
+          <div class="form-group"><label class="form-label">Job Title</label><input class="form-input" value=${form.job_title || ''} onInput=${e => setForm({ ...form, job_title: e.target.value })} /></div>
+        </div>
+        <div class="form-group"><label class="form-label">Company</label><input class="form-input" value=${form.company || ''} onInput=${e => setForm({ ...form, company: e.target.value })} /></div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
+          <button class="btn btn-primary" onClick=${updateProfile}>Save Profile</button>
         </div>
       <//>
     `}
@@ -1951,9 +2085,12 @@ function AppsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ app_id: '', name: '', audience: '', require_assignment: false, allow_local_users: false });
   const [secretModal, setSecretModal] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [busy, setBusy] = useState('');
   const [authzApp, setAuthzApp] = useState(null);
   const [authz, setAuthz] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -1961,10 +2098,11 @@ function AppsPage() {
     toastTimeout = setTimeout(() => setToast(null), 3000);
   };
 
-  const load = () => api('GET', '/api/admin/apps').then(d => setApps(d.apps || [])).catch(() => {});
+  const load = () => { setLoading(true); setError(null); return api('GET', '/api/admin/apps').then(d => setApps(d.apps || [])).catch(e => setError(e.message)).finally(() => setLoading(false)); };
   useEffect(() => { load(); }, []);
 
   const createApp = async () => {
+    setBusy('create');
     try {
       const res = await api('POST', '/api/admin/apps', form);
       setShowCreate(false);
@@ -1972,21 +2110,54 @@ function AppsPage() {
       setSecretModal({ app_id: res.app_id, app_secret: res.app_secret });
       load();
     } catch (e) { showToast(e.message, 'error'); }
+    finally { setBusy(''); }
   };
 
-  const rotate = async (id) => {
-    try { const res = await api('POST', `/api/admin/apps/${id}/rotate-secret`); setSecretModal({ app_id: res.app_id, app_secret: res.app_secret }); }
+  // Destructive actions go through ConfirmModal with a context-bearing warning.
+  const doRotate = async (id) => {
+    setBusy('confirm');
+    try { const res = await api('POST', `/api/admin/apps/${id}/rotate-secret`); setConfirm(null); setSecretModal({ app_id: res.app_id, app_secret: res.app_secret }); }
     catch (e) { showToast(e.message, 'error'); }
+    finally { setBusy(''); }
   };
+  const rotate = (id) => setConfirm({
+    title: 'Rotate app secret?',
+    message: html`A new secret is generated immediately and the current one stops working — any running integration using <code>${id}</code>'s current secret will fail until you deploy the new one.`,
+    confirmLabel: 'Rotate secret', danger: true, onConfirm: () => doRotate(id),
+  });
 
-  const del = async (id) => {
-    try { await api('DELETE', `/api/admin/apps/${id}`); setConfirmDelete(null); load(); showToast('App deleted'); }
+  const doDelete = async (id) => {
+    setBusy('confirm');
+    try { await api('DELETE', `/api/admin/apps/${id}`); setConfirm(null); load(); showToast('App deleted'); }
     catch (e) { showToast(e.message, 'error'); }
+    finally { setBusy(''); }
   };
+  const del = (id) => setConfirm({
+    title: 'Delete app?',
+    message: html`Delete <code>${id}</code> and all of its per-app roles, permissions, assignments, and admins? This cannot be undone.`,
+    confirmLabel: 'Delete app', danger: true, onConfirm: () => doDelete(id),
+  });
 
-  const toggleFlag = async (app, key) => {
-    try { await api('PUT', `/api/admin/apps/${app.app_id}`, { [key]: !app[key] }); load(); }
-    catch (e) { showToast(e.message, 'error'); }
+  const applyFlag = async (app, key) => {
+    setBusy('confirm');
+    try {
+      await api('PUT', `/api/admin/apps/${app.app_id}`, { [key]: !app[key] });
+      setConfirm(null); load();
+      showToast(`${key === 'require_assignment' ? 'Require assignment' : 'App-local users'} ${!app[key] ? 'enabled' : 'disabled'} for ${app.app_id}`);
+    } catch (e) { showToast(e.message, 'error'); }
+    finally { setBusy(''); }
+  };
+  const toggleFlag = (app, key) => {
+    // Enabling require_assignment can lock out every unassigned directory user — confirm first.
+    if (key === 'require_assignment' && !app.require_assignment) {
+      setConfirm({
+        title: 'Require explicit assignment?',
+        message: html`Once enabled, only users/groups explicitly assigned to <code>${app.app_id}</code> can get a token — every other directory user is denied at login and on refresh. Add assignments first.`,
+        confirmLabel: 'Enable require-assignment', danger: true, onConfirm: () => applyFlag(app, key),
+      });
+      return;
+    }
+    applyFlag(app, key);
   };
 
   const openAuthz = async (id) => {
@@ -2014,19 +2185,23 @@ function AppsPage() {
       <table>
         <thead><tr><th>App ID</th><th>Name</th><th>Audience</th><th>Require assignment</th><th>Local users</th><th style="text-align:right">Actions</th></tr></thead>
         <tbody>
-          ${apps.length === 0
+          ${loading
+            ? html`<tr><td colspan="6"><div class="empty-state"><p>Loading apps…</p></div></td></tr>`
+            : error
+            ? html`<tr><td colspan="6"><div class="empty-state"><p style="color:var(--burgundy)">Failed to load apps — ${error}</p><button class="btn btn-sm btn-secondary" onClick=${load}>Retry</button></div></td></tr>`
+            : apps.length === 0
             ? html`<tr><td colspan="6"><div class="empty-state"><p>No apps yet — register one to start scoping authorization per application.</p></div></td></tr>`
             : apps.map(app => html`
               <tr>
                 <td><code>${app.app_id}</code>${app.disabled ? html` <span class="badge badge-warning">disabled</span>` : ''}</td>
                 <td>${app.name || '—'}</td>
                 <td><code>${app.audience}</code></td>
-                <td><input type="checkbox" checked=${app.require_assignment} onChange=${() => toggleFlag(app, 'require_assignment')} /></td>
-                <td><input type="checkbox" checked=${app.allow_local_users} onChange=${() => toggleFlag(app, 'allow_local_users')} /></td>
+                <td><input type="checkbox" aria-label="Require assignment" checked=${app.require_assignment} disabled=${busy === 'confirm'} onChange=${() => toggleFlag(app, 'require_assignment')} /></td>
+                <td><input type="checkbox" aria-label="Allow app-local users" checked=${app.allow_local_users} disabled=${busy === 'confirm'} onChange=${() => toggleFlag(app, 'allow_local_users')} /></td>
                 <td style="text-align:right;white-space:nowrap">
                   <button class="btn btn-sm btn-secondary" onClick=${() => openAuthz(app.app_id)}>Authz</button>
                   <button class="btn btn-sm btn-secondary" onClick=${() => rotate(app.app_id)}>Rotate secret</button>
-                  <button class="btn btn-sm btn-danger" onClick=${() => setConfirmDelete(app.app_id)}>Delete</button>
+                  <button class="btn btn-sm btn-danger" onClick=${() => del(app.app_id)}>Delete</button>
                 </td>
               </tr>
             `)}
@@ -2042,8 +2217,8 @@ function AppsPage() {
         <div class="form-group"><label><input type="checkbox" checked=${form.require_assignment} onChange=${e => setForm({ ...form, require_assignment: e.target.checked })} /> Require explicit assignment (deny unassigned directory users)</label></div>
         <div class="form-group"><label><input type="checkbox" checked=${form.allow_local_users} onChange=${e => setForm({ ...form, allow_local_users: e.target.checked })} /> Allow app-local users (identities not in your directory)</label></div>
         <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
-          <button class="btn btn-secondary" onClick=${() => setShowCreate(false)}>Cancel</button>
-          <button class="btn btn-primary" onClick=${createApp}>Create</button>
+          <button class="btn btn-secondary" onClick=${() => setShowCreate(false)} disabled=${busy === 'create'}>Cancel</button>
+          <button class="btn btn-primary" onClick=${createApp} disabled=${busy === 'create'}>${busy === 'create' ? 'Creating…' : 'Create'}</button>
         </div>
       </${Modal}>
     `}
@@ -2062,15 +2237,7 @@ function AppsPage() {
       </${Modal}>
     `}
 
-    ${confirmDelete && html`
-      <${Modal} title="Delete app?" onClose=${() => setConfirmDelete(null)}>
-        <p>Delete <code>${confirmDelete}</code> and all of its per-app roles and assignments? This cannot be undone.</p>
-        <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
-          <button class="btn btn-secondary" onClick=${() => setConfirmDelete(null)}>Cancel</button>
-          <button class="btn btn-danger" onClick=${() => del(confirmDelete)}>Delete</button>
-        </div>
-      </${Modal}>
-    `}
+    ${confirm && html`<${ConfirmModal} ...${confirm} busy=${busy === 'confirm'} onClose=${() => setConfirm(null)} />`}
 
     ${authzApp && authz && html`<${AppAuthzEditor} appId=${authzApp} initial=${authz} onSave=${saveAuthz} onClose=${() => setAuthzApp(null)} />`}
 
@@ -2080,110 +2247,168 @@ function AppsPage() {
 
 function AppAuthzEditor({ appId, initial, onSave, onClose }) {
   const [roles, setRoles] = useState(initial.roles || []);
+  const [rolePerms, setRolePerms] = useState(() => {
+    const rp = { ...(initial.role_permissions || {}) };
+    (initial.roles || []).forEach(r => { if (!rp[r]) rp[r] = []; });
+    return rp;
+  });
   const [userA, setUserA] = useState(initial.user_assignments || {});
   const [groupA, setGroupA] = useState(initial.group_assignments || {});
-  const [rpText, setRpText] = useState(JSON.stringify(initial.role_permissions || {}, null, 2));
-  const [rpError, setRpError] = useState('');
   const [newRole, setNewRole] = useState('');
-  const [asgn, setAsgn] = useState({ type: 'user', id: '', roles: '' });
+  const [permInput, setPermInput] = useState({});
+  const [asgn, setAsgn] = useState({ type: 'user', id: '', roles: [] });
+  const [dirty, setDirty] = useState(false);
+  const touch = () => setDirty(true);
 
-  const addRole = () => { const r = newRole.trim(); if (!r || roles.includes(r)) return; setRoles([...roles, r]); setNewRole(''); };
-  const removeRole = (r) => setRoles(roles.filter(x => x !== r));
+  const addRole = () => {
+    const r = newRole.trim(); if (!r || roles.includes(r)) return;
+    setRoles([...roles, r]); setRolePerms({ ...rolePerms, [r]: rolePerms[r] || [] }); setNewRole(''); touch();
+  };
+  const removeRole = (r) => {
+    setRoles(roles.filter(x => x !== r));
+    const rp = { ...rolePerms }; delete rp[r]; setRolePerms(rp);
+    // Strip the removed role from every assignment so nothing dangles.
+    const strip = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, (v || []).filter(x => x !== r)]));
+    setUserA(strip(userA)); setGroupA(strip(groupA)); touch();
+  };
+  const addPerm = (role) => {
+    const p = (permInput[role] || '').trim(); if (!p) return;
+    const cur = rolePerms[role] || [];
+    if (!cur.includes(p)) setRolePerms({ ...rolePerms, [role]: [...cur, p] });
+    setPermInput({ ...permInput, [role]: '' }); touch();
+  };
+  const removePerm = (role, p) => { setRolePerms({ ...rolePerms, [role]: (rolePerms[role] || []).filter(x => x !== p) }); touch(); };
 
   const assignments = [
     ...Object.entries(userA).map(([id, rs]) => ({ type: 'user', id, roles: rs || [] })),
     ...Object.entries(groupA).map(([id, rs]) => ({ type: 'group', id, roles: rs || [] })),
   ];
+  const toggleAsgnRole = (r) => setAsgn(a => ({ ...a, roles: a.roles.includes(r) ? a.roles.filter(x => x !== r) : [...a.roles, r] }));
   const addAssignment = () => {
-    const id = asgn.id.trim(); if (!id) return;
-    const rs = asgn.roles.split(',').map(s => s.trim()).filter(Boolean);
-    if (asgn.type === 'user') setUserA({ ...userA, [id]: rs }); else setGroupA({ ...groupA, [id]: rs });
-    setAsgn({ type: 'user', id: '', roles: '' });
+    const id = asgn.id.trim(); if (!id || asgn.roles.length === 0) return;
+    if (asgn.type === 'user') setUserA({ ...userA, [id]: asgn.roles }); else setGroupA({ ...groupA, [id]: asgn.roles });
+    setAsgn({ type: 'user', id: '', roles: [] }); touch();
   };
   const removeAssignment = (type, id) => {
     if (type === 'user') { const c = { ...userA }; delete c[id]; setUserA(c); }
     else { const c = { ...groupA }; delete c[id]; setGroupA(c); }
+    touch();
   };
 
-  const save = () => {
-    let rp = {};
-    try { rp = JSON.parse(rpText || '{}'); } catch (e) { setRpError('Role → permissions is not valid JSON'); return; }
-    onSave({ app_id: appId, roles, role_permissions: rp, user_assignments: userA, group_assignments: groupA });
-  };
+  const allPerms = [...new Set(Object.values(rolePerms).flat())];
+  const save = () => onSave({ app_id: appId, roles, permissions: allPerms, role_permissions: rolePerms, user_assignments: userA, group_assignments: groupA });
+  const close = () => { if (dirty && !window.confirm('Discard unsaved authorization changes?')) return; onClose(); };
 
   return html`
-    <${Modal} title=${'Authorization — ' + appId} onClose=${onClose}>
-      <div class="form-group">
-        <label>Roles</label>
-        <div style="display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-bottom:var(--sp-2)">
-          ${roles.length === 0 ? html`<span style="color:var(--text-muted)">No roles defined</span>` : roles.map(r => html`<span class="badge">${r} <a href="#" style="text-decoration:none" onClick=${(e) => { e.preventDefault(); removeRole(r); }}>×</a></span>`)}
+    <${Modal} title=${'Authorization — ' + appId} onClose=${close} size="lg">
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Roles & permissions</label>
+          ${roles.length === 0
+            ? html`<p style="color:var(--muted);margin:0 0 var(--sp-2)">No roles yet. Add a role, then give it permissions.</p>`
+            : roles.map(r => html`
+              <div style="border:1px solid var(--border);border-radius:8px;padding:var(--sp-3);margin-bottom:var(--sp-2)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-2)">
+                  <strong><code>${r}</code></strong>
+                  <button class="btn btn-sm btn-danger" onClick=${() => removeRole(r)}>Remove role</button>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-bottom:var(--sp-2)">
+                  ${(rolePerms[r] || []).length === 0 ? html`<span style="color:var(--muted);font-size:0.85rem">no permissions</span>` : (rolePerms[r] || []).map(p => html`<span class="badge">${p} <a href="#" style="text-decoration:none" onClick=${(e) => { e.preventDefault(); removePerm(r, p); }}>×</a></span>`)}
+                </div>
+                <div style="display:flex;gap:var(--sp-2)">
+                  <input class="form-input" list="sa-known-perms" value=${permInput[r] || ''} onInput=${e => setPermInput({ ...permInput, [r]: e.target.value })} placeholder="permission (e.g. invoice:write)" onKeyDown=${e => e.key === 'Enter' && (e.preventDefault(), addPerm(r))} />
+                  <button class="btn btn-sm btn-secondary" onClick=${() => addPerm(r)}>Add permission</button>
+                </div>
+              </div>
+            `)}
+          <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
+            <input class="form-input" value=${newRole} onInput=${e => setNewRole(e.target.value)} placeholder="new role name (e.g. admin)" onKeyDown=${e => e.key === 'Enter' && (e.preventDefault(), addRole())} />
+            <button class="btn btn-sm btn-secondary" onClick=${addRole}>Add role</button>
+          </div>
+          <datalist id="sa-known-perms">${allPerms.map(p => html`<option value=${p}></option>`)}</datalist>
         </div>
-        <div style="display:flex;gap:var(--sp-2)">
-          <input class="form-input" value=${newRole} onInput=${e => setNewRole(e.target.value)} placeholder="role name" onKeyDown=${e => e.key === 'Enter' && (e.preventDefault(), addRole())} />
-          <button class="btn btn-sm btn-secondary" onClick=${addRole}>Add</button>
+
+        <div class="form-group">
+          <label>Assignments <span style="color:var(--muted);font-weight:normal">(user / AD-group → roles)</span></label>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                ${assignments.length === 0 ? html`<tr><td colspan="4" style="color:var(--muted)">No assignments yet</td></tr>` : assignments.map(a => html`
+                  <tr>
+                    <td><span class="badge">${a.type}</span></td>
+                    <td><code>${a.id}</code></td>
+                    <td>${(a.roles || []).length === 0 ? '—' : (a.roles || []).map(r => html`<span class="badge" style="margin-right:4px">${r}</span>`)}</td>
+                    <td style="text-align:right"><button class="btn btn-sm btn-danger" onClick=${() => removeAssignment(a.type, a.id)}>×</button></td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          </div>
+          ${roles.length === 0
+            ? html`<p style="color:var(--muted);font-size:0.85rem;margin-top:var(--sp-2)">Define a role above before assigning it.</p>`
+            : html`
+              <div style="margin-top:var(--sp-2);display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center">
+                <select class="form-input" style="max-width:110px" value=${asgn.type} onChange=${e => setAsgn({ ...asgn, type: e.target.value })}><option value="user">user</option><option value="group">group</option></select>
+                <input class="form-input" style="flex:1;min-width:180px" value=${asgn.id} onInput=${e => setAsgn({ ...asgn, id: e.target.value })} placeholder=${asgn.type === 'user' ? 'username / sAMAccountName / GUID' : 'group sAMAccountName'} />
+              </div>
+              <div style="margin-top:var(--sp-2);display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center">
+                <span style="color:var(--muted);font-size:0.85rem">roles:</span>
+                ${roles.map(r => html`<button class="btn btn-sm ${asgn.roles.includes(r) ? 'btn-primary' : 'btn-secondary'}" onClick=${() => toggleAsgnRole(r)}>${r}</button>`)}
+                <button class="btn btn-sm btn-secondary" style="margin-left:auto" onClick=${addAssignment} disabled=${!asgn.id.trim() || asgn.roles.length === 0}>Add assignment</button>
+              </div>
+            `}
         </div>
       </div>
-
-      <div class="form-group">
-        <label>Assignments <span style="color:var(--text-muted);font-weight:normal">(user / AD-group → roles)</span></label>
-        <div class="table-wrap">
-          <table>
-            <tbody>
-              ${assignments.length === 0 ? html`<tr><td colspan="4" style="color:var(--text-muted)">No assignments</td></tr>` : assignments.map(a => html`
-                <tr>
-                  <td><span class="badge">${a.type}</span></td>
-                  <td><code>${a.id}</code></td>
-                  <td>${a.roles.join(', ') || '—'}</td>
-                  <td style="text-align:right"><button class="btn btn-sm btn-danger" onClick=${() => removeAssignment(a.type, a.id)}>×</button></td>
-                </tr>
-              `)}
-            </tbody>
-          </table>
-        </div>
-        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);align-items:center;flex-wrap:wrap">
-          <select class="form-input" style="max-width:110px" value=${asgn.type} onChange=${e => setAsgn({ ...asgn, type: e.target.value })}><option value="user">user</option><option value="group">group</option></select>
-          <input class="form-input" style="flex:1;min-width:160px" value=${asgn.id} onInput=${e => setAsgn({ ...asgn, id: e.target.value })} placeholder=${asgn.type === 'user' ? 'username / sAMAccountName' : 'group sAMAccountName'} />
-          <input class="form-input" style="flex:1;min-width:140px" value=${asgn.roles} onInput=${e => setAsgn({ ...asgn, roles: e.target.value })} placeholder="roles, comma-separated" />
-          <button class="btn btn-sm btn-secondary" onClick=${addAssignment}>Add</button>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label>Role → permissions <span style="color:var(--text-muted);font-weight:normal">(JSON: { "role": ["perm", ...] })</span></label>
-        <textarea class="form-input" rows="4" style="font-family:monospace" value=${rpText} onInput=${e => { setRpText(e.target.value); setRpError(''); }}></textarea>
-        ${rpError && html`<p style="color:var(--danger,#c0392b);font-size:0.8rem;margin:var(--sp-1) 0 0">${rpError}</p>`}
-      </div>
-
-      <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
-        <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
-        <button class="btn btn-primary" onClick=${save}>Save</button>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onClick=${close}>Cancel</button>
+        <button class="btn btn-primary" onClick=${save}>Save authorization</button>
       </div>
     </${Modal}>
   `;
 }
 
+const PAGES = {
+  dashboard: Dashboard, users: UsersPage, apps: AppsPage, roles: RolesPage,
+  ldap: LDAPPage, mappings: MappingsPage, impersonate: ImpersonatePage,
+  audit: AuditPage, settings: SettingsPage, database: DatabasePage,
+};
+const pageFromHash = () => {
+  const id = (location.hash.replace(/^#\/?/, '').split('/')[0] || 'dashboard');
+  return PAGES[id] ? id : 'dashboard';
+};
+
 function App() {
-  const [page, setPage] = useState('dashboard');
+  const [page, setPageState] = useState(pageFromHash);
   const [authed, setAuthed] = useState(!!getApiKey());
   const [theme, setTheme] = useState(localStorage.getItem('simpleauth_theme') || 'auto');
 
+  // Hash routing: refresh-safe, deep-linkable, Back/Forward work, and an idle
+  // logout returns you to where you were after re-auth (the hash survives).
+  const setPage = (id) => { location.hash = '#/' + id; setPageState(id); };
   useEffect(() => {
-    if (theme === 'auto') {
-      document.documentElement.removeAttribute('data-theme');
-    } else {
-      document.documentElement.setAttribute('data-theme', theme);
-    }
+    const onHash = () => setPageState(pageFromHash());
+    window.addEventListener('hashchange', onHash);
+    if (!location.hash) location.hash = '#/' + page;
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  useEffect(() => {
+    if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('simpleauth_theme', theme);
   }, [theme]);
 
   // Verify key on mount
   useEffect(() => {
-    if (authed) {
-      api('GET', '/api/admin/users').catch(() => {
-        clearApiKey();
-        setAuthed(false);
-      });
-    }
+    if (authed) api('GET', '/api/admin/users').catch(() => { clearApiKey(); setAuthed(false); });
+  }, []);
+
+  // Centralized auth-expiry: api() fires 'sa-auth-expired' on any 401 so a
+  // mid-session expiry bounces cleanly to login instead of spraying red toasts.
+  useEffect(() => {
+    const onExpire = () => setAuthed(false);
+    window.addEventListener('sa-auth-expired', onExpire);
+    return () => window.removeEventListener('sa-auth-expired', onExpire);
   }, []);
 
   // Idle timeout — clear admin key after 30 min of inactivity
@@ -2192,54 +2417,40 @@ function App() {
     let timer;
     const reset = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => {
-        clearApiKey();
-        setAuthed(false);
-      }, 30 * 60 * 1000);
+      timer = setTimeout(() => { clearApiKey(); setAuthed(false); }, 30 * 60 * 1000);
     };
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart'];
     events.forEach(e => document.addEventListener(e, reset));
     reset();
-    return () => {
-      clearTimeout(timer);
-      events.forEach(e => document.removeEventListener(e, reset));
-    };
+    return () => { clearTimeout(timer); events.forEach(e => document.removeEventListener(e, reset)); };
   }, [authed]);
 
-  const toggleTheme = () => {
-    const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'auto' : 'light';
-    setTheme(next);
-  };
+  const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : theme === 'dark' ? 'auto' : 'light');
+  const themeLabel = theme.charAt(0).toUpperCase() + theme.slice(1);
 
   if (!authed) return html`<${LoginSetup} onLogin=${() => setAuthed(true)} />`;
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: icons.dashboard },
-    { id: 'users', label: 'Users', icon: icons.users },
-    { id: 'apps', label: 'Apps', icon: icons.apps },
-    { id: 'roles', label: 'Roles', icon: icons.roles },
-    { id: 'ldap', label: 'LDAP Settings', icon: icons.ldap },
-    { id: 'mappings', label: 'Mappings', icon: icons.mappings },
-    { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
-    { id: 'audit', label: 'Audit Log', icon: icons.audit },
-    { id: 'settings', label: 'Settings', icon: icons.settings },
-    { id: 'database', label: 'Database', icon: icons.database },
+  // Grouped IA: related destinations under labeled sections instead of a flat
+  // 10-item list; destructive System tools sit apart from day-to-day Access.
+  const navSections = [
+    { section: null, items: [{ id: 'dashboard', label: 'Dashboard', icon: icons.dashboard }] },
+    { section: 'Access', items: [
+      { id: 'users', label: 'Users', icon: icons.users },
+      { id: 'apps', label: 'Apps', icon: icons.apps },
+      { id: 'roles', label: 'Roles', icon: icons.roles },
+      { id: 'mappings', label: 'Mappings', icon: icons.mappings },
+      { id: 'impersonate', label: 'Impersonate', icon: icons.impersonate },
+    ] },
+    { section: 'Directory', items: [{ id: 'ldap', label: 'LDAP Settings', icon: icons.ldap }] },
+    { section: 'System', items: [
+      { id: 'audit', label: 'Audit Log', icon: icons.audit },
+      { id: 'settings', label: 'Settings', icon: icons.settings },
+      { id: 'database', label: 'Database', icon: icons.database },
+    ] },
   ];
 
-  const pages = {
-    dashboard: Dashboard,
-    users: UsersPage,
-    apps: AppsPage,
-    roles: RolesPage,
-    ldap: LDAPPage,
-    mappings: MappingsPage,
-    impersonate: ImpersonatePage,
-    audit: AuditPage,
-    settings: SettingsPage,
-    database: DatabasePage,
-  };
-
-  const PageComponent = pages[page] || Dashboard;
+  const PageComponent = PAGES[page] || Dashboard;
+  const labelStyle = 'padding:var(--sp-4) var(--sp-3) var(--sp-1);font-size:0.65rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted)';
 
   return html`
     <div class="app-layout">
@@ -2249,17 +2460,20 @@ function App() {
           <span>Admin Console</span>
         </div>
         <div class="sidebar-nav">
-          ${navItems.map(item => html`
-            <button class="nav-item ${page === item.id ? 'active' : ''}" onClick=${() => setPage(item.id)}>
-              ${item.icon}
-              <span>${item.label}</span>
-            </button>
+          ${navSections.map(grp => html`
+            ${grp.section ? html`<div style=${labelStyle}>${grp.section}</div>` : null}
+            ${grp.items.map(item => html`
+              <button class="nav-item ${page === item.id ? 'active' : ''}" aria-current=${page === item.id ? 'page' : null} onClick=${() => setPage(item.id)}>
+                ${item.icon}
+                <span>${item.label}</span>
+              </button>
+            `)}
           `)}
         </div>
         <div class="sidebar-footer">
-          <button class="theme-toggle" onClick=${toggleTheme} title="Toggle theme">
-            ${theme === 'dark' ? icons.sun : icons.moon}
-            <span style="margin-left:var(--sp-2);font-size:0.75rem">${theme === 'auto' ? 'Auto' : theme === 'dark' ? 'Light' : 'Dark'}</span>
+          <button class="theme-toggle" onClick=${toggleTheme} title="Cycle theme: Light → Dark → Auto">
+            ${theme === 'light' ? icons.sun : icons.moon}
+            <span style="margin-left:var(--sp-2);font-size:0.75rem">Theme: ${themeLabel}</span>
           </button>
           <button class="btn btn-sm btn-secondary" style="width:100%;margin-top:var(--sp-2)" onClick=${() => { clearApiKey(); setAuthed(false); }}>Sign Out</button>
         </div>
