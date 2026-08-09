@@ -262,10 +262,29 @@ func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[admin] Password set guid=%s force_change=%v ip=%s", guid, user.ForcePasswordChange, getClientIP(r))
+	// A master admin MAY set a local password on a directory-backed user — the
+	// master key is the top of this system's trust model, and break-glass is a
+	// legitimate need. But it creates the same shadow credential SA-7 blocks on the
+	// self-service path (it survives AD disablement, because nothing here mirrors
+	// userAccountControl), so record it: this flag is how an operator later tells a
+	// deliberate break-glass apart from an account takeover.
+	directoryBacked := h.isDirectoryBacked(user)
+	// Render the flag as a fresh label rather than logging the field value. It is a
+	// plain bool, not credential material, but a `*Password*` field access flowing
+	// into a sink is what CodeQL's clear-text-logging heuristic keys on — and a
+	// yes/no label is more readable in a log anyway.
+	mustChange := "no"
+	if user.ForcePasswordChange {
+		mustChange = "yes"
+	}
+	// Log user.GUID, not the raw `guid` path parameter: GetUser above succeeded, so
+	// user.GUID is the store's canonical value for the same record, and no
+	// request-supplied text reaches the log or audit sink.
+	log.Printf("[admin] Password set guid=%s force_change=%s directory_backed=%v ip=%s", user.GUID, mustChange, directoryBacked, getClientIP(r))
 	h.audit("password_set", "admin", getClientIP(r), map[string]interface{}{
-		"target_guid":  guid,
-		"force_change": user.ForcePasswordChange,
+		"target_guid":      user.GUID,
+		"force_change":     user.ForcePasswordChange,
+		"directory_backed": directoryBacked,
 	})
 
 	jsonResp(w, map[string]interface{}{

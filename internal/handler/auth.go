@@ -433,6 +433,65 @@ func (h *Handler) issueTokenPair(user *store.User, roles []string, perms []strin
 	return accessToken, refreshToken, int(h.cfg.AccessTTL.Seconds()), nil
 }
 
+// isDirectoryBacked reports whether the user's AUTHORITATIVE credential lives in
+// the directory (AD, via LDAP or Kerberos) rather than in SimpleAuth.
+//
+// This is the server-side truth behind the `auth_source` hint /api/auth/userinfo
+// returns. It exists because a local password hash on a directory identity is a
+// permanent SHADOW credential: authenticateUser resolves the "local" mapping
+// FIRST ("local users always take priority") and nothing in SimpleAuth mirrors AD
+// account state — there is no userAccountControl read anywhere — so such a hash
+// keeps working after the AD account is disabled or the employee is terminated,
+// while the victim's AD password still works (a failed local check falls through
+// to the LDAP step) so nothing looks wrong (SA-7).
+//
+// No single signal is complete, so three are combined:
+//
+//   - OwnerAppID != "" → an app-LOCAL user (M5). Their password genuinely lives
+//     here and they must keep self-service. Checked first because it is exact.
+//   - SAMAccountName != "" → written ONLY by syncUserFromLDAP and the LDAP/Kerberos
+//     JIT paths; no admin or app API exposes the field, so it is a reliable
+//     positive. Not sufficient alone: POST /api/admin/ldap/import-users creates the
+//     "ldap" mapping but leaves SAMAccountName empty until the first login.
+//   - any identity mapping whose provider is neither "local" nor "applocal:<app_id>"
+//     — "ldap", "kerberos", or any federated provider an admin attached. Note this
+//     is deliberately NOT userinfo's plain `!= "local"` test, which would wrongly
+//     call an app-local customer a directory user.
+//
+// A user who is BOTH (an admin-created local account later linked to AD) counts as
+// directory-backed here. That only bites on the CREATE path — callers consult this
+// when the local hash is EMPTY; an existing local hash stays rotatable with proof
+// of possession.
+//
+// NOTE: internal/migrate/bundle.go:classifyUser answers a DIFFERENT question — it
+// must produce a portable KEY for a user, not a yes/no verdict — and classifies on
+// hash-presence and SAMAccountName rather than this predicate. Do not unify the
+// two: internal/migrate importing from internal/handler would invert the
+// dependency direction.
+func (h *Handler) isDirectoryBacked(user *store.User) bool {
+	if user.OwnerAppID != "" {
+		return false
+	}
+	if user.SAMAccountName != "" {
+		return true
+	}
+	mappings, err := h.store.GetMappingsForUser(user.GUID)
+	if err != nil {
+		// Fail CLOSED. A store error means we cannot PROVE the account is local. The
+		// cost of a false positive is one refused password change (an admin can still
+		// set it); the cost of a false negative is a permanent shadow credential on
+		// an AD identity.
+		log.Printf("[password] mappings lookup failed guid=%s err=%v — treating as directory-backed", user.GUID, err)
+		return true
+	}
+	for _, m := range mappings {
+		if m.Provider != "local" && !strings.HasPrefix(m.Provider, "applocal:") {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePreferredUsername finds the username for a user from identity mappings.
 // Priority: local mapping > ldap mapping > email > display name.
 func (h *Handler) resolvePreferredUsername(user *store.User) string {
@@ -813,8 +872,54 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify current password if user has one set (skip if force_password_change is set)
-	if user.PasswordHash != "" && !user.ForcePasswordChange {
+	// This endpoint ROTATES an existing SimpleAuth-local password. It must never
+	// CREATE one. The old guard (`PasswordHash != "" && !ForcePasswordChange`)
+	// skipped the entire proof-of-possession block whenever the hash was empty —
+	// which is exactly the state of every directory user, whose credential lives
+	// in AD — so a bearer token minted for ANY audience could POST
+	// {"new_password":...} with no current_password and plant a permanent local
+	// bcrypt hash on an AD-backed record (SA-7). See isDirectoryBacked for why
+	// that hash then outlives the AD account.
+	//
+	// Both refusals are 403, never "supply current_password": a directory user has
+	// no local password to prove, so demanding one would be an unsatisfiable 400
+	// loop rather than an honest "wrong place — change it in AD".
+	if user.PasswordHash == "" {
+		ip := getClientIP(r)
+		if h.isDirectoryBacked(user) {
+			// Log the GUID, not the resolved username: the GUID is server-generated
+			// and unspoofable, whereas a directory-supplied username in a security
+			// log is both injectable and less useful for correlation.
+			log.Printf("[password] REFUSED directory-backed guid=%s ip=%s (attempt to plant a local password)",
+				user.GUID, ip)
+			h.audit("password_change_denied", user.GUID, ip, map[string]interface{}{
+				"reason": "directory_backed",
+			})
+			jsonError(w, "password is managed by the directory — change it in Active Directory", http.StatusForbidden)
+			return
+		}
+		// Not directory-backed, but no local credential exists either: an
+		// admin-created account with no password. There is no first-time-set flow
+		// to protect here — authenticateUser requires a non-empty hash in every
+		// local branch, so this user can never log in and can never hold a token of
+		// their own. Setting the initial password is an administrative act
+		// (PUT /api/admin/users/{guid}/password).
+		log.Printf("[password] REFUSED no local password guid=%s ip=%s", user.GUID, ip)
+		h.audit("password_change_denied", user.GUID, ip, map[string]interface{}{
+			"reason": "no_local_password",
+		})
+		jsonError(w, "no local password is set for this account — ask an administrator to set one", http.StatusForbidden)
+		return
+	}
+
+	// Proof of possession. ForcePasswordChange is the admin temp-password flow: the
+	// admin already wrote a REAL hash via PUT /api/admin/users/{guid}/password
+	// (admin.go writes user.PasswordHash immediately before setting the flag), the
+	// login response carried force_password_change:true, and the user now changes
+	// it without re-typing the temp password. That flow always runs with a
+	// NON-EMPTY hash, which is precisely why the empty-hash gate above can sit
+	// ahead of it.
+	if !user.ForcePasswordChange {
 		if req.CurrentPassword == "" {
 			jsonError(w, "current_password required", http.StatusBadRequest)
 			return

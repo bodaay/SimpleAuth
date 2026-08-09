@@ -84,6 +84,7 @@ source of truth for what is currently open vs. fixed.
 | H12 | `RevokeUserTokens`/`RevokeTokenFamily` drop DELETE errors → fail-open revocation | HIGH | FIXED | 2026-06-01 (Pass 3) |
 | H13 | OIDC login-error redirect drops `code_challenge` → PKCE silently disabled after any failed login attempt (M6 bypass) | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | H14 | Bolt `SetIdentityMapping` leaves a stale reverse-index claim on the previous owner → wrong `preferred_username` in tokens; delete cascades destroy a live mapping | HIGH | FIXED | 2026-08-08 (Pass 4) |
+| SA-7 | `POST /api/auth/reset-password` creates a local password on a directory (AD) user with no proof of possession → permanent shadow credential surviving AD termination | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | S4 | Go SDK `Verify` accepts `typ=app-mgmt`/`typ=ID` tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S5 | Python SDK `verify` accepts refresh tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S6 | JS/.NET SDKs accept ID tokens as access; .NET threw non-SDK exception | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
@@ -964,3 +965,94 @@ Postgres harness in this repo. Verify by hand before relying on it — build a B
 DB containing an `applocal:<app>:<user>` mapping, run the migration, and confirm
 `SELECT provider, external_id FROM sa_identity_mappings` returns the two halves
 intact, then actually log in as that user against the Postgres-backed instance.
+## Audit Pass 4 — SA-7 — reset-password creates a shadow credential on directory users
+
+**Severity:** HIGH. Reproduced end to end.
+
+`handleResetPassword` gated proof of possession on
+`user.PasswordHash != "" && !user.ForcePasswordChange`. That condition conflates
+two orthogonal questions — *"is there a local credential to prove?"* and *"is this
+account allowed to have one at all?"* — and a directory-backed user has an **empty**
+`PasswordHash`, because their credential lives in AD. The whole verification block
+was therefore skipped and the handler unconditionally **wrote** a fresh bcrypt hash.
+The endpoint was a CREATE path, not merely a ROTATE path.
+
+**Exploit chain, all links verified present:**
+
+- LDAP and Kerberos JIT provisioning create the user with `SAMAccountName` set,
+  `PasswordHash` empty, and BOTH an `ldap` and a `local` identity mapping.
+- `authenticateUser` resolves the `local` mapping FIRST — *"local users always take
+  priority"* — so a planted hash is consulted before AD is ever contacted.
+- `validateAccessToken` performs no audience check, so a token minted for **any**
+  registered app reaches this handler.
+- Nothing mirrors AD account state: `grep -rn userAccountControl` returns zero hits.
+  The planted hash therefore outlives disablement, password rotation and
+  termination.
+- A failed local check falls through to the LDAP step, so the victim's AD password
+  keeps working and nothing looks wrong.
+- The only enforcement was **client-side**: the account page hides the form when
+  `auth_source === 'ldap'`.
+
+Net effect: one stolen short-lived, audience-scoped bearer token converts into a
+permanent primary credential for that user at every app, defeating AD offboarding.
+
+**Approach.** Gate on the empty hash *before* any bcrypt work and refuse with 403:
+
+- directory-backed → *"password is managed by the directory"*.
+- no local password and not directory-backed → *"ask an administrator"*. This locks
+  out nobody: `authenticateUser` requires a non-empty hash in every local branch, so
+  such a user can never log in and can never hold a token of their own.
+
+Both are 403 rather than "supply `current_password`", because a directory user has
+no local password to prove — demanding one would be an unsatisfiable 400 loop
+instead of an honest answer.
+
+`isDirectoryBacked` combines three signals, because none is complete alone:
+`OwnerAppID != ""` short-circuits to app-local (their password genuinely lives
+here); `SAMAccountName != ""` is a reliable positive (written only by
+`syncUserFromLDAP` and the JIT paths — no admin or app API exposes the field) but is
+empty for users created by `POST /api/admin/ldap/import-users` until their first
+login; and any mapping whose provider is neither `local` nor `applocal:<app_id>`.
+It fails **closed** on a store error. Note this is deliberately *not* userinfo's
+plain `!= "local"` test, which would wrongly classify an app-local customer as a
+directory user and refuse them their own password change.
+
+**Why the empty-hash gate can precede the force-change branch.** `ForcePasswordChange`
+has exactly two writers (`handleSetPassword` and `handleBootstrap`) and both assign
+a real bcrypt hash immediately before setting the flag, so the flag never coexists
+with an empty hash. `TestResetPasswordForceChangeStillWorks` asserts this directly
+rather than trusting the reading.
+
+**Master-admin path unchanged.** `PUT /api/admin/users/{guid}/password` may still set
+a local password on a directory user — the master key is the top of this trust model
+and break-glass is legitimate — but the audit record and log line now carry
+`directory_backed`, which is how an operator later distinguishes deliberate
+break-glass from an account takeover.
+
+**Already-planted hashes are NOT cleaned up.** Nothing records the provenance of a
+password hash, so a migration cannot distinguish a maliciously planted credential
+from a legitimate admin-set break-glass one. Operators upgrading should audit for
+directory users carrying a local hash and clear the ones they cannot account for.
+
+**Hardening that fell out of this (`getClientIP`, `internal/handler/middleware.go`).**
+The refusal path above writes a security log line carrying the client IP, and
+`getClientIP` returned the `X-Forwarded-For` / `X-Real-IP` value **verbatim**. That
+value is header content, so a client behind the trusted proxy could put arbitrary
+text — including newlines — into an "IP" field and forge log and audit entries that
+look like genuine events. It now requires the forwarded value to parse as an IP and
+otherwise falls back to the real remote address, which is both safer and more
+truthful (a non-IP in that field is meaningless). This is also the taint source
+behind most of the repository's `go/log-injection` alerts.
+
+*Not* changed: `getClientIP` still takes the LEFTMOST `X-Forwarded-For` entry,
+which remains client-claimed under the shipped nginx config. That is a separate
+pre-existing finding about IP *attribution*, not log integrity.
+
+**Tests:** `internal/handler/reset_password_test.go` —
+`TestResetPasswordRefusesDirectoryUser` drives the full chain (plant → verify no
+hash written → verify the credential does not authenticate);
+`TestResetPasswordRefusesAccountWithNoLocalPassword`;
+`TestResetPasswordLocalUserStillWorks` (400 without, 403 wrong, 200 correct, and the
+rotated password authenticates); `TestResetPasswordForceChangeStillWorks`;
+`TestIsDirectoryBackedClassification` covering the app-local carve-out. The first
+two return `200 {"status":"password updated"}` with the fix reverted.

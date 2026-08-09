@@ -322,6 +322,15 @@ func (h *Handler) issueOIDCCodeRedirect(w http.ResponseWriter, r *http.Request, 
 	if state != "" {
 		redirectTarget += "&state=" + url.QueryEscape(state)
 	}
+	// Re-validate at the SINK. redirectURI is allowlist-checked by every caller
+	// before we get here, and again below when the code is redeemed — but this is
+	// the moment an auth code leaves the server, so prove the destination one more
+	// time rather than trusting that every present and future caller did.
+	if app, err := h.resolveApp(appID); err != nil || !h.appAllowsRedirect(app, redirectURI) {
+		log.Printf("[oidc] refusing code delivery to a non-allowlisted redirect_uri app=%q", appID)
+		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
+		return
+	}
 	http.Redirect(w, r, redirectTarget, http.StatusFound)
 }
 

@@ -136,7 +136,8 @@ func (rl *rateLimiter) cleanup() {
 }
 
 // trustedCIDRs is set during handler initialization from config.TrustedProxyCIDRs.
-// If empty, forwarded headers are trusted from any source (backwards compatible).
+// If empty, forwarded headers are trusted from NO source (isTrustedProxy returns
+// false), which is what prevents X-Forwarded-For spoofing by default.
 var trustedCIDRs []*net.IPNet
 
 func getClientIP(r *http.Request) string {
@@ -144,12 +145,25 @@ func getClientIP(r *http.Request) string {
 
 	// Only trust forwarded headers if the direct connection is from a trusted proxy
 	if isTrustedProxy(remoteIP, trustedCIDRs) {
+		// The forwarded value must actually PARSE AS AN IP. It is header content, so
+		// without this an attacker behind the trusted proxy can put arbitrary text —
+		// including newlines — into every log line and audit record that carries the
+		// client IP, forging entries that look like genuine events. An IP field
+		// holding a non-IP is meaningless anyway, so falling back to the real remote
+		// address is both safer and more truthful.
+		//
+		// Return net.IP.String(), not the header substring: the canonical form is a
+		// fresh string built by the stdlib from a parsed address, so no header text
+		// reaches a log or audit sink at all. It also normalises IPv6 spellings, so
+		// the same client correlates across entries.
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.SplitN(xff, ",", 2)
-			return strings.TrimSpace(parts[0])
+			if ip := net.ParseIP(strings.TrimSpace(parts[0])); ip != nil {
+				return ip.String()
+			}
 		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return xri
+		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+			return ip.String()
 		}
 	}
 
