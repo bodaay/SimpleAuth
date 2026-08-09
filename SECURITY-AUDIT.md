@@ -85,6 +85,7 @@ source of truth for what is currently open vs. fixed.
 | H13 | OIDC login-error redirect drops `code_challenge` → PKCE silently disabled after any failed login attempt (M6 bypass) | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | H14 | Bolt `SetIdentityMapping` leaves a stale reverse-index claim on the previous owner → wrong `preferred_username` in tokens; delete cascades destroy a live mapping | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | SA-7 | `POST /api/auth/reset-password` creates a local password on a directory (AD) user with no proof of possession → permanent shadow credential surviving AD termination | HIGH | FIXED | 2026-08-08 (Pass 4) |
+| H15 | Migration bundle carries an arbitrary `audience` → a migration-token holder mints tokens another app's resource servers accept | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | S4 | Go SDK `Verify` accepts `typ=app-mgmt`/`typ=ID` tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S5 | Python SDK `verify` accepts refresh tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S6 | JS/.NET SDKs accept ID tokens as access; .NET threw non-SDK exception | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
@@ -1056,3 +1057,82 @@ hash written → verify the credential does not authenticate);
 rotated password authenticates); `TestResetPasswordForceChangeStillWorks`;
 `TestIsDirectoryBackedClassification` covering the app-local carve-out. The first
 two return `200 {"status":"password updated"}` with the fix reverted.
+## Audit Pass 4 — H15 — migration bundle claims another app's audience
+
+**Severity:** HIGH.
+
+`Apply` carried the bundle's audience onto the target app unchecked:
+
+```go
+if b.App.Audience != "" { app.Audience = b.App.Audience }
+```
+
+**Why it is exploitable.** The audience is a security *principal*, not a label:
+`appAudience()` feeds `claims.Audience` on every issuance path, and SimpleAuth
+deliberately does not pin `aud` centrally — **F51** records that issuer/audience
+are enforced at the SDK/RP layer. The string in `aud`, verified offline against the
+shared JWKS, is therefore the only thing between a token and a victim resource
+server.
+
+And the migration-token holder is **not** a master admin: `guardMigrationCall`
+authenticates a single-use bearer token scoped to ONE target app. Nothing
+restricted the bundle to naming that app's own identity.
+
+Attack: the standalone team POSTs a bundle with `app.audience = "billing-api"`,
+`catalog.role_permissions = {"admin":["billing:write"]}`, and a local user with a
+self-chosen password hash and `roles:["admin"]`. They then log in at their own
+migrated app and receive `aud: ["billing-api"]`, `roles:["admin"]`, signed by the
+central's key. The real billing service verifies signature + audience offline and
+admits them as a billing admin.
+
+**The no-effort variant.** `Package` sets `aud = app.AppID` when the source home app
+has no explicit audience, and `ensureDefaultApp` creates it with
+`Audience: appID` — i.e. **`"simpleauth"`** on a stock standalone. Migrating a stock
+standalone therefore stamped the target with the *central's own default-app*
+audience, whose tokens carry global directory roles. The pre-fix integration tests
+encoded this as expected behavior; they now set a deliberate source audience via
+the new `newMigTargetFrom` helper, which is what a real migration must do.
+
+**Approach.** `resolveCarriedAudience` decides the target's audience and refuses a
+claim on anyone else's: empty carries nothing (keeps the master-admin-set value);
+the target's **current audience** is allowed, so re-running a migration is
+idempotent; the central's **default app id** is refused explicitly; anything
+matching another registered app's audience or app_id is refused.
+
+The self-allow is deliberately the target's *audience only*, **not** its `app_id`.
+Nothing enforces audience uniqueness at app creation, so a central can legitimately
+hold `App{AppID:"reports", Audience:"analytics"}` while the operator registers the
+migration target as `App{AppID:"analytics", Audience:"analytics-migrated"}`.
+Self-allowing the app_id there would hand the bundle `"analytics"` — the live
+audience of a third-party resource server — which is precisely the takeover this
+refuses. An adversarial review of the first cut of this fix found exactly that
+bypass; `TestApplyRejectsAudienceMatchingTargetAppID` pins it. The audience is
+trimmed, so whitespace cannot smuggle a near-collision past the check.
+
+The default-app id is checked *explicitly* rather than through `ListApps()` because
+`ensureDefaultApp` is called only from `main.go` — on an embedded deployment
+(`pkg/server`) the row can be absent while `resolveApp` still synthesizes it, so a
+`ListApps`-only check would miss the highest-value target.
+
+Enforced in **both** `Classify` (as a `Blocked` entry, so the existing preflight UI
+renders it and `Report.OK()` is false) and `Apply` (before its first write, so a
+refused bundle leaves nothing behind). `Apply` re-checks rather than trusting the
+dry run because it is reachable on its own and the central's app set can change
+between preflight and commit. `Report.AudienceToApply` surfaces the value in the
+dry run, and the commit audit entry records it.
+
+Fails **closed**: if `ListApps` errors we cannot prove the audience is free, so the
+migration is refused.
+
+**Known, not fixed here.** `RedirectURIs` and `CORSOrigins` are carried the same
+unchecked way (pre-existing). A bundle submitter who can rewrite `redirect_uris`
+controls token delivery for that app — but only for the app the token already
+scopes them to, so it is a lesser issue than claiming a *third party's* audience.
+It should still be reviewed.
+
+**Tests:** `internal/migrate/audience_test.go` — foreign audience refused with
+nothing written; app_id collision refused; the central's default-app audience
+refused *with no such app row present*; a distinct audience still carried;
+re-running the same migration is idempotent; whitespace trimmed; an empty carried
+audience preserves the target's; and `Classify` blocks with the conflicting app
+named while reporting `AudienceToApply` on the happy path.

@@ -81,7 +81,7 @@ func TestPackageClassifyApply_SameAD(t *testing.T) {
 	must(t, central.SaveLDAPConfig(&store.LDAPConfig{Domain: "corp.local"}))
 	must(t, central.CreateApp(&store.App{AppID: "billing", Audience: "billing"}))
 
-	rep, err := Classify(b, central, "billing")
+	rep, err := Classify(b, central, "billing", "simpleauth")
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestPackageClassifyApply_SameAD(t *testing.T) {
 		t.Fatalf("expected a direct-perm note")
 	}
 
-	res, err := Apply(b, central, "billing", true)
+	res, err := Apply(b, central, "billing", "simpleauth", true)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPackageClassifyApply_SameAD(t *testing.T) {
 	}
 
 	// Idempotent re-apply: no second local user, assignments unchanged.
-	res2, err := Apply(b, central, "billing", true)
+	res2, err := Apply(b, central, "billing", "simpleauth", true)
 	if err != nil {
 		t.Fatalf("re-apply: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestClassify_CentralNotOnAD_BlocksADUsers(t *testing.T) {
 	central := open(t) // NO LDAP configured
 	must(t, central.CreateApp(&store.App{AppID: "billing", Audience: "billing"}))
 
-	rep, err := Classify(b, central, "billing")
+	rep, err := Classify(b, central, "billing", "simpleauth")
 	if err != nil {
 		t.Fatalf("classify: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestClassify_DifferentAD_BlocksADUsers(t *testing.T) {
 	must(t, central.SaveLDAPConfig(&store.LDAPConfig{Domain: "other.local"})) // different AD
 	must(t, central.CreateApp(&store.App{AppID: "billing", Audience: "billing"}))
 
-	rep, _ := Classify(b, central, "billing")
+	rep, _ := Classify(b, central, "billing", "simpleauth")
 	if rep.OK() || len(rep.Blocked) != 2 {
 		t.Fatalf("different-AD must block the 2 AD users: %+v", rep.Blocked)
 	}
@@ -186,7 +186,7 @@ func TestApply_DoesNotDowngradeRequireAssignment(t *testing.T) {
 	central := open(t)
 	must(t, central.CreateApp(&store.App{AppID: "payroll", Audience: "payroll", RequireAssignment: true}))
 	b := &Bundle{SchemaRev: SchemaRev, App: AppConfig{RequireAssignment: false}}
-	if _, err := Apply(b, central, "payroll", false); err != nil {
+	if _, err := Apply(b, central, "payroll", "simpleauth", false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if app, _ := central.GetApp("payroll"); !app.RequireAssignment {
@@ -204,7 +204,7 @@ func TestApply_ValidatesPresentationFields(t *testing.T) {
 	bad := &Bundle{SchemaRev: SchemaRev, App: AppConfig{
 		BaseURL: "http://evil.example", Icon: "../../evil",
 	}}
-	if _, err := Apply(bad, central, "portal", false); err != nil {
+	if _, err := Apply(bad, central, "portal", "simpleauth", false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if app, _ := central.GetApp("portal"); app.BaseURL != "" || app.Icon != "" {
@@ -216,7 +216,7 @@ func TestApply_ValidatesPresentationFields(t *testing.T) {
 	good := &Bundle{SchemaRev: SchemaRev, App: AppConfig{
 		BaseURL: "https://portal.example.com/", Icon: "/icon.svg",
 	}}
-	if _, err := Apply(good, central, "portal2", false); err != nil {
+	if _, err := Apply(good, central, "portal2", "simpleauth", false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if app, _ := central.GetApp("portal2"); app.BaseURL != "https://portal.example.com" || app.Icon != "/icon.svg" {
@@ -231,7 +231,7 @@ func TestClassify_FreshTargetGuard(t *testing.T) {
 	must(t, central.CreateApp(&store.App{AppID: "billing", Audience: "billing"}))
 	must(t, central.SaveAppAuthz(&store.AppAuthz{AppID: "billing", UserAssignments: map[string][]string{"x": {"r"}}}))
 	b := &Bundle{SchemaRev: SchemaRev, Users: []UserEntry{{Kind: KindLocal, Key: "bob", Roles: []string{"r"}, PasswordHash: "h"}}}
-	rep, _ := Classify(b, central, "billing")
+	rep, _ := Classify(b, central, "billing", "simpleauth")
 	if rep.OK() {
 		t.Fatal("classify must block a non-empty target app")
 	}
@@ -244,7 +244,7 @@ func TestClassify_FreshTargetGuard_Groups(t *testing.T) {
 	must(t, central.CreateApp(&store.App{AppID: "billing", Audience: "billing"}))
 	must(t, central.SaveAppAuthz(&store.AppAuthz{AppID: "billing", GroupAssignments: map[string][]string{"Finance": {"viewer"}}}))
 	b := &Bundle{SchemaRev: SchemaRev, Users: []UserEntry{{Kind: KindLocal, Key: "bob", Roles: []string{"r"}, PasswordHash: "h"}}}
-	rep, _ := Classify(b, central, "billing")
+	rep, _ := Classify(b, central, "billing", "simpleauth")
 	if rep.OK() {
 		t.Fatal("classify must block a target that has group assignments")
 	}

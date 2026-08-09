@@ -36,7 +36,7 @@ func TestMoreScenarios(t *testing.T) {
 		if rot.Secret == "" {
 			t.Fatal("no rotated secret")
 		}
-		mig := newMigTarget(t, central, "secretapp", true)
+		mig := newMigTargetFrom(t, central, local, "secretapp", true)
 		local.must(t, "POST", "/api/admin/migrate-to-central/commit", mig)
 
 		if code, data := central.doBasic(t, "POST", "/api/app/token", "secretapp", rot.Secret); code != http.StatusOK {
@@ -55,7 +55,7 @@ func TestMoreScenarios(t *testing.T) {
 		central.must(t, "DELETE", "/api/admin/ldap", nil)
 		t.Cleanup(func() { central.must(t, "PUT", "/api/admin/ldap", corpCfg) })
 
-		mig := newMigTarget(t, central, "noad", false)
+		mig := newMigTargetFrom(t, central, sAD, "noad", false)
 		var rep migrate.Report
 		decode(t, sAD.must(t, "POST", "/api/admin/migrate-to-central/preflight", mig), &rep)
 		if rep.OK() {
@@ -67,7 +67,7 @@ func TestMoreScenarios(t *testing.T) {
 	// The cross-install security guards: single-use token + fresh-target.
 	t.Run("migration_guards", func(t *testing.T) {
 		local.must(t, "PUT", "/api/admin/role-permissions", map[string][]string{"r": {}}) // ensure the bundle carries some authz
-		mig := newMigTarget(t, central, "guardapp", false)
+		mig := newMigTargetFrom(t, central, local, "guardapp", false)
 
 		local.must(t, "POST", "/api/admin/migrate-to-central/commit", mig) // first commit OK
 		if code, _ := local.do(t, "POST", "/api/admin/migrate-to-central/commit", mig); code != http.StatusUnauthorized {
@@ -111,7 +111,7 @@ func TestMoreScenarios(t *testing.T) {
 		sAD.must(t, "PUT", "/api/admin/users/"+bg.GUID+"/mappings", map[string]any{"provider": "local", "external_id": "breakglass"})
 		sAD.must(t, "PUT", "/api/admin/users/"+bg.GUID+"/roles", []string{"ops"})
 
-		mig := newMigTarget(t, central, "mixedapp", false)
+		mig := newMigTargetFrom(t, central, sAD, "mixedapp", false)
 
 		var rep migrate.Report
 		decode(t, sAD.must(t, "POST", "/api/admin/migrate-to-central/preflight", mig), &rep)

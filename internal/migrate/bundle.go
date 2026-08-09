@@ -202,6 +202,10 @@ type Report struct {
 	Notes             []string      `json:"notes,omitempty"`
 
 	RedirectURIsToReview []string `json:"redirect_uris_to_review,omitempty"`
+
+	// AudienceToApply is the audience Apply will end up storing on the target —
+	// shown in the dry run so an operator sees a carried audience BEFORE committing.
+	AudienceToApply string `json:"audience_to_apply,omitempty"`
 }
 
 // BlockedUser is a user the central cannot satisfy as-is.
@@ -210,12 +214,75 @@ type BlockedUser struct {
 	Reason string `json:"reason"`
 }
 
+// resolveCarriedAudience decides what audience the target app should end up with,
+// and refuses a bundle that tries to claim somebody else's.
+//
+// The audience is a security PRINCIPAL, not a label: appAudience() feeds
+// claims.Audience on every issuance path, and SimpleAuth deliberately does not
+// pin `aud` centrally — F51 records that issuer/audience are enforced at the
+// SDK/RP layer. So the string in `aud`, verified offline against the shared JWKS,
+// is the ONLY thing between a token and a victim resource server.
+//
+// The migration-token holder is not a master admin: guardMigrationCall
+// authenticates a single-use bearer token scoped to ONE target app. Carrying an
+// arbitrary audience therefore lets that holder re-stamp their own app to mint
+// `aud: ["billing-api"]` with self-chosen roles from the bundle's catalog, which
+// the real billing service then admits (H15).
+//
+// Rules, in order:
+//   - empty carried audience  → keep whatever the master admin set on the target.
+//   - unchanged / equal to the target's own app_id → fine, and idempotent so a
+//     re-run of the same migration does not collide with itself.
+//   - equal to the central's DEFAULT app id → refused. This is checked explicitly
+//     rather than via ListApps because ensureDefaultApp is called only from
+//     main.go — on an embedded deployment (pkg/server) the row can be absent while
+//     resolveApp still synthesizes it, so a ListApps-only check would miss the
+//     highest-value target. It is also the no-effort version of the attack: a
+//     stock standalone packages `aud = "simpleauth"`.
+//   - equal to any OTHER registered app's audience or app_id → refused.
+func resolveCarriedAudience(central store.Store, target *store.App, defaultAppID, bundleAud string) (string, string, error) {
+	aud := strings.TrimSpace(bundleAud)
+	if aud == "" {
+		return target.Audience, "", nil
+	}
+	// Idempotency: carrying the value the target ALREADY holds is a no-op, so a
+	// re-run of the same migration cannot collide with itself.
+	//
+	// Deliberately NOT `|| aud == target.AppID`. The target's app_id is not proven
+	// free: nothing in handleCreateApp or handleUpdateApp enforces audience
+	// uniqueness, so a central can legitimately hold App{AppID:"reports",
+	// Audience:"analytics"} while an operator registers the migration target as
+	// App{AppID:"analytics", Audience:"analytics-migrated"}. Self-allowing the
+	// app_id there would hand the bundle "analytics" — the live audience of a
+	// third-party resource server — which is exactly the takeover this refuses.
+	if aud == target.Audience {
+		return aud, "", nil
+	}
+	if defaultAppID != "" && aud == defaultAppID {
+		return "", fmt.Sprintf("bundle audience %q is the central's default app — refusing (it would mint tokens the global directory app's consumers accept)", aud), nil
+	}
+	apps, err := central.ListApps()
+	if err != nil {
+		// Fail CLOSED: without the app list we cannot prove the audience is free.
+		return "", "", fmt.Errorf("list apps for audience collision check: %w", err)
+	}
+	for _, a := range apps {
+		if a.AppID == target.AppID {
+			continue
+		}
+		if aud == a.Audience || aud == a.AppID {
+			return "", fmt.Sprintf("bundle audience %q is already claimed by app %q — refusing (tokens minted for this app would be accepted by that app's resource servers)", aud, a.AppID), nil
+		}
+	}
+	return aud, "", nil
+}
+
 // OK reports whether the migration can proceed (no blocked users).
 func (r *Report) OK() bool { return len(r.Blocked) == 0 }
 
 // Classify computes the dry-run report. It validates every user is satisfiable on
 // the central WITHOUT mutating anything.
-func Classify(b *Bundle, central store.Store, targetAppID string) (*Report, error) {
+func Classify(b *Bundle, central store.Store, targetAppID, defaultAppID string) (*Report, error) {
 	r := &Report{SourceVersion: b.SourceVersion, TargetApp: targetAppID, RedirectURIsToReview: b.App.RedirectURIs}
 
 	// Fresh-target guard: Apply wholesale-replaces the target's authz, so refuse a
@@ -225,6 +292,21 @@ func Classify(b *Bundle, central store.Store, targetAppID string) (*Report, erro
 	if cur, _ := central.GetAppAuthz(targetAppID); cur != nil && (len(cur.UserAssignments) > 0 || len(cur.GroupAssignments) > 0 || len(cur.RolePermissions) > 0 || len(cur.Roles) > 0 || len(cur.Permissions) > 0) {
 		r.Blocked = append(r.Blocked, BlockedUser{Key: targetAppID, Reason: "target app already has authorization configured — migrate into a freshly-created app"})
 		return r, nil
+	}
+
+	// Audience collision: refuse a bundle that claims another app's audience (H15).
+	// Reported as a Blocked entry so the existing preflight UI renders it and
+	// Report.OK() is false, which is what stops handleMigrationCommit.
+	if target, err := central.GetApp(targetAppID); err == nil {
+		aud, conflict, err := resolveCarriedAudience(central, target, defaultAppID, b.App.Audience)
+		if err != nil {
+			return nil, err
+		}
+		if conflict != "" {
+			r.Blocked = append(r.Blocked, BlockedUser{Key: targetAppID, Reason: conflict})
+			return r, nil
+		}
+		r.AudienceToApply = aud
 	}
 
 	centralLDAP, _ := central.GetLDAPConfig()
@@ -295,7 +377,7 @@ type ApplyResult struct {
 // idempotent for local users (an existing app-local username is left in place).
 // carrySecret copies the source app's secret hash so the consumer's existing
 // secret keeps working; pass false to keep the target app's own secret.
-func Apply(b *Bundle, central store.Store, targetAppID string, carrySecret bool) (*ApplyResult, error) {
+func Apply(b *Bundle, central store.Store, targetAppID, defaultAppID string, carrySecret bool) (*ApplyResult, error) {
 	res := &ApplyResult{}
 
 	app, err := central.GetApp(targetAppID)
@@ -303,9 +385,17 @@ func Apply(b *Bundle, central store.Store, targetAppID string, carrySecret bool)
 		return nil, fmt.Errorf("target app: %w", err)
 	}
 
-	if b.App.Audience != "" {
-		app.Audience = b.App.Audience
+	// Re-check the audience here, not only in Classify: Apply is reachable on its
+	// own and the central's app set can change between preflight and commit. This
+	// runs BEFORE the first write, so a refused bundle leaves nothing behind (H15).
+	aud, conflict, err := resolveCarriedAudience(central, app, defaultAppID, b.App.Audience)
+	if err != nil {
+		return nil, err
 	}
+	if conflict != "" {
+		return nil, fmt.Errorf("%s", conflict)
+	}
+	app.Audience = aud
 	if len(b.App.RedirectURIs) > 0 {
 		app.RedirectURIs = b.App.RedirectURIs
 	}

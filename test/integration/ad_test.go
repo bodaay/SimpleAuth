@@ -96,7 +96,7 @@ func TestADMigrationScenarios(t *testing.T) {
 		bob := findGUIDBySAM(t, sAD, "bob")
 		sAD.must(t, "PUT", "/api/admin/users/"+bob+"/roles", []string{"editor"})
 
-		mig := newMigTarget(t, central, "hr", true)
+		mig := newMigTargetFrom(t, central, sAD, "hr", true)
 
 		// Policy-only: an AD user, no local-user record/password is copied.
 		var rep migrate.Report
@@ -132,7 +132,7 @@ func TestADMigrationScenarios(t *testing.T) {
 		carol := findGUIDBySAM(t, sDiff, "carol")
 		sDiff.must(t, "PUT", "/api/admin/users/"+carol+"/roles", []string{"viewer"})
 
-		mig := newMigTarget(t, central, "diffapp", false)
+		mig := newMigTargetFrom(t, central, sDiff, "diffapp", false)
 
 		var rep migrate.Report
 		decode(t, sDiff.must(t, "POST", "/api/admin/migrate-to-central/preflight", mig), &rep)

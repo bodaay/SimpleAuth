@@ -224,6 +224,22 @@ func newMigTarget(t *testing.T, central *node, appID string, carrySecret bool) m
 	return migPayload(t, central, appID, carrySecret)
 }
 
+// newMigTargetFrom creates the central target app AND first gives the SOURCE's
+// home app a deliberate audience.
+//
+// A stock standalone's home app carries the default audience "simpleauth" — which
+// is also the CENTRAL's default-app audience. Since H15 the central refuses a
+// bundle claiming it, because that is the no-effort version of the audience
+// takeover: the migrated app would mint tokens the central's global directory app
+// consumers accept. Real migrations must therefore set a deliberate audience on
+// the source before packaging; these tests model that rather than relying on the
+// collision the old code silently allowed.
+func newMigTargetFrom(t *testing.T, central, source *node, appID string, carrySecret bool) map[string]any {
+	t.Helper()
+	source.must(t, "PUT", "/api/admin/apps/simpleauth", map[string]any{"audience": appID + "-src-aud"})
+	return newMigTarget(t, central, appID, carrySecret)
+}
+
 // TestLocalToCentralMigration: a local-accounts standalone migrates into a fresh
 // app on the central over real cross-container TLS; the migrated user then logs
 // in AGAINST THE CENTRAL with the same password and gets the right roles/perms.

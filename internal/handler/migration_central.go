@@ -170,7 +170,7 @@ func (h *Handler) handleMigrationPreflight(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	rep, err := migrate.Classify(req.Bundle, h.store, req.AppID)
+	rep, err := migrate.Classify(req.Bundle, h.store, req.AppID, h.defaultAppID())
 	if err != nil {
 		jsonError(w, "preflight failed", http.StatusInternalServerError)
 		return
@@ -191,7 +191,7 @@ func (h *Handler) handleMigrationCommit(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	rep, err := migrate.Classify(req.Bundle, h.store, req.AppID)
+	rep, err := migrate.Classify(req.Bundle, h.store, req.AppID, h.defaultAppID())
 	if err != nil {
 		jsonError(w, "preflight failed", http.StatusInternalServerError)
 		return
@@ -215,7 +215,7 @@ func (h *Handler) handleMigrationCommit(w http.ResponseWriter, r *http.Request) 
 	res, err := func() (*migrate.ApplyResult, error) {
 		h.localUserMu.Lock()
 		defer h.localUserMu.Unlock()
-		return migrate.Apply(req.Bundle, h.store, req.AppID, req.CarrySecret)
+		return migrate.Apply(req.Bundle, h.store, req.AppID, h.defaultAppID(), req.CarrySecret)
 	}()
 	if err != nil {
 		jsonError(w, "commit failed (token spent; if the target was partially written, clear it before retrying with a new token): "+err.Error(), http.StatusInternalServerError)
@@ -223,6 +223,7 @@ func (h *Handler) handleMigrationCommit(w http.ResponseWriter, r *http.Request) 
 	}
 	h.audit("migration_committed", "migration:"+req.AppID, getClientIP(r), map[string]interface{}{
 		"app_id": req.AppID, "assignments": res.AssignmentsSet, "local_users": res.LocalUsersCreated,
+		"audience": rep.AudienceToApply,
 	})
 	jsonResp(w, res, http.StatusOK)
 }
