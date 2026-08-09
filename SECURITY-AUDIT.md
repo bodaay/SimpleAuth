@@ -82,6 +82,7 @@ source of truth for what is currently open vs. fixed.
 | H10 | LDAP bind + user passwords sent in cleartext over `ldap://` (no StartTLS) | HIGH | FIXED | 2026-06-01 (Pass 3) |
 | H11 | `secret.key` silently overwritten on any read error → loses encrypted secrets | HIGH | FIXED | 2026-06-01 (Pass 3) |
 | H12 | `RevokeUserTokens`/`RevokeTokenFamily` drop DELETE errors → fail-open revocation | HIGH | FIXED | 2026-06-01 (Pass 3) |
+| H13 | OIDC login-error redirect drops `code_challenge` → PKCE silently disabled after any failed login attempt (M6 bypass) | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | S4 | Go SDK `Verify` accepts `typ=app-mgmt`/`typ=ID` tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S5 | Python SDK `verify` accepts refresh tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S6 | JS/.NET SDKs accept ID tokens as access; .NET threw non-SDK exception | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
@@ -811,3 +812,62 @@ deployment checklist now covers `secret.key` backup, NTP, and the correct health
 
 These remain the standing OPEN items for the next pass.
 </content>
+
+---
+
+## Audit Pass 4 — 2026-08-08 — Claude Opus 5 (`claude-opus-5`)
+
+Whole-codebase review (11 scoped reviewers, adversarial per-finding verification)
+against `master` @ `c182507`. Each finding from that pass is documented in this
+section as it is remediated, with a row in the Status Summary table above.
+
+### H13 — OIDC login-error redirect drops `code_challenge` (PKCE bypass)
+
+**Severity:** HIGH — reachable by any user mistyping their password once.
+
+`renderOIDCLoginError` rebuilt the authorize URL by hand with `fmt.Sprintf`,
+carrying `client_id`, `redirect_uri`, `state`, `nonce` and `scope` — but **not**
+`code_challenge` or `code_challenge_method`.
+
+Chain: a failed credential POST redirects to the login page without PKCE →
+`showOIDCLoginPage` reads an empty challenge and stamps empty hidden fields →
+the successful retry stores `OIDCAuthCode.CodeChallenge = ""` → the token
+endpoint's `if ac.CodeChallenge != ""` guard is false → the code redeems with
+**no `code_verifier`**. This undoes M6 for the remainder of the login, so an
+intercepted code (referrer leak, malicious app on the redirect host) is
+redeemable by anyone.
+
+**Approach.** Introduced `oidcAuthzRequest` — a typed allowlist that is the single
+definition of "the authorize request" — plus `parseOIDCAuthzRequest` and
+`values()`. `renderOIDCLoginError` and the Kerberos `ssoLink` are both now built
+from it, so a parameter added there is carried at every hop instead of having to
+be remembered at each hand-concatenated site.
+
+Deliberately **not** a copy of `r.Form`: `renderOIDCLoginError` runs on a
+*credential POST*, whose body carries `username` and `password`. Copying and
+mutating the form would place live credentials in a `Location:` header, browser
+history and every proxy log on the path. `r.URL.Query()` is equally wrong — the
+form posts to the bare authorize path, so the query is empty. The typed allowlist
+gets the durability benefit with neither footgun.
+
+Two invariants are preserved and now asserted by tests: the error always returns
+to SimpleAuth's **own** authorize endpoint (the empty-credentials branch reaches
+this function *before* `redirect_uri` is allowlist-checked, so bouncing to it
+would be an open redirect — the OIDC sibling of F29), and credentials/CSRF are
+never carried.
+
+Also fixed in the same pass, same defect class: `handleLogout` dropped
+`client_id`, dead-ending the documented logout round-trip on a `400` for any app
+with its own `redirect_uris`.
+
+**Tests:** `internal/handler/oidc_pkce_test.go` — `TestOIDCPKCESurvivesFailedLogin`
+drives the full chain and asserts the post-retry code is **rejected** without a
+verifier and accepted with one; `TestOIDCLoginErrorPreservesAuthorizeRequest`
+pins the whole allowlist and the no-credential-leak invariant;
+`TestOIDCLoginErrorWithNoCredentials` pins the open-redirect invariant;
+`TestLogoutPreservesClientID` pins the logout round-trip.
+
+**Known adjacent, not fixed here:** `handleSSOLogin`'s SPNEGO Negotiate-retry URL
+(`internal/handler/auth.go`) drops every parameter including the `client_id` this
+change adds to `ssoLink`. That is a design decision about the challenge-retry
+shape rather than a parameter carry, and is filed separately.

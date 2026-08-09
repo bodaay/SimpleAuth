@@ -325,26 +325,100 @@ func (h *Handler) issueOIDCCodeRedirect(w http.ResponseWriter, r *http.Request, 
 	http.Redirect(w, r, redirectTarget, http.StatusFound)
 }
 
+// oidcAuthzRequest is the set of authorize-request parameters that MUST survive
+// every hop of the interactive login flow:
+//
+//	GET /auth?…  →  hidden form fields  →  (failed attempt) error redirect  →  retry POST
+//	             →  Kerberos SSO link   →  /login/sso
+//
+// Drop one at any hop and the retry silently proceeds with WEAKER parameters than
+// the client asked for. That is not hypothetical: renderOIDCLoginError used to
+// rebuild the URL by hand with fmt.Sprintf and omitted code_challenge, so one
+// mistyped password disabled PKCE for the rest of the login — the retry stored an
+// empty challenge and the token endpoint's `if ac.CodeChallenge != ""` guard then
+// required no code_verifier at all, undoing M6 (H13).
+//
+// Keep this type as the single definition of the authorize request: adding a
+// parameter here makes every hop carry it. And note what it deliberately is NOT —
+// a copy of r.Form. The authorize POST body carries `username` and `password`;
+// blanket-copying it into a redirect would put live credentials in a Location
+// header, the browser's history, and every proxy log on the path.
+type oidcAuthzRequest struct {
+	ClientID            string
+	RedirectURI         string
+	State               string
+	Nonce               string
+	Scope               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	Prompt              string
+}
+
+// parseOIDCAuthzRequest reads the authorize parameters from either hop: FormValue
+// covers the query string on the GET and the parsed body on the credential POST.
+func parseOIDCAuthzRequest(r *http.Request) oidcAuthzRequest {
+	return oidcAuthzRequest{
+		ClientID:            r.FormValue("client_id"),
+		RedirectURI:         r.FormValue("redirect_uri"),
+		State:               r.FormValue("state"),
+		Nonce:               r.FormValue("nonce"),
+		Scope:               r.FormValue("scope"),
+		CodeChallenge:       r.FormValue("code_challenge"),
+		CodeChallengeMethod: r.FormValue("code_challenge_method"),
+		Prompt:              r.FormValue("prompt"),
+	}
+}
+
+// values renders the request back onto a query string. Empty parameters are
+// omitted rather than emitted blank, so the retry URL keeps the shape of the
+// original authorize request.
+func (a oidcAuthzRequest) values() url.Values {
+	q := url.Values{}
+	set := func(k, v string) {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	set("client_id", a.ClientID)
+	set("redirect_uri", a.RedirectURI)
+	set("state", a.State)
+	set("nonce", a.Nonce)
+	set("scope", a.Scope)
+	// Both halves of PKCE travel together or not at all: a challenge that arrives
+	// without its method is rejected by the authorize POST (F55/L7), so carrying
+	// one without the other converts a silent downgrade into a hard 400.
+	if a.CodeChallenge != "" {
+		q.Set("code_challenge", a.CodeChallenge)
+		q.Set("code_challenge_method", a.CodeChallengeMethod)
+	}
+	set("prompt", a.Prompt)
+	return q
+}
+
 func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
-	app, err := h.resolveApp(r.URL.Query().Get("client_id"))
+	authz := parseOIDCAuthzRequest(r)
+
+	app, err := h.resolveApp(authz.ClientID)
 	if err != nil {
 		http.Error(w, "unknown client", http.StatusBadRequest)
 		return
 	}
 
-	redirectURI := r.URL.Query().Get("redirect_uri")
+	redirectURI := authz.RedirectURI
 	if redirectURI != "" && !h.appAllowsRedirect(app, redirectURI) {
 		http.Error(w, "redirect_uri not allowed", http.StatusBadRequest)
 		return
 	}
 
-	state := r.URL.Query().Get("state")
-	nonce := r.URL.Query().Get("nonce")
-	scope := r.URL.Query().Get("scope")
-	codeChallenge := r.URL.Query().Get("code_challenge")
-	codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
+	state := authz.State
+	nonce := authz.Nonce
+	scope := authz.Scope
+	codeChallenge := authz.CodeChallenge
+	codeChallengeMethod := authz.CodeChallengeMethod
+	prompt := authz.Prompt
+	// `error` is the error CHANNEL, not part of the authorize request — it is set
+	// by renderOIDCLoginError and never round-tripped from the client.
 	errorMsg := r.URL.Query().Get("error")
-	prompt := r.URL.Query().Get("prompt")
 
 	// Session SSO: if the browser has a valid session cookie AND the client
 	// didn't ask for prompt=login, skip the login page and issue an auth code
@@ -369,24 +443,20 @@ func (h *Handler) showOIDCLoginPage(w http.ResponseWriter, r *http.Request) {
 	ssoEnabled := h.getKeytabPath() != ""
 	ssoLink := ""
 	if ssoEnabled {
-		ssoLink = h.url("/login/sso") + "?oidc=1"
-		// Carry client_id so handleSSOLogin (auth.go) resolves the INITIATING app
-		// rather than falling back to the default app — otherwise the SPNEGO path
-		// mints a wrong-audience token or dead-ends on redirect validation.
-		ssoLink += "&client_id=" + url.QueryEscape(app.AppID)
-		if redirectURI != "" {
-			ssoLink += "&redirect_uri=" + url.QueryEscape(redirectURI)
-		}
-		if state != "" {
-			ssoLink += "&state=" + url.QueryEscape(state)
-		}
-		if nonce != "" {
-			ssoLink += "&nonce=" + url.QueryEscape(nonce)
-		}
-		if codeChallenge != "" {
-			ssoLink += "&code_challenge=" + url.QueryEscape(codeChallenge)
-			ssoLink += "&code_challenge_method=" + url.QueryEscape(codeChallengeMethod)
-		}
+		// Built from the same allowlist as the error redirect, so a parameter
+		// added to oidcAuthzRequest is carried here automatically instead of
+		// needing to be remembered at a second hand-concatenated site.
+		q := authz.values()
+		q.Set("oidc", "1")
+		// Carry the RESOLVED client_id so handleSSOLogin (auth.go) resolves the
+		// INITIATING app rather than falling back to the default app — otherwise
+		// the SPNEGO path mints a wrong-audience token or dead-ends on redirect
+		// validation. This deliberately OVERWRITES whatever the client sent,
+		// exactly as the hidden client_id field below does.
+		q.Set("client_id", app.AppID)
+		// prompt is a login-page concept; the SPNEGO endpoint has no use for it.
+		q.Del("prompt")
+		ssoLink = h.url("/login/sso") + "?" + q.Encode()
 	}
 
 	// Only auto-redirect when SSO is enabled, there is no error, and we have not
@@ -1077,18 +1147,29 @@ func (h *Handler) handleOIDCLogout(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Logged Out</title></head><body><h1>You have been logged out.</h1></body></html>`)
 }
 
-// renderOIDCLoginError redirects back to the OIDC login page with an error.
+// renderOIDCLoginError bounces the browser back to SimpleAuth's OWN authorize
+// page with an error banner, carrying the WHOLE authorize request with it
+// (oidcAuthzRequest) — most importantly the PKCE challenge, which this function
+// used to drop (H13, an M6 bypass reachable by mistyping a password once).
+//
+// Two invariants:
+//   - The target is always SimpleAuth's own authorize endpoint, never the
+//     client's redirect_uri. The empty-credentials branch reaches here BEFORE
+//     redirect_uri has been checked against the app's allowlist, so bouncing to
+//     it would be an open redirect (the OIDC sibling of F29). showOIDCLoginPage
+//     re-validates redirect_uri on the way back in.
+//   - username / password / _csrf are NOT carried. Credentials must never enter
+//     a URL, and showOIDCLoginPage mints a fresh CSRF token + cookie per render
+//     (F30). This is why the fix is a typed allowlist rather than a copy of
+//     r.Form — the request this runs on is a CREDENTIAL POST.
 func (h *Handler) renderOIDCLoginError(w http.ResponseWriter, r *http.Request, msg string) {
+	q := parseOIDCAuthzRequest(r).values()
+	// This endpoint only ever issues codes (response_types_supported: ["code"]).
+	q.Set("response_type", "code")
+	q.Set("error", msg)
+
 	realm := h.cfg.JWTIssuer
-	u := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/auth?client_id=%s&redirect_uri=%s&state=%s&nonce=%s&scope=%s&response_type=code&error=%s",
-		h.cfg.BasePath, realm,
-		url.QueryEscape(r.FormValue("client_id")),
-		url.QueryEscape(r.FormValue("redirect_uri")),
-		url.QueryEscape(r.FormValue("state")),
-		url.QueryEscape(r.FormValue("nonce")),
-		url.QueryEscape(r.FormValue("scope")),
-		url.QueryEscape(msg),
-	)
+	u := h.url("/realms/"+realm+"/protocol/openid-connect/auth") + "?" + q.Encode()
 	http.Redirect(w, r, u, http.StatusFound)
 }
 

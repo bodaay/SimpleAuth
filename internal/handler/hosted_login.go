@@ -327,8 +327,16 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// is signed out of every other app that shares this SimpleAuth.
 	h.deleteCurrentSession(w, r)
 
-	// Redirect to login with manual=1 to prevent auto-SSO on this page load only
+	// Redirect to login with manual=1 to prevent auto-SSO on this page load only.
+	// Carry client_id so the login page that follows resolves the SAME app the
+	// user just logged out of: GET /login rejects an unknown client_id with 400
+	// and validates redirect_uri against that app's OWN allowlist, so dropping it
+	// dead-ends the documented logout round-trip on a 400 for any app with its own
+	// redirect_uris. Same defect class as H13 / the client_id round-trip fixes.
 	u := h.url("/login") + "?manual=1"
+	if clientID := r.URL.Query().Get("client_id"); clientID != "" {
+		u += "&client_id=" + url.QueryEscape(clientID)
+	}
 	if redirectURI != "" {
 		u += "&redirect_uri=" + url.QueryEscape(redirectURI)
 	}
