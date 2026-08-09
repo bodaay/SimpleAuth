@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -76,6 +77,9 @@ func OpenBolt(dataDir string) (*BoltStore, error) {
 		return nil, err
 	}
 	s.migrateRolesAndPermissions()
+	// Prune reverse-index entries a pre-H14 SetIdentityMapping left stranded on a
+	// previous owner. Cheap (one pass over the index) and idempotent.
+	s.repairMappingIndex()
 	return s, nil
 }
 
@@ -172,7 +176,17 @@ func (s *BoltStore) DeleteApp(appID string) error {
 				var mappings []IdentityMapping
 				if json.Unmarshal(data, &mappings) == nil {
 					for _, m := range mappings {
-						if err := tx.Bucket(bucketIdentityMappings).Delete(mappingKey(m.Provider, m.ExternalID)); err != nil {
+						mk := mappingKey(m.Provider, m.ExternalID)
+						// Only delete a forward entry this user still actually owns.
+						// The reverse index is derived state; if it ever drifts again,
+						// the H8 cascade must not delete a live mapping belonging to
+						// somebody else (H14). Postgres cascades by
+						// `WHERE user_guid IN (...)`, which is inherently owner-scoped —
+						// this makes Bolt identical.
+						if owner := tx.Bucket(bucketIdentityMappings).Get(mk); owner == nil || string(owner) != guid {
+							continue
+						}
+						if err := tx.Bucket(bucketIdentityMappings).Delete(mk); err != nil {
 							return err
 						}
 					}
@@ -512,14 +526,86 @@ func mappingKey(provider, externalID string) []byte {
 	return []byte(provider + ":" + externalID)
 }
 
+// mappingSplits builds forwardKey -> {Provider, ExternalID} from the reverse
+// index, which records both halves verbatim.
+//
+// The Bolt forward key is the composite "provider:externalID" and BOTH halves may
+// contain ':' — app-local users are keyed under the provider "applocal:<appID>",
+// and handleSetMapping accepts an arbitrary provider string — so splitting on the
+// first ':' is guesswork. Postgres keeps the halves in separate columns and never
+// has to guess; this is how Bolt matches it (M38).
+func mappingSplits(tx *bolt.Tx) map[string]IdentityMapping {
+	out := map[string]IdentityMapping{}
+	idx := tx.Bucket(bucketIdxMappingsByGUID)
+	if idx == nil {
+		return out
+	}
+	_ = idx.ForEach(func(_, v []byte) error {
+		var mappings []IdentityMapping
+		if json.Unmarshal(v, &mappings) != nil {
+			return nil
+		}
+		for _, m := range mappings {
+			out[string(mappingKey(m.Provider, m.ExternalID))] = m
+		}
+		return nil
+	})
+	return out
+}
+
+// splitMappingKey decomposes a forward key, preferring the reverse index and
+// falling back to the first ':' only for a key the index does not cover (which
+// only happens in already-corrupt data — fall back rather than drop the row).
+func splitMappingKey(key string, known map[string]IdentityMapping) (IdentityMapping, bool) {
+	if m, ok := known[key]; ok {
+		return m, true
+	}
+	i := strings.Index(key, ":")
+	if i < 0 {
+		return IdentityMapping{}, false
+	}
+	return IdentityMapping{Provider: key[:i], ExternalID: key[i+1:]}, true
+}
+
+// SetIdentityMapping points provider:externalID at userGUID, re-pointing the
+// mapping if it currently resolves to somebody else.
+//
+// The forward bucket is authoritative and bucketIdxMappingsByGUID is only a
+// derived reverse index, so a re-point MUST retract the entry from the previous
+// owner in the SAME transaction. Previously only addMappingToIndex ran, so after
+// an admin created a local account under a username an LDAP JIT user already
+// owned, BOTH GUIDs claimed it. The loser kept a phantom {local,<name>} that
+// resolvePreferredUsername stamped into every access and ID token as the standard
+// `preferred_username` claim — handing an RP that authorizes on that claim the
+// wrong user — and that the delete cascades (handleDeleteLocalUser, DeleteApp)
+// followed to delete the REAL owner's live mapping (H14).
+//
+// Postgres has no reverse index — ON CONFLICT (provider, external_id) DO UPDATE
+// already makes the single row the whole truth — so this restores backend parity.
 func (s *BoltStore) SetIdentityMapping(provider, externalID, userGUID string) error {
 	return s.update(func(tx *bolt.Tx) error {
 		key := mappingKey(provider, externalID)
+		m := IdentityMapping{Provider: provider, ExternalID: externalID}
+
+		// Read the incumbent BEFORE the Put. bbolt hands back a slice into the
+		// mmap'd page, which Put may invalidate, so copy it out with string().
+		var prevOwner string
+		if v := tx.Bucket(bucketIdentityMappings).Get(key); v != nil {
+			prevOwner = string(v)
+		}
 		if err := tx.Bucket(bucketIdentityMappings).Put(key, []byte(userGUID)); err != nil {
 			return err
 		}
-		// Update reverse index
-		return s.addMappingToIndex(tx, userGUID, IdentityMapping{Provider: provider, ExternalID: externalID})
+		// Retract from the loser first, then index the winner. The
+		// prevOwner == userGUID case is skipped outright: a naive remove-then-add
+		// on the same GUID would strip the entry addMappingToIndex just wrote, and
+		// re-setting the same mapping must stay idempotent.
+		if prevOwner != "" && prevOwner != userGUID {
+			if err := s.removeMappingFromIndex(tx, prevOwner, m); err != nil {
+				return err
+			}
+		}
+		return s.addMappingToIndex(tx, userGUID, m)
 	})
 }
 
@@ -583,6 +669,99 @@ func (s *BoltStore) addMappingToIndex(tx *bolt.Tx, userGUID string, m IdentityMa
 	return tx.Bucket(bucketIdxMappingsByGUID).Put([]byte(userGUID), newData)
 }
 
+// repairMappingIndex prunes reverse-index entries the forward bucket no longer
+// backs. Fixing the writer does not clean data a deployment already corrupted,
+// and a single orphan entry is enough on its own to stamp another user's
+// `preferred_username` into live tokens and to make the delete cascades destroy
+// the real owner's mapping — so repair on open, alongside
+// migrateRolesAndPermissions (H14).
+//
+// PRUNE ONLY, never rebuild. Reconstructing index entries from forward keys would
+// have to re-split the ambiguous composite key and would corrupt the exactly
+// recorded "applocal:<appID>" providers the index already holds correctly. Every
+// writer adds forward + index in one transaction (SetIdentityMapping, MergeUsers)
+// and every deleter removes both, so "index entry with no matching forward owner"
+// is the only corruption this bug can produce.
+//
+// Each pruned claim is logged individually, not just counted: this deletes
+// identity data at startup on data we have never seen, so the log must be
+// sufficient to reconstruct by hand what was removed. Set
+// SA_SKIP_MAPPING_REPAIR=1 to report without writing — an operator who sees an
+// unexpected prune count can use it to inspect before committing.
+func (s *BoltStore) repairMappingIndex() {
+	type change struct {
+		guid    string
+		kept    []IdentityMapping
+		dropped []IdentityMapping
+	}
+	var changes []change
+
+	// Collect under a read tx; bbolt forbids mutating a bucket mid-ForEach.
+	_ = s.view(func(tx *bolt.Tx) error {
+		fwd := tx.Bucket(bucketIdentityMappings)
+		return tx.Bucket(bucketIdxMappingsByGUID).ForEach(func(k, v []byte) error {
+			var mappings []IdentityMapping
+			if json.Unmarshal(v, &mappings) != nil {
+				return nil
+			}
+			guid := string(k) // k is only valid inside the callback
+			kept := make([]IdentityMapping, 0, len(mappings))
+			var dropped []IdentityMapping
+			for _, m := range mappings {
+				if owner := fwd.Get(mappingKey(m.Provider, m.ExternalID)); owner != nil && string(owner) == guid {
+					kept = append(kept, m)
+				} else {
+					dropped = append(dropped, m)
+				}
+			}
+			if len(dropped) > 0 {
+				changes = append(changes, change{guid: guid, kept: kept, dropped: dropped})
+			}
+			return nil
+		})
+	})
+	if len(changes) == 0 {
+		return
+	}
+
+	// Log the full plan BEFORE writing, so the record survives even if the write
+	// fails or the result turns out to be wrong.
+	for _, c := range changes {
+		for _, m := range c.dropped {
+			log.Printf("[store] mapping-index repair: user=%s no longer owns %s:%s — pruning stale claim (H14)",
+				c.guid, m.Provider, m.ExternalID)
+		}
+	}
+	if os.Getenv("SA_SKIP_MAPPING_REPAIR") == "1" {
+		log.Printf("[store] mapping-index repair: SA_SKIP_MAPPING_REPAIR=1 — reported %d user(s), no changes written", len(changes))
+		return
+	}
+
+	if err := s.update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketIdxMappingsByGUID)
+		for _, c := range changes {
+			if len(c.kept) == 0 {
+				if err := b.Delete([]byte(c.guid)); err != nil {
+					return err
+				}
+				continue
+			}
+			data, err := json.Marshal(c.kept)
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(c.guid), data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("[store] mapping-index repair FAILED: %v", err)
+		return
+	}
+	log.Printf("[store] mapping-index repair: pruned stale claims for %d user(s) (H14)", len(changes))
+}
+
 func (s *BoltStore) removeMappingFromIndex(tx *bolt.Tx, userGUID string, m IdentityMapping) error {
 	var mappings []IdentityMapping
 	data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(userGUID))
@@ -610,16 +789,18 @@ func (s *BoltStore) removeMappingFromIndex(tx *bolt.Tx, userGUID string, m Ident
 func (s *BoltStore) ListAllMappings() ([]IdentityMappingEntry, error) {
 	var result []IdentityMappingEntry
 	err := s.view(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketIdentityMappings)
-		return b.ForEach(func(k, v []byte) error {
-			key := string(k)
-			idx := strings.Index(key, ":")
-			if idx < 0 {
+		// Decompose via the reverse index rather than guessing at the first ':',
+		// so an "applocal:<appID>" provider round-trips intact and matches what
+		// Postgres reports from its two columns (M38).
+		known := mappingSplits(tx)
+		return tx.Bucket(bucketIdentityMappings).ForEach(func(k, v []byte) error {
+			m, ok := splitMappingKey(string(k), known)
+			if !ok {
 				return nil
 			}
 			result = append(result, IdentityMappingEntry{
-				Provider:   key[:idx],
-				ExternalID: key[idx+1:],
+				Provider:   m.Provider,
+				ExternalID: m.ExternalID,
 				UserGUID:   string(v),
 			})
 			return nil

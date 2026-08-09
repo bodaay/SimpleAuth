@@ -83,6 +83,7 @@ source of truth for what is currently open vs. fixed.
 | H11 | `secret.key` silently overwritten on any read error → loses encrypted secrets | HIGH | FIXED | 2026-06-01 (Pass 3) |
 | H12 | `RevokeUserTokens`/`RevokeTokenFamily` drop DELETE errors → fail-open revocation | HIGH | FIXED | 2026-06-01 (Pass 3) |
 | H13 | OIDC login-error redirect drops `code_challenge` → PKCE silently disabled after any failed login attempt (M6 bypass) | HIGH | FIXED | 2026-08-08 (Pass 4) |
+| H14 | Bolt `SetIdentityMapping` leaves a stale reverse-index claim on the previous owner → wrong `preferred_username` in tokens; delete cascades destroy a live mapping | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | S4 | Go SDK `Verify` accepts `typ=app-mgmt`/`typ=ID` tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S5 | Python SDK `verify` accepts refresh tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S6 | JS/.NET SDKs accept ID tokens as access; .NET threw non-SDK exception | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
@@ -107,6 +108,7 @@ source of truth for what is currently open vs. fixed.
 | M35 | Auto-generated admin key printed to logs + regenerated every restart | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | M36 | Container/CI hardening: EOL base image, host-exposed plaintext, root nginx, unpinned actions | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | M37 | LDAP group-CN parsing only strips uppercase `CN=` → broken role mapping | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
+| M38 | Bolt splits the composite mapping key on the first `:` → `applocal:<appID>` providers corrupted; diverges from Postgres and breaks app-local login after a backend migration | MEDIUM | FIXED | 2026-08-08 (Pass 4) |
 | L6 | `ValidateToken` did not require `exp` (missing-`exp` token validated) | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L7 | PKCE accepted `plain`/empty downgrade though discovery advertises only S256 | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L8 | Impersonation issued a token for a disabled / access-revoked target | LOW | FIXED | 2026-06-01 (Pass 3) |
@@ -871,3 +873,94 @@ pins the whole allowlist and the no-credential-leak invariant;
 (`internal/handler/auth.go`) drops every parameter including the `client_id` this
 change adds to `ssoLink`. That is a design decision about the challenge-retry
 shape rather than a parameter carry, and is filed separately.
+## Audit Pass 4 — H14 / M38 — identity-mapping index integrity
+
+### H14 — stale reverse-index claim survives a mapping re-point
+
+**Severity:** HIGH.
+
+`bucketIdentityMappings` (forward, `provider:externalID -> guid`) is authoritative;
+`bucketIdxMappingsByGUID` (reverse, `guid -> []IdentityMapping`) is derived. Bolt's
+`SetIdentityMapping` overwrote the forward entry and called `addMappingToIndex`,
+but never retracted the claim from the **previous** owner — so after a re-point
+both GUIDs claimed the same identity.
+
+Repro: alice signs in via LDAP and is JIT-provisioned as U1 (owning `ldap:alice`
+*and* `local:alice`). An admin later creates a local account for the same person
+(`POST /api/admin/users`), which calls `SetIdentityMapping("local","alice",U2)`.
+Forward map says U2; U1's index still claims `local:alice`.
+
+Two consequences:
+- `resolvePreferredUsername` reads the reverse index, so U1's access and ID tokens
+  carry `preferred_username: "alice"` — the standard claim — while the real owner
+  of that name is U2. An RP that authorizes on `preferred_username` grants U1
+  alice's access.
+- The delete cascades (`handleDeleteLocalUser`, `DeleteApp`) iterate
+  `GetMappingsForUser` and delete forward keys, so deleting U1 removes **U2's**
+  live login identity.
+
+**Approach.** Read the incumbent before the `Put` and, when it differs, remove the
+mapping from the old owner's index in the SAME transaction. `prevOwner == userGUID`
+is skipped so re-setting the same mapping stays idempotent (a naive
+remove-then-add would strip the entry `addMappingToIndex` had just written).
+
+Postgres needed no change — verified correct: `ON CONFLICT (provider, external_id)
+DO UPDATE` makes the single row the whole truth, and it has no derived index to
+drift. This restores backend parity.
+
+**Existing data.** `repairMappingIndex` runs at `OpenBolt` and prunes reverse-index
+entries the forward bucket no longer backs. It is prune-only, never rebuild:
+reconstructing entries from forward keys would have to re-split the ambiguous
+composite key (see M38) and would corrupt the exactly-recorded `applocal:<appID>`
+providers the index already holds correctly. Every writer adds forward + index in
+one transaction and every deleter removes both, so "index entry with no matching
+forward owner" is the only corruption this bug can produce.
+
+Because this deletes identity data at startup on data we have never seen, each
+pruned claim is logged individually (guid, provider, external id) rather than
+merely counted, so a wrong prune is reconstructible by hand, and
+`SA_SKIP_MAPPING_REPAIR=1` reports without writing. **A non-zero prune count on a
+deployment nobody believed was corrupt is a stop-and-investigate signal.**
+
+**Defense in depth.** `DeleteApp` now verifies the forward entry still belongs to
+the GUID being cascaded before deleting it, so if the index ever drifts again the
+H8 cascade cannot destroy somebody else's live mapping. Postgres cascades by
+`WHERE user_guid IN (...)`, which is inherently owner-scoped — this makes Bolt
+identical.
+
+**Known, not fixed here:** `MergeUsers` (`bolt.go`) is a fourth consumer of the
+reverse index and blind-`Put`s each forward key to the merge target without an
+ownership check, so a stale claim there lets a merge steal the live owner's
+mapping. It is correct once the index is clean, and the repair makes it so, but it
+should get the same ownership guard.
+
+### M38 — composite mapping key split on the first `:`
+
+The Bolt forward key is `provider + ":" + externalID` and **both halves may contain
+`:`** — app-local users are keyed under the provider `applocal:<appID>`, and
+`handleSetMapping` accepts an arbitrary provider string. `ListAllMappings` and the
+Postgres migration both split on the first `:`, so `applocal:billing:bob` was read
+as provider `applocal` / external id `billing:bob`.
+
+Impact: the admin mapping listing showed corrupted providers, and — worse —
+`MigrateToPostgres` wrote those corrupted halves into `sa_identity_mappings`, after
+which `ResolveMapping("applocal:"+appID, username)` (the app-local login lookup)
+can never match again. Silent: the migration reports success and the row counts
+verify, because the mapping is 1:1 either way; only the column boundary moves.
+
+**Approach.** Decompose via the reverse index, which records both halves verbatim
+(`mappingSplits` / `splitMappingKey`), falling back to the first `:` only for a
+forward key the index does not cover — which only happens in already-corrupt data,
+where falling back is better than dropping the row.
+
+**Behavior change to note:** correcting `ListAllMappings` makes `resolveUserRef`'s
+"ambiguous user" branch newly reachable on Bolt for a name existing as both
+`local:<n>` and `applocal:<app>:<n>` with different GUIDs. That converts a
+previously-succeeding app-admin grant into an error. It is convergence toward
+Postgres behavior — correct — but it is a real Bolt-only change.
+
+**Not covered by tests:** `migrateKV` requires a live Postgres; there is no
+Postgres harness in this repo. Verify by hand before relying on it — build a Bolt
+DB containing an `applocal:<app>:<user>` mapping, run the migration, and confirm
+`SELECT provider, external_id FROM sa_identity_mappings` returns the two halves
+intact, then actually log in as that user against the Postgres-backed instance.

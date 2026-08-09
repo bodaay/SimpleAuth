@@ -120,6 +120,17 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 	})
 	m.send()
 
+	// The Bolt forward key is the ambiguous composite "provider:externalID"; the
+	// reverse index holds the exact halves. Without this, "applocal:<appID>" lands
+	// in Postgres as provider="applocal" / external_id="<appID>:<user>", and
+	// ResolveMapping("applocal:"+appID, username) — the app-local login lookup —
+	// can never match again after the migration (M38).
+	var mappingSplitIdx map[string]IdentityMapping
+	_ = source.db.View(func(tx *bolt.Tx) error {
+		mappingSplitIdx = mappingSplits(tx)
+		return nil
+	})
+
 	// Step 3: Copy data
 	for _, b := range buckets {
 		m.status.Progress[b.name] = "migrating"
@@ -131,7 +142,7 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 				return nil
 			}
 			return bucket.ForEach(func(k, v []byte) error {
-				if err := migrateKV(target, b.name, k, v); err != nil {
+				if err := migrateKV(target, b.name, k, v, mappingSplitIdx); err != nil {
 					return fmt.Errorf("%s key=%s: %w", b.name, string(k), err)
 				}
 				m.status.MigratedItems++
@@ -184,18 +195,21 @@ func MigrateToPostgres(source *BoltStore, target *PostgresStore, statusCh chan<-
 }
 
 // migrateKV inserts a single BoltDB key-value pair into the correct Postgres table.
-func migrateKV(target *PostgresStore, table string, k, v []byte) error {
+func migrateKV(target *PostgresStore, table string, k, v []byte, mappingSplit map[string]IdentityMapping) error {
 	key := string(k)
 	switch table {
 	case "users":
 		_, err := target.db.Exec(`INSERT INTO sa_users (guid, data) VALUES ($1, $2) ON CONFLICT (guid) DO UPDATE SET data = $2`, key, v)
 		return err
 	case "identity_mappings":
-		idx := strings.Index(key, ":")
-		if idx < 0 {
+		// Decompose via the reverse index, not the first ':' — see mappingSplits
+		// (M38). Getting this wrong silently breaks app-local login after the
+		// migration, with no error at migration time.
+		m, ok := splitMappingKey(key, mappingSplit)
+		if !ok {
 			return nil
 		}
-		_, err := target.db.Exec(`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3) ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`, key[:idx], key[idx+1:], string(v))
+		_, err := target.db.Exec(`INSERT INTO sa_identity_mappings (provider, external_id, user_guid) VALUES ($1, $2, $3) ON CONFLICT (provider, external_id) DO UPDATE SET user_guid = $3`, m.Provider, m.ExternalID, string(v))
 		return err
 	case "idx_mappings_by_guid":
 		return nil // reverse index — Postgres uses SQL index
