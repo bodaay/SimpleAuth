@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -1088,9 +1089,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 		if keytabPath != "" {
 			w.Header().Set("WWW-Authenticate", "Negotiate")
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, h.bp(negotiateTestWaitHTML))
+		h.renderNegotiateTest(w, negotiateTestWaitTmpl, http.StatusUnauthorized, negotiateTestData{})
 		return
 	}
 
@@ -1105,8 +1104,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	// Check if this is NTLM instead of Kerberos
 	if isNTLMToken(tokenBytes) {
 		// NTLM fallback: show form with explanation
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, h.bp(negotiateTestNTLMFallbackHTML))
+		h.renderNegotiateTest(w, negotiateTestNTLMFallbackTmpl, http.StatusOK, negotiateTestData{})
 		return
 	}
 
@@ -1137,8 +1135,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Can't parse as SPNEGO or raw AP-REQ — fall back to login form
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Invalid SPNEGO token: "+err.Error())
+		h.renderNegotiateTest(w, negotiateTestKrbFailedTmpl, http.StatusOK, negotiateTestData{Error: "Invalid SPNEGO token: " + err.Error()})
 		return
 	}
 
@@ -1148,8 +1145,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(spnegoToken.NegTokenInit.MechTokenBytes) == 0 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "No mechanism token in SPNEGO negotiation.")
+		h.renderNegotiateTest(w, negotiateTestKrbFailedTmpl, http.StatusOK, negotiateTestData{Error: "No mechanism token in SPNEGO negotiation."})
 		return
 	}
 
@@ -1158,8 +1154,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 
 	if isNTLMToken(mechBytes) {
 		log.Printf("[spnego] NTLM token detected inside SPNEGO")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, h.bp(negotiateTestNTLMFallbackHTML))
+		h.renderNegotiateTest(w, negotiateTestNTLMFallbackTmpl, http.StatusOK, negotiateTestData{})
 		return
 	}
 
@@ -1170,8 +1165,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 	if err := apReq.Unmarshal(mechBytes); err != nil {
 		log.Printf("[spnego] AP-REQ unmarshal failed: %v, mechToken first bytes: %x", err, mechBytes[:min(32, len(mechBytes))])
 		// AP-REQ parse failed — fall back to login form
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Kerberos ticket could not be parsed: "+err.Error())
+		h.renderNegotiateTest(w, negotiateTestKrbFailedTmpl, http.StatusOK, negotiateTestData{Error: "Kerberos ticket could not be parsed: " + err.Error()})
 		return
 	}
 
@@ -1184,8 +1178,7 @@ func (h *Handler) handleNegotiateTest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) completeKerberosAuth(w http.ResponseWriter, r *http.Request, apReq *krbmsg.APReq, kt *keytab.Keytab) {
 	username, cname, err := h.verifyAPReq(apReq, kt)
 	if err != nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Kerberos verification failed: "+html.EscapeString(err.Error()))
+		h.renderNegotiateTest(w, negotiateTestKrbFailedTmpl, http.StatusOK, negotiateTestData{Error: "Kerberos verification failed: " + err.Error()})
 		return
 	}
 
@@ -1264,6 +1257,13 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", "Negotiate")
 		w.WriteHeader(http.StatusUnauthorized)
 		// Redirect to self with sso_attempt=1 so we can detect failure
+		// retryURL is built server-side from h.url() + url.QueryEscape'd values —
+		// it is never echoed from the request. Escaped here for defence in depth.
+		// NOTE: html/template treats <meta content> as contentTypeUnsafe (it
+		// attribute-escapes but does NOT URL-filter), so a template rewrite would
+		// not add a guarantee here; the safety rests on the server-side
+		// construction above. Left as an explicit EscapeString rather than moved
+		// into a template, deliberately.
 		fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=%s"></head><body><p>Authenticating...</p></body></html>`, html.EscapeString(retryURL))
 		return
 	}
@@ -1508,8 +1508,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if username == "" || password == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, h.bp(negotiateTestFormErrorHTML))
+		h.renderNegotiateTest(w, negotiateTestFormErrorTmpl, http.StatusOK, negotiateTestData{})
 		return
 	}
 
@@ -1517,8 +1516,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 	ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 	if ldapErr != nil {
 		log.Printf("[test-negotiate] No LDAP configured")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestLoginFailedHTML), "LDAP not configured")
+		h.renderNegotiateTest(w, negotiateTestLoginFailedTmpl, http.StatusOK, negotiateTestData{Error: "LDAP not configured"})
 		return
 	}
 
@@ -1532,8 +1530,7 @@ func (h *Handler) handleNegotiateTestForm(w http.ResponseWriter, r *http.Request
 			errMsg = authErr.Error()
 		}
 		log.Printf("[test-negotiate] Auth failed for user=%q: %s", username, errMsg)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, h.bp(negotiateTestLoginFailedHTML), html.EscapeString(errMsg))
+		h.renderNegotiateTest(w, negotiateTestLoginFailedTmpl, http.StatusOK, negotiateTestData{Error: errMsg})
 		return
 	}
 
@@ -1699,21 +1696,20 @@ func (h *Handler) enrichUserInfoFromLDAP(userInfo map[string]string, username st
 
 // renderNegotiateSuccess renders the success page with user info.
 func (h *Handler) renderNegotiateSuccess(w http.ResponseWriter, userInfo map[string]string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, h.bp(negotiateTestSuccessHTML),
-		userInfo["auth_method"],
-		mapGet(userInfo, "principal", "-"),
-		mapGet(userInfo, "realm", "-"),
-		mapGet(userInfo, "username", "-"),
-		mapGet(userInfo, "provider_name", "none"),
-		mapGet(userInfo, "provider_id", "-"),
-		mapGet(userInfo, "display_name", "-"),
-		mapGet(userInfo, "email", "-"),
-		mapGet(userInfo, "department", "-"),
-		mapGet(userInfo, "company", "-"),
-		mapGet(userInfo, "job_title", "-"),
-		mapGet(userInfo, "groups", "-"),
-	)
+	h.renderNegotiateTest(w, negotiateTestSuccessTmpl, http.StatusOK, negotiateTestData{
+		Method:       userInfo["auth_method"],
+		Principal:    mapGet(userInfo, "principal", "-"),
+		Realm:        mapGet(userInfo, "realm", "-"),
+		Username:     mapGet(userInfo, "username", "-"),
+		ProviderName: mapGet(userInfo, "provider_name", "none"),
+		ProviderID:   mapGet(userInfo, "provider_id", "-"),
+		DisplayName:  mapGet(userInfo, "display_name", "-"),
+		Email:        mapGet(userInfo, "email", "-"),
+		Department:   mapGet(userInfo, "department", "-"),
+		Company:      mapGet(userInfo, "company", "-"),
+		JobTitle:     mapGet(userInfo, "job_title", "-"),
+		Groups:       mapGet(userInfo, "groups", "-"),
+	})
 }
 
 func mapGet(m map[string]string, key, fallback string) string {
@@ -1733,14 +1729,14 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .gold-bar{height:3px;background:linear-gradient(90deg,var(--gold-light),var(--gold-dark));border-radius:999px;margin-bottom:24px}
 .error{background:var(--error-bg);color:var(--error-text);padding:12px 16px;border-radius:8px;font-size:0.85rem;margin-bottom:16px}
 .success{background:var(--green-bg);color:var(--green);padding:16px;border-radius:8px;text-align:center;margin-bottom:24px;font-weight:600;font-size:1.1rem}
-.spinner{display:inline-block;width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--burgundy);border-radius:50%%;animation:spin 0.8s linear infinite;margin-bottom:16px}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--burgundy);border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px}
 @keyframes spin{to{transform:rotate(360deg)}}
 label{display:block;font-size:0.875rem;font-weight:600;margin-bottom:6px}
-input[type=text],input[type=password]{width:100%%;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:14px}
+input[type=text],input[type=password]{width:100%;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;font-size:0.875rem;font-family:inherit;color:var(--text);margin-bottom:14px}
 input:focus{outline:none;border-color:var(--burgundy);box-shadow:0 0 0 3px rgba(139,21,61,0.15)}
-button{width:100%%;padding:10px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
+button{width:100%;padding:10px;background:var(--burgundy);color:#fff;border:none;border-radius:8px;font-size:0.875rem;font-weight:600;cursor:pointer;font-family:inherit}
 button:hover{background:var(--burgundy-hover)}
-table{width:100%%;border-collapse:collapse}
+table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border)}
 th{font-size:0.8rem;text-transform:uppercase;color:var(--muted);width:130px}
 td{font-size:0.9rem}
@@ -1749,6 +1745,55 @@ td{font-size:0.9rem}
 .badge-ldap{background:rgba(139,21,61,0.1);color:var(--burgundy)}
 #fallback{display:none}
 `
+
+// negotiateTestData drives the Kerberos/LDAP diagnostic pages.
+//
+// These pages are rendered with html/template rather than fmt.Fprintf because
+// every value below originates outside SimpleAuth: Error derives from parsing the
+// attacker-supplied `Authorization: Negotiate` header, and the success-page fields
+// are AD attributes (displayName, mail, department, memberOf) that a directory
+// principal may control. Three of the old call sites passed err.Error() with NO
+// escaping at all, and the success page reflected every AD attribute raw (M39).
+//
+// html/template also escapes per CONTEXT, which matters here: BasePath lands in a
+// form action (URL context) while the rest land in HTML text.
+type negotiateTestData struct {
+	BasePath string
+	Error    string
+
+	// Success page.
+	Method       string
+	Principal    string
+	Realm        string
+	Username     string
+	ProviderName string
+	ProviderID   string
+	DisplayName  string
+	Email        string
+	Department   string
+	Company      string
+	JobTitle     string
+	Groups       string
+}
+
+var (
+	negotiateTestWaitTmpl         = template.Must(template.New("negoWait").Parse(negotiateTestWaitHTML))
+	negotiateTestNTLMFallbackTmpl = template.Must(template.New("negoNTLM").Parse(negotiateTestNTLMFallbackHTML))
+	negotiateTestFormErrorTmpl    = template.Must(template.New("negoFormErr").Parse(negotiateTestFormErrorHTML))
+	negotiateTestKrbFailedTmpl    = template.Must(template.New("negoKrbFail").Parse(negotiateTestKrbFailedHTML))
+	negotiateTestLoginFailedTmpl  = template.Must(template.New("negoLoginFail").Parse(negotiateTestLoginFailedHTML))
+	negotiateTestSuccessTmpl      = template.Must(template.New("negoSuccess").Parse(negotiateTestSuccessHTML))
+)
+
+// renderNegotiateTest executes a diagnostic template, always supplying BasePath.
+func (h *Handler) renderNegotiateTest(w http.ResponseWriter, t *template.Template, status int, d negotiateTestData) {
+	d.BasePath = h.cfg.BasePath
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := t.Execute(w, d); err != nil {
+		log.Printf("[negotiate-test] render: %v", err)
+	}
+}
 
 const negotiateTestWaitHTML = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -1764,7 +1809,7 @@ const negotiateTestWaitHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <p>Kerberos not available — enter your AD credentials</p>
 <div class="gold-bar"></div>
-<form method="POST" action="{{BASE_PATH}}/test-negotiate">
+<form method="POST" action="{{.BasePath}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1785,7 +1830,7 @@ const negotiateTestNTLMFallbackHTML = `<!DOCTYPE html>
 <p>Kerberos unavailable (browser sent NTLM) — use credentials instead</p>
 <div class="gold-bar"></div>
 <div class="error">Your browser could not obtain a Kerberos ticket and fell back to NTLM. Check that the SPN matches the URL hostname and you are on the domain.</div>
-<form method="POST" action="{{BASE_PATH}}/test-negotiate">
+<form method="POST" action="{{.BasePath}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1802,7 +1847,7 @@ const negotiateTestFormErrorHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
 <div class="error">Username and password are required.</div>
-<form method="POST" action="{{BASE_PATH}}/test-negotiate">
+<form method="POST" action="{{.BasePath}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1819,8 +1864,8 @@ const negotiateTestKrbFailedHTML = `<!DOCTYPE html>
 <h1>Sign In</h1>
 <p>Kerberos authentication failed — use credentials instead</p>
 <div class="gold-bar"></div>
-<div class="error">%s</div>
-<form method="POST" action="{{BASE_PATH}}/test-negotiate">
+<div class="error">{{.Error}}</div>
+<form method="POST" action="{{.BasePath}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1836,8 +1881,8 @@ const negotiateTestLoginFailedHTML = `<!DOCTYPE html>
 <div class="card">
 <h1>Sign In</h1>
 <div class="gold-bar"></div>
-<div class="error">Authentication failed: %s</div>
-<form method="POST" action="{{BASE_PATH}}/test-negotiate">
+<div class="error">Authentication failed: {{.Error}}</div>
+<form method="POST" action="{{.BasePath}}/test-negotiate">
 <label>Username</label>
 <input type="text" name="username" placeholder="Enter your AD username" autofocus required>
 <label>Password</label>
@@ -1854,16 +1899,16 @@ const negotiateTestSuccessHTML = `<!DOCTYPE html>
 <div class="success">Authentication Successful</div>
 <h1>Authenticated User</h1>
 <table>
-<tr><th>Method</th><td>%s</td></tr>
-<tr><th>Principal</th><td>%s</td></tr>
-<tr><th>Realm</th><td>%s</td></tr>
-<tr><th>Username</th><td>%s</td></tr>
-<tr><th>LDAP Provider</th><td>%s <span style="color:var(--muted);font-size:0.8rem">(%s)</span></td></tr>
-<tr><th>Display Name</th><td>%s</td></tr>
-<tr><th>Email</th><td>%s</td></tr>
-<tr><th>Department</th><td>%s</td></tr>
-<tr><th>Company</th><td>%s</td></tr>
-<tr><th>Job Title</th><td>%s</td></tr>
-<tr><th>Groups</th><td>%s</td></tr>
+<tr><th>Method</th><td>{{.Method}}</td></tr>
+<tr><th>Principal</th><td>{{.Principal}}</td></tr>
+<tr><th>Realm</th><td>{{.Realm}}</td></tr>
+<tr><th>Username</th><td>{{.Username}}</td></tr>
+<tr><th>LDAP Provider</th><td>{{.ProviderName}} <span style="color:var(--muted);font-size:0.8rem">({{.ProviderID}})</span></td></tr>
+<tr><th>Display Name</th><td>{{.DisplayName}}</td></tr>
+<tr><th>Email</th><td>{{.Email}}</td></tr>
+<tr><th>Department</th><td>{{.Department}}</td></tr>
+<tr><th>Company</th><td>{{.Company}}</td></tr>
+<tr><th>Job Title</th><td>{{.JobTitle}}</td></tr>
+<tr><th>Groups</th><td>{{.Groups}}</td></tr>
 </table>
 </div></body></html>`

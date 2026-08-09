@@ -112,6 +112,7 @@ source of truth for what is currently open vs. fixed.
 | M36 | Container/CI hardening: EOL base image, host-exposed plaintext, root nginx, unpinned actions | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | M37 | LDAP group-CN parsing only strips uppercase `CN=` → broken role mapping | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | M38 | Bolt splits the composite mapping key on the first `:` → `applocal:<appID>` providers corrupted; diverges from Postgres and breaks app-local login after a backend migration | MEDIUM | FIXED | 2026-08-08 (Pass 4) |
+| M39 | Kerberos/LDAP diagnostic pages reflect SPNEGO parse errors and AD attributes into hand-built HTML; three sites had NO escaping | MEDIUM | FIXED | 2026-08-08 (Pass 4) |
 | L6 | `ValidateToken` did not require `exp` (missing-`exp` token validated) | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L7 | PKCE accepted `plain`/empty downgrade though discovery advertises only S256 | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L8 | Impersonation issued a token for a disabled / access-revoked target | LOW | FIXED | 2026-06-01 (Pass 3) |
@@ -1249,3 +1250,66 @@ user is unchanged and keeps their hash; an app-local user is never directory eve
 with a stray `SAMAccountName`; `directoryKey` is order-independent; and the
 `NoRoles` accounting matches what `Apply` will do. The first two fail with the
 precedence reverted.
+## Audit Pass 4 — M39 — diagnostic pages rendered with fmt.Fprintf
+
+CodeQL reported 10 open `go/reflected-xss` alerts in `internal/handler/auth.go`,
+the last of the class after PR #58 retired the `oidc.go` / `hosted_login.go` ones.
+
+Unlike those — which were the sanitizer-not-recognised false positive, every value
+already `html.EscapeString`-wrapped — **three of these sites had no escaping at
+all**:
+
+```go
+fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Invalid SPNEGO token: "+err.Error())
+fmt.Fprintf(w, h.bp(negotiateTestKrbFailedHTML), "Kerberos ticket could not be parsed: "+err.Error())
+```
+
+`err` there is the result of parsing `tokenBytes`, which is the base64 payload of
+the caller's `Authorization: Negotiate` header. A fourth site *was* escaped
+(`html.EscapeString(err.Error())`), which is what makes the omission a slip rather
+than a policy.
+
+The success page was worse in breadth: it reflected **every** AD attribute —
+`displayName`, `mail`, `department`, `company`, `title`, `memberOf` — raw into an
+HTML table. Those are attacker-influenced for any principal who can edit their own
+directory record.
+
+**Exploitability is bounded, and honestly so:** both endpoints are registered only
+when `AUTH_ENABLE_TEST_ENDPOINTS=true`, which defaults to **off** and was already
+gated for exactly this reason under H1 (they perform live LDAP binds and are a
+password oracle). Whether a crafted SPNEGO token can drive `<` into a gokrb5 ASN.1
+error string was not established — it depends on that library's error formatting.
+So: a genuine unescaped reflection of attacker-derived data, on a default-off
+endpoint, with uncertain end-to-end exploitability. Fixed on the merits rather
+than argued about.
+
+**Approach.** The same conversion PR #58 applied to the OIDC login page: six
+`fmt.Fprintf` templates become `html/template` with a typed `negotiateTestData`
+struct, parsed once at package init via `template.Must`. `{{BASE_PATH}}` — which
+`h.bp()` used to substitute with `strings.ReplaceAll` *before* the `Fprintf` —
+becomes a real `{{.BasePath}}` field, so the base path is now escaped for its
+context too and the `bp()` hop disappears. All manual `html.EscapeString` calls on
+these paths are removed; the template owns escaping.
+
+`negotiateTestCSS` also carried `fmt`-escaped `%%` (`border-radius:50%%`,
+`width:100%%`). `html/template` is not a format string, so those would have shipped
+literally and broken every rule containing them — including on the three pages that
+already used `fmt.Fprint` (no formatting) and were therefore silently broken
+before this change too. Un-doubled, and the test asserts no `%%` survives into any
+rendered page.
+
+One site is deliberately **not** converted: the SPNEGO retry meta-refresh
+(`<meta http-equiv="refresh" content="0;url=…">`). `html/template` classifies
+`<meta content>` as `contentTypeUnsafe` — it attribute-escapes but does **not**
+URL-filter — so a rewrite would add no guarantee. `retryURL` is built server-side
+from `h.url()` plus `url.QueryEscape`'d values and is never echoed from the
+request; the `EscapeString` there is defence in depth. The reasoning is recorded
+in a comment so it is not "cleaned up" later.
+
+**Tests:** `internal/handler/negotiate_test_pages_test.go` — error pages escape a
+script payload and are *single*-encoded (a surviving manual `EscapeString` would
+show as `&amp;lt;`); the success page escapes AD-controlled attributes; every form
+page renders a real base path with no placeholder left behind; and the wait page
+still returns **401**, which the SPNEGO handshake depends on — the conversion moved
+`WriteHeader` into a shared helper, exactly the kind of thing a refactor drops
+silently.
