@@ -86,6 +86,7 @@ source of truth for what is currently open vs. fixed.
 | H14 | Bolt `SetIdentityMapping` leaves a stale reverse-index claim on the previous owner → wrong `preferred_username` in tokens; delete cascades destroy a live mapping | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | SA-7 | `POST /api/auth/reset-password` creates a local password on a directory (AD) user with no proof of possession → permanent shadow credential surviving AD termination | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | H15 | Migration bundle carries an arbitrary `audience` → a migration-token holder mints tokens another app's resource servers accept | HIGH | FIXED | 2026-08-08 (Pass 4) |
+| H16 | `classifyUser` tests `PasswordHash` before the directory identity → AD users migrate as app-local shadows carrying a standing password | HIGH | FIXED | 2026-08-08 (Pass 4) |
 | S4 | Go SDK `Verify` accepts `typ=app-mgmt`/`typ=ID` tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S5 | Python SDK `verify` accepts refresh tokens as access tokens | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
 | S6 | JS/.NET SDKs accept ID tokens as access; .NET threw non-SDK exception | MEDIUM | FIXED | 2026-06-01 (Pass 3) |
@@ -1136,3 +1137,115 @@ refused *with no such app row present*; a distinct audience still carried;
 re-running the same migration is idempotent; whitespace trimmed; an empty carried
 audience preserves the target's; and `Classify` blocks with the conflicting app
 named while reporting `AudienceToApply` on the happy path.
+
+---
+
+## Audit Pass 4 — H16 — migration classifies AD users as local shadows
+
+**Severity:** HIGH.
+
+`classifyUser` tested `u.PasswordHash != ""` **before** the directory signal, so
+any AD-backed user who also carried a local hash migrated as an app-LOCAL user
+keyed by that credential. Three things went wrong at once:
+
+- The central ended up holding a **standing password** for someone whose identity
+  is directory-governed, so the migrated account outlived AD-side disablement,
+  lockout and password policy — exactly what this package's doc comment promises
+  never happens (*"no record or password is copied"*).
+- `Classify` never **blocks** a local user, so an AD population misclassified this
+  way sailed straight past the *"central is on a different AD"* guard that exists
+  to stop unauthenticatable users being imported.
+- `Apply` flipped `allow_local_users` on the target for accounts that must never
+  use the app-local login path.
+
+This composes with **SA-7**: that bug was one way an AD user acquired a local hash
+in the first place. Fixing SA-7 reduces the population going forward but neither
+eliminates it (master-admin break-glass remains legitimate) nor cleans existing
+data, so the precedence inversion is independently necessary.
+
+**Approach.** Resolve the directory key first; only a user with no directory
+identity at all is local. A `KindAD` entry no longer carries a password hash —
+the central re-binds that person from the same AD, so copying the credential would
+recreate the very shadow account this prevents. A `HadLocalPassword` **boolean**
+(never the hash) travels instead, so the dry run can tell the operator which
+break-glass logins do not survive the move.
+
+`isDirectoryProvider` covers both the bare provider names and the per-directory
+forms (`ldap:<id>`, `kerberos:<realm>`). An adversarial review of the first cut
+found the allow-list was an exact match on `"ldap"` — and `build.md:214` documents
+multi-directory deployments as exactly `ldap:corp` / `ldap:partner`, with
+`handleSetMapping` accepting an arbitrary provider string. So H16 was unfixed for
+any deployment that followed the documentation: their directory users classified as
+local and had their password hashes exported.
+`TestClassifyDirectoryProviderVariants` pins every documented form.
+
+`localUsername` fails closed for the same reason `directoryKey` does — it calls the
+same store method, and swallowing the error made it fall through to `u.Email` and
+export a credential keyed by something that is not the user's login.
+
+`directoryKey` prefers `SAMAccountName` but falls back to `ldap`/`kerberos`
+mappings, because `handleImportLDAPUsers` provisions a user with an `ldap` mapping
+and **no** `SAMAccountName` until their first login — without the fallback such a
+user is misclassified as local or dropped from the bundle entirely. The `local`
+provider is deliberately not consulted: every LDAP/Kerberos JIT provision writes
+BOTH an `ldap` and a `local` mapping, which is exactly how `localUsername` happily
+returned an AD username under the old precedence.
+
+Selection is **order-independent**: `GetMappingsForUser` returns insertion order on
+Bolt and unordered rows on Postgres, and an LDAP user commonly carries both a UPN
+and a sAMAccountName form. The bare form wins and ties break lexicographically, so
+a given mapping *set* yields the same key on both backends. Note the scope of that
+claim: the mapping SET itself is only as accurate as Bolt's reverse index, which is
+what H14 repairs — this fix rides on that one landing first.
+
+`directoryKey` fails **closed**: an error from `GetMappingsForUser` used to be
+swallowed, which reads as "no directory identity" and therefore classifies the
+user as LOCAL and **exports their password hash** — the exact outcome this
+precedence prevents. An adversarial review of the first cut found it; classification
+now refuses rather than guessing, so a store failure yields a short bundle (visible
+in the preflight counts) instead of a leaked credential.
+
+`Apply` also only flips `allow_local_users` for an entry it will actually
+materialize. A zero-role local entry is skipped, and `Classify` no longer counts
+it, so opening the target's local-login gate for a user that is never created
+weakened the app's authentication surface for nothing.
+
+`OwnerAppID != ""` short-circuits to local: an app-local user is local by
+construction and must never be resolved against the directory, whatever mappings
+an admin hung off the record.
+
+**Note on the two directory predicates.** `handler.isDirectoryBacked` (SA-7) is
+deny-by-default over "not `local` and not `applocal:*`"; `migrate.isDirectoryProvider`
+is an allow-list of `ldap` / `kerberos` and their per-directory forms
+(`ldap:<id>`, `kerberos:<realm>`). The asymmetry is **intentional** — one returns a
+verdict, the other must return a KEY — but it means an exotic provider (say `saml`)
+is "directory" to the password gate and "not directory" to the migrator. An earlier
+draft of this entry claimed that produced no exploit because such a user "has no
+hash to export"; that was **not** substantiated and is withdrawn. The migrator's
+allow-list now covers every provider form this repository documents
+(`build.md` gives `ldap:corp` as the multi-directory example), and a provider
+outside it classifies as local — so if a future provider is added, it must be added
+to `isDirectoryProvider` in the same change. Do not unify the two predicates:
+`internal/migrate` importing from `internal/handler` would invert the dependency
+direction.
+
+**Wire break: `SchemaRev` 1 → 2.** Classification happens on the SOURCE side, so a
+patched central cannot trust the `Kind` values in a rev-1 bundle. The exact-match
+check in `guardMigrationCall` turns the bump into the right operator instruction
+rather than a silent import of buggy classification. **In-flight migrations must
+upgrade the older deployment first — this belongs in the release notes.**
+
+**Also fixed: dishonest preflight counts.** `Apply` skips a user with no effective
+roles entirely (no assignment written, no local account created) while `Classify`
+counted them as migrating, so preflight promised N and Apply delivered fewer with
+nothing explaining the gap. `Report.NoRoles` now counts them separately, with a
+note. The AD block checks still run for them — *"the central cannot authenticate
+this person"* is worth saying regardless of whether they carry roles today.
+
+**Tests:** `internal/migrate/classify_test.go` — a directory user with a local hash
+classifies as AD with **no** hash carried and `HadLocalPassword` set; an imported
+LDAP user with no `SAMAccountName` still classifies as directory; a genuine local
+user is unchanged and keeps their hash; an app-local user is never directory even
+with a stray `SAMAccountName`; `directoryKey` is order-independent; and the
+`NoRoles` accounting matches what `Apply` will do. The first two fail with the
+precedence reverted.

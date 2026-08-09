@@ -28,7 +28,15 @@ import (
 )
 
 // SchemaRev is the bundle wire-format revision; bump on incompatible changes.
-const SchemaRev = 1
+//
+// 2 (H16): user classification moved from "PasswordHash first" to "directory
+// identity first", and a KindAD entry no longer carries a password hash. That
+// decision is made on the SOURCE side, so a patched central cannot trust the Kind
+// values in a rev-1 bundle. The exact-match check in guardMigrationCall turns the
+// bump into the right operator instruction — "incompatible migration bundle;
+// upgrade the older deployment first" — instead of silently importing a bundle
+// built by the buggy classifier.
+const SchemaRev = 2
 
 // UserKind is how a user authenticates, which determines how they migrate.
 type UserKind string
@@ -93,6 +101,13 @@ type UserEntry struct {
 	DisplayName  string `json:"display_name,omitempty"`
 	Email        string `json:"email,omitempty"`
 	PasswordHash string `json:"password_hash,omitempty"`
+
+	// HadLocalPassword marks a KindAD user who ALSO held a local password on the
+	// source (a break-glass account, or one acquired via a reset path). The hash is
+	// NOT carried — see classifyUser — because the central re-binds this identity
+	// from AD. Only the boolean travels, so the dry run can tell the operator which
+	// logins do not survive the move.
+	HadLocalPassword bool `json:"had_local_password,omitempty"`
 }
 
 // Package builds a Bundle from a standalone deployment's store, capturing its home
@@ -148,6 +163,22 @@ func Package(s store.Store, homeAppID, sourceVersion string) (*Bundle, error) {
 
 // classifyUser turns a source user into a portable UserEntry. ok=false skips a
 // user with no usable identity.
+//
+// PRECEDENCE (H16): a DIRECTORY identity beats a local credential, always. This
+// used to test PasswordHash first, so any AD-backed user who ALSO carried a local
+// hash migrated as an app-LOCAL shadow keyed by that credential. Three things went
+// wrong at once:
+//   - the central ended up holding a standing password for someone whose identity
+//     is directory-governed, so the account outlived AD-side disablement, lockout
+//     and password policy — exactly what "no record or password is copied" in this
+//     package's doc comment promises never happens;
+//   - Classify never BLOCKS a local user, so a whole AD population misclassified
+//     as local sailed straight past the "central is on a different AD" guard;
+//   - Apply flipped allow_local_users on the target for accounts that must never
+//     use the app-local login path.
+//
+// So: resolve the directory key first. Only a user with NO directory identity at
+// all is a local user.
 func classifyUser(s store.Store, u *store.User, defaultRoles []string) (UserEntry, bool) {
 	roles, _ := s.GetUserRoles(u.GUID)
 	if len(roles) == 0 {
@@ -155,9 +186,36 @@ func classifyUser(s store.Store, u *store.User, defaultRoles []string) (UserEntr
 	}
 	direct, _ := s.GetUserPermissions(u.GUID)
 
+	// An app-local user (OwnerAppID set) is local BY CONSTRUCTION: created only by
+	// the app self-service path, authenticated locally, and never auto-provisioned
+	// from the directory (M12). Package has already dropped the ones owned by
+	// ANOTHER app, so an owner still set here is the home app's. Never resolve
+	// these against the directory, whatever mappings an admin may have hung off
+	// the record.
+	if u.OwnerAppID == "" {
+		key, err := directoryKey(s, u)
+		if err != nil {
+			// Cannot prove this user is local, so do not export a credential for
+			// them. Skipping is the safe direction: a missing user is visible in the
+			// preflight counts, a leaked hash is not.
+			return UserEntry{}, false
+		}
+		if key != "" {
+			// Directory-governed. The local hash — if any — is deliberately left
+			// behind: the central re-binds this person from the SAME AD, so copying
+			// the credential would recreate exactly the shadow account this
+			// precedence exists to prevent. HadLocalPassword (a bool, never the
+			// hash) lets the dry run tell the operator it did not travel.
+			return UserEntry{
+				Kind: KindAD, Key: key, Roles: roles, DirectPerms: direct,
+				HadLocalPassword: u.PasswordHash != "",
+			}, true
+		}
+	}
+
 	if u.PasswordHash != "" {
-		username := localUsername(s, u)
-		if username == "" {
+		username, err := localUsername(s, u)
+		if err != nil || username == "" {
 			return UserEntry{}, false
 		}
 		return UserEntry{
@@ -165,29 +223,115 @@ func classifyUser(s store.Store, u *store.User, defaultRoles []string) (UserEntr
 			DisplayName: u.DisplayName, Email: u.Email, PasswordHash: u.PasswordHash,
 		}, true
 	}
-	if u.SAMAccountName != "" {
-		return UserEntry{Kind: KindAD, Key: u.SAMAccountName, Roles: roles, DirectPerms: direct}, true
-	}
 	return UserEntry{}, false
 }
 
+// isDirectoryProvider reports whether an identity-mapping provider denotes a
+// DIRECTORY identity (AD via LDAP or Kerberos) rather than a credential stored
+// here.
+//
+// Both the bare names and the per-directory forms count. build.md documents
+// multi-directory deployments as `ldap:corp` / `ldap:partner`, and
+// handleSetMapping accepts an arbitrary provider string with no allow-list, so an
+// exact match on "ldap" silently misses every deployment that followed the docs —
+// their directory users would classify as local and have their password hashes
+// exported, which is the whole defect H16 exists to prevent.
+//
+// "local" and "applocal:<app_id>" are deliberately excluded: those ARE credentials
+// stored here.
+func isDirectoryProvider(provider string) bool {
+	switch provider {
+	case "ldap", "kerberos":
+		return true
+	}
+	return strings.HasPrefix(provider, "ldap:") || strings.HasPrefix(provider, "kerberos:")
+}
+
+// directoryKey returns the AD key a directory-governed user travels under, or ""
+// when the user has no directory identity at all.
+//
+// SAMAccountName is preferred when present, but it is NOT universal: it is written
+// on the LDAP bind path (and self-healed by syncUserFromLDAP), while the Kerberos
+// SPNEGO path writes only a `kerberos` mapping and leaves SAMAccountName empty
+// (handleNegotiate), and handleImportLDAPUsers leaves it empty until the user's
+// first login. Hence the mapping fallback — without it those users misclassify as
+// local and have their password hash exported.
+//
+// The `local` provider is deliberately NOT consulted. On the LDAP password path a
+// JIT provision writes BOTH an `ldap` and a `local` mapping, so `local` is present
+// on many AD users too — which is exactly how localUsername happily returned an AD
+// username under the old precedence. (The Kerberos path writes neither, so this
+// exclusion is about the LDAP case specifically.)
+//
+// Ordering must not depend on the backend: GetMappingsForUser returns insertion
+// order on Bolt and UNORDERED rows on Postgres, and an LDAP user commonly carries
+// two mappings (the typed cname/UPN plus the real sAMAccountName). Preferring a
+// candidate without "@" is a best-effort tiebreak toward the sAMAccountName form,
+// not a guarantee of it — a Kerberos-only user's sole candidate is a
+// realm-qualified `user@REALM` cname, and that is simply what they travel under.
+// Ties break lexicographically, so a given mapping SET yields the same key on both
+// backends.
+//
+// NOTE: internal/handler has its own directory predicate (isDirectoryBacked,
+// deny-by-default over "not local and not applocal"). This one is an allow-list
+// because it must produce a KEY, not a verdict. The asymmetry is intentional; do
+// not unify them — internal/migrate importing from internal/handler would invert
+// the dependency direction.
+func directoryKey(s store.Store, u *store.User) (string, error) {
+	if u.SAMAccountName != "" {
+		return u.SAMAccountName, nil
+	}
+	mappings, err := s.GetMappingsForUser(u.GUID)
+	if err != nil {
+		// Fail CLOSED. Swallowing this would mean "no directory identity", which
+		// classifies the user as LOCAL and EXPORTS their password hash into the
+		// bundle — the exact outcome this precedence exists to prevent. Refuse to
+		// classify instead; Package drops the user and the operator sees a short
+		// bundle rather than a leaked credential.
+		return "", fmt.Errorf("mappings for %s: %w", u.GUID, err)
+	}
+	var cands []string
+	for _, m := range mappings {
+		if isDirectoryProvider(m.Provider) && m.ExternalID != "" {
+			cands = append(cands, m.ExternalID)
+		}
+	}
+	if len(cands) == 0 {
+		return "", nil
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		iUPN, jUPN := strings.Contains(cands[i], "@"), strings.Contains(cands[j], "@")
+		if iUPN != jUPN {
+			return jUPN // a bare sAMAccountName sorts before a UPN/cname form
+		}
+		return cands[i] < cands[j]
+	})
+	return cands[0], nil
+}
+
 // localUsername finds the login username for a local user.
-func localUsername(s store.Store, u *store.User) string {
-	mappings, _ := s.GetMappingsForUser(u.GUID)
+func localUsername(s store.Store, u *store.User) (string, error) {
+	mappings, err := s.GetMappingsForUser(u.GUID)
+	if err != nil {
+		// Same reasoning as directoryKey: swallowing this makes the function fall
+		// through to u.Email and export a credential under a key that is not the
+		// user's login. Refuse instead.
+		return "", fmt.Errorf("mappings for %s: %w", u.GUID, err)
+	}
 	for _, m := range mappings {
 		if m.Provider == "local" {
-			return m.ExternalID
+			return m.ExternalID, nil
 		}
 	}
 	for _, m := range mappings {
 		if strings.HasPrefix(m.Provider, "applocal:") {
-			return m.ExternalID
+			return m.ExternalID, nil
 		}
 	}
 	if u.SAMAccountName != "" {
-		return u.SAMAccountName
+		return u.SAMAccountName, nil
 	}
-	return u.Email
+	return u.Email, nil
 }
 
 // Report is the dry-run result the central computes before any write.
@@ -195,11 +339,16 @@ type Report struct {
 	SourceVersion string `json:"source_version"`
 	TargetApp     string `json:"target_app"`
 
-	ADUsersSameDomain int           `json:"ad_users_same_domain"` // resolvable from the central's AD
-	ADUsersKnown      int           `json:"ad_users_known"`       // already present in the central directory
-	LocalUsers        int           `json:"local_users"`          // materialized as app-local users
-	Blocked           []BlockedUser `json:"blocked,omitempty"`
-	Notes             []string      `json:"notes,omitempty"`
+	ADUsersSameDomain int `json:"ad_users_same_domain"` // resolvable from the central's AD
+	ADUsersKnown      int `json:"ad_users_known"`       // already present in the central directory
+	LocalUsers        int `json:"local_users"`          // materialized as app-local users
+	// NoRoles counts users the bundle carries that Apply will NOT migrate: with no
+	// effective roles there is nothing to grant, so no assignment is written and no
+	// local account is created. Counted separately so the dry run's numbers are the
+	// numbers the operator actually gets.
+	NoRoles int           `json:"no_roles"`
+	Blocked []BlockedUser `json:"blocked,omitempty"`
+	Notes   []string      `json:"notes,omitempty"`
 
 	RedirectURIsToReview []string `json:"redirect_uris_to_review,omitempty"`
 
@@ -323,13 +472,29 @@ func Classify(b *Bundle, central store.Store, targetAppID, defaultAppID string) 
 	}
 
 	directPermUsers := 0
+	adWithLocalPassword := 0
 	for _, u := range b.Users {
 		if len(u.DirectPerms) > 0 {
 			directPermUsers++
 		}
+		if u.HadLocalPassword {
+			adWithLocalPassword++
+		}
+		// Apply grants nothing for a user with no effective roles and does not even
+		// materialize a local account for them, so the report must not count them as
+		// migrating — preflight promised N and Apply delivered fewer, with nothing in
+		// the report explaining the gap. The AD BLOCK checks below still run either
+		// way: "the central cannot authenticate this person" is worth telling the
+		// operator regardless of whether they happen to carry roles today.
+		migrating := len(u.Roles) > 0
+		if !migrating {
+			r.NoRoles++
+		}
 		switch u.Kind {
 		case KindLocal:
-			r.LocalUsers++
+			if migrating {
+				r.LocalUsers++
+			}
 		case KindAD:
 			switch {
 			case !centralHasAD:
@@ -337,9 +502,11 @@ func Classify(b *Bundle, central store.Store, targetAppID, defaultAppID string) 
 			case !sameAD:
 				r.Blocked = append(r.Blocked, BlockedUser{Key: u.Key, Reason: "central is on a different AD; key by UPN/email or connect the same AD"})
 			default:
-				r.ADUsersSameDomain++
-				if known[u.Key] {
-					r.ADUsersKnown++
+				if migrating {
+					r.ADUsersSameDomain++
+					if known[u.Key] {
+						r.ADUsersKnown++
+					}
 				}
 			}
 		}
@@ -347,6 +514,12 @@ func Classify(b *Bundle, central store.Store, targetAppID, defaultAppID string) 
 
 	if directPermUsers > 0 {
 		r.Notes = append(r.Notes, fmt.Sprintf("%d user(s) have direct (non-role) permissions that are NOT carried in this version — re-grant via roles on the target app", directPermUsers))
+	}
+	if r.NoRoles > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("%d user(s) carry no effective roles (no explicit role on the source and no default_roles) — they do NOT migrate: no assignment is written and no local account is created", r.NoRoles))
+	}
+	if adWithLocalPassword > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("%d AD user(s) also had a LOCAL password on the source; it is NOT carried — the central re-binds them from AD. Re-create any break-glass login deliberately on the central", adWithLocalPassword))
 	}
 	if b.SourceAD != nil && !centralHasAD {
 		r.Notes = append(r.Notes, "source is AD-connected but the central is not — connect the central to the same AD to migrate AD users")
@@ -432,7 +605,11 @@ func Apply(b *Bundle, central store.Store, targetAppID, defaultAppID string, car
 		app.SecretHash = b.App.SecretHash
 	}
 	for _, u := range b.Users {
-		if u.Kind == KindLocal {
+		// Only for an entry Apply will actually materialize. A zero-role local
+		// entry is skipped below, and Classify no longer counts it — opening the
+		// target's local-login gate for a user that is never created would weaken
+		// the app's authentication surface for nothing.
+		if u.Kind == KindLocal && len(u.Roles) > 0 {
 			app.AllowLocalUsers = true
 			break
 		}
