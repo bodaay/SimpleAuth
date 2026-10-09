@@ -191,6 +191,8 @@ func (h *Handler) authenticateUser(username, password string, app *store.App) (s
 					// JIT provisioning
 					newUser := &store.User{
 						DisplayName:    result.DisplayName,
+						GivenName:      result.GivenName,
+						FamilyName:     result.FamilyName,
 						Email:          result.Email,
 						Department:     result.Department,
 						Company:        result.Company,
@@ -331,6 +333,14 @@ func (h *Handler) syncUserFromLDAP(user *store.User, result *auth.LDAPResult) {
 		user.JobTitle = result.JobTitle
 		changed = true
 	}
+	if result.GivenName != "" && result.GivenName != user.GivenName {
+		user.GivenName = result.GivenName
+		changed = true
+	}
+	if result.FamilyName != "" && result.FamilyName != user.FamilyName {
+		user.FamilyName = result.FamilyName
+		changed = true
+	}
 	if result.Username != "" && result.Username != user.SAMAccountName {
 		user.SAMAccountName = result.Username
 		changed = true
@@ -390,6 +400,8 @@ func (h *Handler) issueTokenPair(user *store.User, roles []string, perms []strin
 	claims := auth.Claims{
 		GUID:              user.GUID,
 		Name:              user.DisplayName,
+		GivenName:         user.GivenName,
+		FamilyName:        user.FamilyName,
 		Email:             user.Email,
 		Department:        user.Department,
 		Company:           user.Company,
@@ -717,6 +729,8 @@ func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	newClaims := auth.Claims{
 		GUID:              user.GUID,
 		Name:              user.DisplayName,
+		GivenName:         user.GivenName,
+		FamilyName:        user.FamilyName,
 		Email:             user.Email,
 		Department:        user.Department,
 		Company:           user.Company,
@@ -1614,6 +1628,8 @@ func (h *Handler) resolveKerberosUser(username string) (string, []string, error)
 
 	newUser := &store.User{
 		DisplayName:    result.DisplayName,
+		GivenName:      result.GivenName,
+		FamilyName:     result.FamilyName,
 		Email:          result.Email,
 		Department:     result.Department,
 		Company:        result.Company,

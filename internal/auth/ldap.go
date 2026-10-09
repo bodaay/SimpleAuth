@@ -35,6 +35,8 @@ type LDAPConfig struct {
 	CompanyAttr     string
 	JobTitleAttr    string
 	GroupsAttr      string
+	GivenNameAttr   string
+	FamilyNameAttr  string
 }
 
 type LDAPResult struct {
@@ -45,6 +47,8 @@ type LDAPResult struct {
 	Department  string
 	Company     string
 	JobTitle    string
+	GivenName   string
+	FamilyName  string
 	Groups      []string
 	// Disabled is true when AD reports the account as disabled
 	// (userAccountControl ACCOUNTDISABLE) or past its accountExpires date.
@@ -250,7 +254,7 @@ func ldapAttrs(cfg *LDAPConfig) []string {
 		usernameAttr = "sAMAccountName"
 	}
 	attrs := []string{"dn", usernameAttr, "userAccountControl", "accountExpires"}
-	for _, a := range []string{cfg.DisplayNameAttr, cfg.EmailAttr, cfg.DepartmentAttr, cfg.CompanyAttr, cfg.JobTitleAttr, cfg.GroupsAttr} {
+	for _, a := range []string{cfg.DisplayNameAttr, cfg.EmailAttr, cfg.DepartmentAttr, cfg.CompanyAttr, cfg.JobTitleAttr, cfg.GroupsAttr, cfg.GivenNameAttr, cfg.FamilyNameAttr} {
 		if a != "" {
 			attrs = append(attrs, a)
 		}
@@ -282,6 +286,12 @@ func entryToResult(entry *ldap.Entry, cfg *LDAPConfig) *LDAPResult {
 	}
 	if cfg.JobTitleAttr != "" {
 		result.JobTitle = entry.GetAttributeValue(cfg.JobTitleAttr)
+	}
+	if cfg.GivenNameAttr != "" {
+		result.GivenName = entry.GetAttributeValue(cfg.GivenNameAttr)
+	}
+	if cfg.FamilyNameAttr != "" {
+		result.FamilyName = entry.GetAttributeValue(cfg.FamilyNameAttr)
 	}
 	if cfg.GroupsAttr != "" {
 		result.Groups = entry.GetAttributeValues(cfg.GroupsAttr)

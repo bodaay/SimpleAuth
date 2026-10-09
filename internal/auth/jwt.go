@@ -29,6 +29,8 @@ type Claims struct {
 	jwt.RegisteredClaims
 	GUID       string `json:"guid,omitempty"`
 	Name       string `json:"name,omitempty"`
+	GivenName  string `json:"given_name,omitempty"`
+	FamilyName string `json:"family_name,omitempty"`
 	Email      string `json:"email,omitempty"`
 	Department string `json:"department,omitempty"`
 	Company    string `json:"company,omitempty"`

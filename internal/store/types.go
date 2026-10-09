@@ -8,6 +8,8 @@ type User struct {
 	GUID         string `json:"guid"`
 	PasswordHash string `json:"password_hash,omitempty"`
 	DisplayName  string `json:"display_name"`
+	GivenName    string `json:"given_name,omitempty"`
+	FamilyName   string `json:"family_name,omitempty"`
 	Email        string `json:"email"`
 	Department   string `json:"department,omitempty"`
 	Company      string `json:"company,omitempty"`
@@ -85,6 +87,12 @@ type LDAPConfig struct {
 	GroupsAttr      string    `json:"groups_attr"`
 	Domain          string    `json:"domain,omitempty"`
 	ConfiguredAt    time.Time `json:"configured_at"`
+
+	// GivenNameAttr / FamilyNameAttr feed the OIDC given_name / family_name
+	// claims. Empty means the AD defaults (givenName / sn), so deployments
+	// configured before these existed pick them up without reconfiguration.
+	GivenNameAttr  string `json:"given_name_attr,omitempty"`
+	FamilyNameAttr string `json:"family_name_attr,omitempty"`
 }
 
 // App is a registered application (OAuth client) with its own per-app

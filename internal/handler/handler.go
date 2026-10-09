@@ -490,6 +490,13 @@ func (h *Handler) auditLogin(user *store.User, ip string, extra map[string]inter
 }
 
 func ldapConfigFromStore(p *store.LDAPConfig) *auth.LDAPConfig {
+	givenNameAttr, familyNameAttr := p.GivenNameAttr, p.FamilyNameAttr
+	if givenNameAttr == "" {
+		givenNameAttr = "givenName"
+	}
+	if familyNameAttr == "" {
+		familyNameAttr = "sn"
+	}
 	return &auth.LDAPConfig{
 		URL:             p.URL,
 		BaseDN:          p.BaseDN,
@@ -506,6 +513,8 @@ func ldapConfigFromStore(p *store.LDAPConfig) *auth.LDAPConfig {
 		CompanyAttr:     p.CompanyAttr,
 		JobTitleAttr:    p.JobTitleAttr,
 		GroupsAttr:      p.GroupsAttr,
+		GivenNameAttr:   givenNameAttr,
+		FamilyNameAttr:  familyNameAttr,
 	}
 }
 

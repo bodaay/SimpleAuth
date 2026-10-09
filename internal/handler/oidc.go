@@ -119,7 +119,7 @@ func (h *Handler) handleOIDCDiscovery(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint_auth_methods_supported": authMethods,
 		"code_challenge_methods_supported":      []string{"S256"},
 		"claims_supported": []string{
-			"sub", "iss", "aud", "exp", "iat", "name", "email",
+			"sub", "iss", "aud", "exp", "iat", "name", "given_name", "family_name", "email",
 			"preferred_username", "realm_access", "resource_access",
 			"department", "company", "job_title", "groups",
 		},
@@ -888,6 +888,8 @@ func (h *Handler) issueOIDCTokens(w http.ResponseWriter, r *http.Request, user *
 	idAud := appAudience(app)
 	idClaims := auth.Claims{
 		Name:              user.DisplayName,
+		GivenName:         user.GivenName,
+		FamilyName:        user.FamilyName,
 		Email:             user.Email,
 		PreferredUsername: user.Email,
 		Nonce:             nonce,
@@ -941,6 +943,8 @@ func (h *Handler) buildOIDCAccessClaims(user *store.User, roles, perms, groups [
 
 	claims := auth.Claims{
 		Name:              user.DisplayName,
+		GivenName:         user.GivenName,
+		FamilyName:        user.FamilyName,
 		Email:             user.Email,
 		Department:        user.Department,
 		Company:           user.Company,
@@ -999,6 +1003,12 @@ func (h *Handler) handleOIDCUserInfo(w http.ResponseWriter, r *http.Request) {
 
 	if user.Email == "" {
 		resp["preferred_username"] = user.DisplayName
+	}
+	if user.GivenName != "" {
+		resp["given_name"] = user.GivenName
+	}
+	if user.FamilyName != "" {
+		resp["family_name"] = user.FamilyName
 	}
 	if user.Department != "" {
 		resp["department"] = user.Department

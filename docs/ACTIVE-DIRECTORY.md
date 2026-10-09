@@ -151,7 +151,13 @@ These map AD attributes to SimpleAuth user fields:
 | `department_attr` | `department` | Department name |
 | `company_attr` | `company` | Company name |
 | `job_title_attr` | `title` | Job title |
+| `given_name_attr` | `givenName` | First name, emitted as the OIDC `given_name` claim |
+| `family_name_attr` | `sn` | Last name, emitted as the OIDC `family_name` claim |
 | `groups_attr` | `memberOf` | Group membership (multi-valued DN list) |
+
+Left empty, `given_name_attr` and `family_name_attr` fall back to `givenName` and `sn`, so existing
+configurations start emitting `given_name` / `family_name` without changes. OIDC clients such as
+OpenProject use these claims for the user's first and last name.
 
 ### Priority
 

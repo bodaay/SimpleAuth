@@ -127,6 +127,8 @@ func (h *Handler) handleTestLDAPUser(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{
 		"status":       "ok",
 		"display_name": result.DisplayName,
+		"given_name":   result.GivenName,
+		"family_name":  result.FamilyName,
 		"email":        result.Email,
 		"department":   result.Department,
 		"company":      result.Company,
@@ -204,6 +206,8 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		CompanyAttr:     "company",
 		JobTitleAttr:    "title",
 		GroupsAttr:      "memberOf",
+		GivenNameAttr:   "givenName",
+		FamilyNameAttr:  "sn",
 		Domain:          req.Domain,
 	}
 
@@ -352,6 +356,8 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		CompanyAttr:     "company",
 		JobTitleAttr:    "title",
 		GroupsAttr:      "memberOf",
+		GivenNameAttr:   "givenName",
+		FamilyNameAttr:  "sn",
 		Domain:          domain,
 	}
 
@@ -484,6 +490,8 @@ func (h *Handler) handleImportLDAPUsers(w http.ResponseWriter, r *http.Request) 
 		// Create SimpleAuth user
 		user := &store.User{
 			DisplayName: ldapUser.DisplayName,
+			GivenName:   ldapUser.GivenName,
+			FamilyName:  ldapUser.FamilyName,
 			Email:       ldapUser.Email,
 			Department:  ldapUser.Department,
 			Company:     ldapUser.Company,

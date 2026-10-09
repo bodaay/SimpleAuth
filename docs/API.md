@@ -580,7 +580,7 @@ curl -k https://auth.example.com/sauth/.well-known/openid-configuration
   "scopes_supported": ["openid", "profile", "email", "roles"],
   "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
   "claims_supported": [
-    "sub", "iss", "aud", "exp", "iat", "name", "email",
+    "sub", "iss", "aud", "exp", "iat", "name", "given_name", "family_name", "email",
     "preferred_username", "realm_access",
     "department", "company", "job_title", "groups"
   ]
@@ -817,7 +817,8 @@ Error codes: `invalid_request`, `invalid_client`, `invalid_grant`, `unsupported_
 
 **Auth:** Bearer Token
 
-OIDC UserInfo endpoint.
+OIDC UserInfo endpoint. `given_name` and `family_name` come from the directory (`given_name_attr` /
+`family_name_attr`) and are omitted when unknown, for example for local users.
 
 ```bash
 curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
@@ -830,6 +831,8 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 {
   "sub": "550e8400-e29b-41d4-a716-446655440000",
   "name": "John Smith",
+  "given_name": "John",
+  "family_name": "Smith",
   "email": "jsmith@corp.local",
   "preferred_username": "jsmith@corp.local",
   "department": "Engineering",
