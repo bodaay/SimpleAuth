@@ -1358,7 +1358,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		keytabPath := h.getKeytabPath()
 		if keytabPath == "" {
 			log.Printf("[sso] Kerberos not configured ip=%s", ip)
-			h.redirectToLoginError(w, r, redirectURI, "Kerberos not configured")
+			h.ssoLoginError(w, r, redirectURI, "Kerberos not configured")
 			return
 		}
 
@@ -1366,21 +1366,27 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		// still didn't respond with a Negotiate token, SSO has failed.
 		if r.URL.Query().Get("sso_attempt") == "1" {
 			log.Printf("[sso] Browser did not provide Kerberos credentials ip=%s", ip)
-			h.redirectToLoginError(w, r, redirectURI, "SSO authentication failed — your browser did not provide Kerberos credentials")
+			h.ssoLoginError(w, r, redirectURI, "SSO authentication failed — your browser did not provide Kerberos credentials")
 			return
 		}
 
 		log.Printf("[sso] Sending Negotiate challenge ip=%s", ip)
-		// First visit — send the 401 challenge
-		retryURL := h.url("/login/sso") + "?sso_attempt=1"
-		if redirectURI != "" {
-			retryURL += "&redirect_uri=" + url.QueryEscape(redirectURI)
+		// First visit — send the 401 challenge. The retry must carry the same
+		// request (client_id, oidc and the whole authorize request): with only
+		// redirect_uri, the retry resolved the default app and an OIDC failure lost
+		// its state, nonce and PKCE challenge on the way back.
+		retry := parseOIDCAuthzRequest(r).values()
+		if r.URL.Query().Get("oidc") == "1" {
+			retry.Set("oidc", "1")
 		}
+		retry.Set("sso_attempt", "1")
+		retryURL := h.url("/login/sso") + "?" + retry.Encode()
 		w.Header().Set("WWW-Authenticate", "Negotiate")
 		w.WriteHeader(http.StatusUnauthorized)
 		// Redirect to self with sso_attempt=1 so we can detect failure
-		// retryURL is built server-side from h.url() + url.QueryEscape'd values —
-		// it is never echoed from the request. Escaped here for defence in depth.
+		// retryURL is built server-side from h.url() + the typed oidcAuthzRequest
+		// allowlist, every value percent-encoded by url.Values.Encode — no raw
+		// request text reaches it. Escaped here for defence in depth.
 		// NOTE: html/template treats <meta content> as contentTypeUnsafe (it
 		// attribute-escapes but does NOT URL-filter), so a template rewrite would
 		// not add a guarantee here; the safety rests on the server-side
@@ -1394,25 +1400,25 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	tokenB64 := authHeader[10:]
 	tokenBytes, err := base64.StdEncoding.DecodeString(tokenB64)
 	if err != nil {
-		h.redirectToLoginError(w, r, redirectURI, "Invalid Negotiate token")
+		h.ssoLoginError(w, r, redirectURI, "Invalid Negotiate token")
 		return
 	}
 
 	if isNTLMToken(tokenBytes) {
 		log.Printf("[sso] NTLM token rejected (Kerberos required) ip=%s", ip)
-		h.redirectToLoginError(w, r, redirectURI, "NTLM is not supported, Kerberos required")
+		h.ssoLoginError(w, r, redirectURI, "NTLM is not supported, Kerberos required")
 		return
 	}
 
 	keytabPath := h.getKeytabPath()
 	if keytabPath == "" {
-		h.redirectToLoginError(w, r, redirectURI, "Kerberos not configured")
+		h.ssoLoginError(w, r, redirectURI, "Kerberos not configured")
 		return
 	}
 
 	kt, err := keytab.Load(keytabPath)
 	if err != nil {
-		h.redirectToLoginError(w, r, redirectURI, "Kerberos configuration error")
+		h.ssoLoginError(w, r, redirectURI, "Kerberos configuration error")
 		return
 	}
 
@@ -1420,7 +1426,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	username, err := h.extractKerberosUsername(tokenBytes, kt)
 	if err != nil {
 		log.Printf("[sso] Kerberos auth failed: %v", err)
-		h.redirectToLoginError(w, r, redirectURI, "Kerberos authentication failed")
+		h.ssoLoginError(w, r, redirectURI, "Kerberos authentication failed")
 		return
 	}
 
@@ -1429,32 +1435,32 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[sso] User resolution failed for %q: %v", username, err)
 		if errors.Is(err, auth.ErrLDAPAccountDisabled) {
-			h.redirectToLoginError(w, r, redirectURI, "Account disabled")
+			h.ssoLoginError(w, r, redirectURI, "Account disabled")
 			return
 		}
-		h.redirectToLoginError(w, r, redirectURI, "User not found in directory")
+		h.ssoLoginError(w, r, redirectURI, "User not found in directory")
 		return
 	}
 
 	user, err := h.store.ResolveUser(userGUID)
 	if err != nil {
-		h.redirectToLoginError(w, r, redirectURI, "User not found")
+		h.ssoLoginError(w, r, redirectURI, "User not found")
 		return
 	}
 	if user.Disabled {
-		h.redirectToLoginError(w, r, redirectURI, "Account disabled")
+		h.ssoLoginError(w, r, redirectURI, "Account disabled")
 		return
 	}
 
 	// app was resolved + redirect validated at the top of the handler (L1).
 	roles, perms, denied := h.resolveTokenRoles(app, user)
 	if denied {
-		h.redirectToLoginError(w, r, redirectURI, "Access denied: not assigned to this app")
+		h.ssoLoginError(w, r, redirectURI, "Access denied: not assigned to this app")
 		return
 	}
 	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, ldapGroups, app)
 	if err != nil {
-		h.redirectToLoginError(w, r, redirectURI, "Token generation failed")
+		h.ssoLoginError(w, r, redirectURI, "Token generation failed")
 		return
 	}
 
@@ -1476,7 +1482,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 
 		codeBytes := make([]byte, 32)
 		if _, err := rand.Read(codeBytes); err != nil {
-			h.redirectToLoginError(w, r, redirectURI, "Internal error")
+			h.ssoLoginError(w, r, redirectURI, "Internal error")
 			return
 		}
 		code := hex.EncodeToString(codeBytes)
@@ -1493,7 +1499,7 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:           time.Now(),
 		}
 		if err := h.store.SaveOIDCAuthCode(ac); err != nil {
-			h.redirectToLoginError(w, r, redirectURI, "Internal error")
+			h.ssoLoginError(w, r, redirectURI, "Internal error")
 			return
 		}
 
@@ -1525,6 +1531,21 @@ func (h *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, h.url("/account")+"#"+fragment, http.StatusFound)
+}
+
+// ssoLoginError ends a failed /login/sso attempt. An OIDC attempt (oidc=1)
+// returns to SimpleAuth's own authorize page with the whole authorize request,
+// exactly like a failed password attempt (renderOIDCLoginError), so the user can
+// fall back to their password and the client still receives its state, nonce and
+// PKCE challenge. Redirecting to the client's redirect_uri with only ?error=
+// dropped state, which OIDC clients reject as a CSRF mismatch before the error is
+// ever shown. Non-OIDC flows keep redirectToLoginError.
+func (h *Handler) ssoLoginError(w http.ResponseWriter, r *http.Request, redirectURI, msg string) {
+	if r.URL.Query().Get("oidc") == "1" {
+		h.renderOIDCLoginError(w, r, msg)
+		return
+	}
+	h.redirectToLoginError(w, r, redirectURI, msg)
 }
 
 // extractKerberosUsername validates a SPNEGO/Kerberos token (full AP-REQ
