@@ -1135,27 +1135,17 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 
 	ip := getClientIP(r)
 
-	// Look up user by kerberos identity mapping
-	userGUID, err := h.store.ResolveMapping("kerberos", cname)
-	if err != nil {
-		// Try without realm
-		userGUID, err = h.store.ResolveMapping("kerberos", username)
+	userGUID, ldapGroups, err := h.resolveNegotiateUser(username, cname)
+	if errors.Is(err, auth.ErrLDAPAccountDisabled) {
+		jsonError(w, "account disabled", http.StatusForbidden)
+		return
 	}
 	if err != nil {
-		// Auto-provision: look for a directory user with matching display name/email.
-		users, _ := h.store.ListUsers()
-		if guid := matchAutoProvisionUser(users, username); guid != "" {
-			userGUID = guid
-			// Create identity mapping for next time
-			h.store.SetIdentityMapping("kerberos", cname, userGUID)
-		}
-		if userGUID == "" {
-			h.audit("negotiate_failed", "", ip, map[string]interface{}{
-				"principal": cname, "reason": "no matching user",
-			})
-			jsonError(w, "no user found for Kerberos principal: "+cname, http.StatusUnauthorized)
-			return
-		}
+		h.audit("negotiate_failed", "", ip, map[string]interface{}{
+			"principal": cname, "reason": "no matching user",
+		})
+		jsonError(w, "no user found for Kerberos principal: "+cname, http.StatusUnauthorized)
+		return
 	}
 
 	user, err := h.store.ResolveUser(userGUID)
@@ -1182,7 +1172,7 @@ func (h *Handler) handleNegotiate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "access denied: not assigned to this app", http.StatusForbidden)
 		return
 	}
-	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, nil, app)
+	accessToken, refreshToken, expiresIn, err := h.issueTokenPair(user, roles, perms, ldapGroups, app)
 	if err != nil {
 		jsonError(w, "token generation failed", http.StatusInternalServerError)
 		return
@@ -1632,6 +1622,36 @@ func (h *Handler) resolveKerberosUser(username string) (string, []string, error)
 	h.recordDirectoryCheck(newUser.GUID)
 	log.Printf("[sso] JIT provisioned user guid=%s cname=%q sam=%q from LDAP", newUser.GUID, username, samName)
 	return newUser.GUID, result.Groups, nil
+}
+
+// resolveNegotiateUser maps a verified Kerberos principal to a user for
+// GET /api/auth/negotiate. An explicit "kerberos" identity mapping wins; otherwise
+// the directory is consulted exactly as /login/sso does (resolveKerberosUser), so a
+// directory user who signed in with a password — or never signed in — is found by
+// sAMAccountName. The display-name/email match is kept only as the fallback for
+// deployments without a directory. A disabled directory account is returned as
+// auth.ErrLDAPAccountDisabled and never falls through to that match.
+func (h *Handler) resolveNegotiateUser(username, cname string) (string, []string, error) {
+	for _, principal := range []string{cname, username} {
+		if guid, err := h.store.ResolveMapping("kerberos", principal); err == nil {
+			return guid, nil, nil
+		}
+	}
+
+	guid, groups, err := h.resolveKerberosUser(username)
+	if err == nil {
+		return guid, groups, nil
+	}
+	if errors.Is(err, auth.ErrLDAPAccountDisabled) {
+		return "", nil, err
+	}
+
+	users, _ := h.store.ListUsers()
+	if guid := matchAutoProvisionUser(users, username); guid != "" {
+		h.store.SetIdentityMapping("kerberos", cname, guid)
+		return guid, nil, nil
+	}
+	return "", nil, fmt.Errorf("no user for Kerberos principal %q: %w", cname, err)
 }
 
 // handleNegotiateTestForm handles the fallback login form (POST).
