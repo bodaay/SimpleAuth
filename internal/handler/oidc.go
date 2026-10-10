@@ -1320,6 +1320,26 @@ input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(143,
   var hasError = document.querySelector('.error') !== null;
   var manualForm = document.getElementById('manual-form');
 
+  // One submit per page: a second Sign In while the first is still redirecting
+  // replaces it, and the client's one-time OIDC state is gone by the time the
+  // second code reaches it.
+  var loginForm = manualForm.querySelector('form');
+  var loginButton = loginForm.querySelector('button[type="submit"]');
+  var loginLabel = loginButton.textContent;
+  loginForm.addEventListener('submit', function(e) {
+    if (loginForm.dataset.submitted) { e.preventDefault(); return; }
+    loginForm.dataset.submitted = '1';
+    loginButton.disabled = true;
+    loginButton.textContent = 'Signing in...';
+  });
+  // Back/forward cache restores the page as it was left; let it sign in again.
+  window.addEventListener('pageshow', function(e) {
+    if (!e.persisted) return;
+    delete loginForm.dataset.submitted;
+    loginButton.disabled = false;
+    loginButton.textContent = loginLabel;
+  });
+
   function showManualOnly() {
     manualForm.classList.add('show');
     manualForm.style.borderTop = 'none';
