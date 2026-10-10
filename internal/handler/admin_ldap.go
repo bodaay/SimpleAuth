@@ -263,8 +263,10 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Step 1: Connect
-	conn, err := ldaplib.DialURL(serverURL)
+	// Step 1: Connect with the same TLS policy the saved config will have
+	// (ldaps://, or ldap:// upgraded with StartTLS), so the service-account
+	// password is never sent in cleartext during discovery.
+	conn, err := auth.LDAPConnect(&auth.LDAPConfig{URL: serverURL, UseTLS: strings.HasPrefix(serverURL, "ldaps://")})
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to connect to %s: %v", serverURL, err), http.StatusBadGateway)
 		return

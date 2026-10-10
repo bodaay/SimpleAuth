@@ -11,6 +11,8 @@ import (
 
 	ldaplib "github.com/go-ldap/ldap/v3"
 	"github.com/jcmturner/gokrb5/v8/keytab"
+
+	"simpleauth/internal/auth"
 )
 
 // KerberosConfig is stored in BoltDB config bucket as JSON under key "kerberos:config".
@@ -103,7 +105,7 @@ func (h *Handler) handleSetupKerberos(w http.ResponseWriter, r *http.Request) {
 	spn := "HTTP/" + req.ServiceHostname
 
 	// Connect to LDAP
-	conn, err := ldaplib.DialURL(p.URL)
+	conn, err := auth.LDAPConnect(ldapConfigFromStore(p))
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to connect to LDAP: %v", err), http.StatusBadGateway)
 		return
@@ -218,7 +220,7 @@ func (h *Handler) handleCleanupKerberos(w http.ResponseWriter, r *http.Request) 
 
 	// Try to remove SPN from AD
 	if req.Username != "" && req.Password != "" {
-		conn, err := ldaplib.DialURL(p.URL)
+		conn, err := auth.LDAPConnect(ldapConfigFromStore(p))
 		if err == nil {
 			defer conn.Close()
 			if err := conn.Bind(req.Username, req.Password); err == nil {
@@ -333,7 +335,7 @@ func (h *Handler) autoSetupKerberos(serviceHostname string, r *http.Request) (ma
 
 	spn := "HTTP/" + serviceHostname
 
-	conn, err := ldaplib.DialURL(p.URL)
+	conn, err := auth.LDAPConnect(ldapConfigFromStore(p))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to LDAP: %v", err)
 	}

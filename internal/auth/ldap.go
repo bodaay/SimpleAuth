@@ -2,8 +2,10 @@ package auth
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -52,15 +54,30 @@ type LDAPResult struct {
 	Disabled bool
 }
 
+// ldapRootCAs is the trust pool for directory certificates; nil means the system
+// pool (which honours SSL_CERT_FILE). Tests point it at their own CA.
+var ldapRootCAs *x509.CertPool
+
+// ldapTLSConfig returns the TLS settings for a connection to the server in rawURL.
+// ServerName must be set explicitly: StartTLS wraps an already-open socket with
+// tls.Client, which (unlike tls.Dial for ldaps://) does not derive it from the
+// address, and without it every verified handshake fails with "either ServerName
+// or InsecureSkipVerify must be specified in the tls.Config".
+func ldapTLSConfig(rawURL string, skipVerify bool) *tls.Config {
+	cfg := &tls.Config{InsecureSkipVerify: skipVerify, RootCAs: ldapRootCAs}
+	if u, err := url.Parse(rawURL); err == nil {
+		cfg.ServerName = u.Hostname()
+	}
+	return cfg
+}
+
 func LDAPConnect(cfg *LDAPConfig) (*ldap.Conn, error) {
 	var conn *ldap.Conn
 	var err error
 
 	if cfg.UseTLS {
 		// ldaps:// — implicit TLS from the first byte.
-		conn, err = ldap.DialURL(cfg.URL, ldap.DialWithTLSConfig(&tls.Config{
-			InsecureSkipVerify: cfg.SkipTLSVerify,
-		}))
+		conn, err = ldap.DialURL(cfg.URL, ldap.DialWithTLSConfig(ldapTLSConfig(cfg.URL, cfg.SkipTLSVerify)))
 		if err != nil {
 			return nil, fmt.Errorf("ldap connect: %w", err)
 		}
@@ -78,7 +95,7 @@ func LDAPConnect(cfg *LDAPConfig) (*ldap.Conn, error) {
 	if cfg.AllowInsecure {
 		return conn, nil
 	}
-	if err := conn.StartTLS(&tls.Config{InsecureSkipVerify: cfg.SkipTLSVerify}); err != nil {
+	if err := conn.StartTLS(ldapTLSConfig(cfg.URL, cfg.SkipTLSVerify)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("ldap StartTLS upgrade failed; refusing cleartext bind (use ldaps:// or set allow_insecure): %w", err)
 	}
