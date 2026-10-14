@@ -80,6 +80,9 @@ func OpenBolt(dataDir string) (*BoltStore, error) {
 	// Prune reverse-index entries a pre-H14 SetIdentityMapping left stranded on a
 	// previous owner. Cheap (one pass over the index) and idempotent.
 	s.repairMappingIndex()
+	// Report forward mappings that still point at a deleted user; remove them
+	// only on opt-in (M41).
+	s.repairDanglingMappings()
 	return s, nil
 }
 
@@ -172,28 +175,8 @@ func (s *BoltStore) DeleteApp(appID string) error {
 			if err := tx.Bucket(bucketUsers).Delete([]byte(guid)); err != nil {
 				return err
 			}
-			if data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(guid)); data != nil {
-				var mappings []IdentityMapping
-				if json.Unmarshal(data, &mappings) == nil {
-					for _, m := range mappings {
-						mk := mappingKey(m.Provider, m.ExternalID)
-						// Only delete a forward entry this user still actually owns.
-						// The reverse index is derived state; if it ever drifts again,
-						// the H8 cascade must not delete a live mapping belonging to
-						// somebody else (H14). Postgres cascades by
-						// `WHERE user_guid IN (...)`, which is inherently owner-scoped —
-						// this makes Bolt identical.
-						if owner := tx.Bucket(bucketIdentityMappings).Get(mk); owner == nil || string(owner) != guid {
-							continue
-						}
-						if err := tx.Bucket(bucketIdentityMappings).Delete(mk); err != nil {
-							return err
-						}
-					}
-				}
-				if err := tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(guid)); err != nil {
-					return err
-				}
+			if err := deleteOwnedMappings(tx, guid); err != nil {
+				return err
 			}
 		}
 		if err := tx.Bucket(bucketApps).Delete([]byte(appID)); err != nil {
@@ -463,10 +446,52 @@ func (s *BoltStore) UpdateUser(u *User) error {
 	})
 }
 
+// DeleteUser removes, in one transaction, the user row, the identity mappings the
+// user still owns (forward entries and the reverse index), its global roles and
+// its direct permissions. Previously only the user row went, so for example
+// local:<username> kept pointing at a GUID with no user (M41; see
+// dangling_mappings.go). Tokens and sessions are revoked by the delete handlers
+// (purgeDeletedUserState), and an app-local user's per-app role assignment is
+// cleared by deleteLocalUser.
 func (s *BoltStore) DeleteUser(guid string) error {
 	return s.update(func(tx *bolt.Tx) error {
+		if err := deleteOwnedMappings(tx, guid); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketUserRoles).Delete([]byte(guid)); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketUserPermissions).Delete([]byte(guid)); err != nil {
+			return err
+		}
 		return tx.Bucket(bucketUsers).Delete([]byte(guid))
 	})
+}
+
+// deleteOwnedMappings deletes the forward identity mappings guid still owns and
+// its reverse-index entry. Only a forward entry this user actually owns is
+// deleted: the reverse index is derived state, and if it ever drifts again a
+// delete cascade must not remove a live mapping belonging to somebody else (H14).
+// Postgres deletes by `WHERE user_guid = ...`, which is inherently owner-scoped;
+// this makes Bolt identical.
+func deleteOwnedMappings(tx *bolt.Tx, guid string) error {
+	data := tx.Bucket(bucketIdxMappingsByGUID).Get([]byte(guid))
+	if data == nil {
+		return nil
+	}
+	var mappings []IdentityMapping
+	if json.Unmarshal(data, &mappings) == nil {
+		for _, m := range mappings {
+			mk := mappingKey(m.Provider, m.ExternalID)
+			if owner := tx.Bucket(bucketIdentityMappings).Get(mk); owner == nil || string(owner) != guid {
+				continue
+			}
+			if err := tx.Bucket(bucketIdentityMappings).Delete(mk); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(guid))
 }
 
 func (s *BoltStore) ListUsers() ([]*User, error) {
@@ -760,6 +785,146 @@ func (s *BoltStore) repairMappingIndex() {
 		return
 	}
 	log.Printf("[store] mapping-index repair: pruned stale claims for %d user(s) (H14)", len(changes))
+}
+
+// repairDanglingMappings reports forward identity mappings whose owner GUID has
+// no user record, which DeleteUser left behind before M41. It removes them only
+// when the operator opts in (see danglingRepairEnabled). Every mapping is logged
+// before anything is written.
+func (s *BoltStore) repairDanglingMappings() {
+	type dangling struct {
+		key, guid string
+		m         IdentityMapping
+		split     bool // m is known from the reverse index
+	}
+	var found []dangling
+	_ = s.view(func(tx *bolt.Tx) error {
+		users := tx.Bucket(bucketUsers)
+		// The forward key is "provider:externalID" and both halves may contain
+		// ':' (M38); only the reverse index records the split exactly.
+		splits := mappingSplits(tx)
+		return tx.Bucket(bucketIdentityMappings).ForEach(func(k, v []byte) error {
+			if users.Get(v) == nil {
+				m, ok := splits[string(k)]
+				found = append(found, dangling{key: string(k), guid: string(v), m: m, split: ok})
+			}
+			return nil
+		})
+	})
+	if len(found) == 0 {
+		return
+	}
+	for _, d := range found {
+		if d.split {
+			log.Printf("[store] dangling-mapping check: provider=%q external_id=%q points at deleted user %s (M41)", d.m.Provider, d.m.ExternalID, d.guid)
+		} else {
+			log.Printf("[store] dangling-mapping check: key=%q points at deleted user %s (M41)", d.key, d.guid)
+		}
+	}
+	if !danglingRepairEnabled() {
+		logDanglingReportOnly(len(found))
+		return
+	}
+	removed := 0
+	if err := s.update(func(tx *bolt.Tx) error {
+		fwd := tx.Bucket(bucketIdentityMappings)
+		var live map[string]bool
+		for _, d := range found {
+			// Re-check inside the write transaction: skip a key re-pointed since.
+			if owner := fwd.Get([]byte(d.key)); owner == nil || string(owner) != d.guid || tx.Bucket(bucketUsers).Get(owner) != nil {
+				continue
+			}
+			if err := fwd.Delete([]byte(d.key)); err != nil {
+				return err
+			}
+			if err := tx.Bucket(bucketIdxMappingsByGUID).Delete([]byte(d.guid)); err != nil {
+				return err
+			}
+			removed++
+			if !strings.HasPrefix(d.key, "applocal:") {
+				continue
+			}
+			if !d.split {
+				log.Printf("[store] dangling-mapping repair: key=%q is app-local but cannot be split; check that app's role assignments by hand (M41)", d.key)
+				continue
+			}
+			if live == nil {
+				live = liveAssignmentKeys(tx)
+			}
+			if err := clearStaleLocalAssignment(tx, d.m, live); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("[store] dangling-mapping repair FAILED: %v", err)
+		return
+	}
+	log.Printf("[store] dangling-mapping repair: SA_REPAIR_DANGLING_MAPPINGS=1, removed %d of %d mapping(s) (M41)", removed, len(found))
+}
+
+// liveAssignmentKeys returns every key under which an app's UserAssignments can
+// match a live user: GUID, sAMAccountName and the external IDs of the user's
+// mappings (see handler.userAssignmentKeys).
+func liveAssignmentKeys(tx *bolt.Tx) map[string]bool {
+	live := map[string]bool{}
+	users := tx.Bucket(bucketUsers)
+	_ = users.ForEach(func(k, v []byte) error {
+		var u User
+		if json.Unmarshal(v, &u) == nil {
+			live[string(k)] = true
+			if u.SAMAccountName != "" {
+				live[u.SAMAccountName] = true
+			}
+		}
+		return nil
+	})
+	_ = tx.Bucket(bucketIdxMappingsByGUID).ForEach(func(k, v []byte) error {
+		if users.Get(k) == nil {
+			return nil
+		}
+		var mappings []IdentityMapping
+		if json.Unmarshal(v, &mappings) == nil {
+			for _, m := range mappings {
+				live[m.ExternalID] = true
+			}
+		}
+		return nil
+	})
+	return live
+}
+
+// clearStaleLocalAssignment removes the role assignment that the app in m's
+// "applocal:<appID>" provider keeps under the deleted user's username, so a user
+// created again under that name does not inherit the old roles (M14, M41). The
+// key is kept if a live user can still match it: assignment keys are shared with
+// directory users.
+func clearStaleLocalAssignment(tx *bolt.Tx, m IdentityMapping, live map[string]bool) error {
+	appID := strings.TrimPrefix(m.Provider, "applocal:")
+	if live[m.ExternalID] {
+		log.Printf("[store] dangling-mapping repair: app %q keeps the role assignment for %q, a live user still matches that name (M41)", appID, m.ExternalID)
+		return nil
+	}
+	b := tx.Bucket(bucketAppAuthz)
+	data := b.Get([]byte(appID))
+	if data == nil {
+		return nil
+	}
+	var authz AppAuthz
+	if err := json.Unmarshal(data, &authz); err != nil {
+		log.Printf("[store] dangling-mapping repair: app %q authz unreadable, role assignment for %q not checked: %v (M41)", appID, m.ExternalID, err)
+		return nil
+	}
+	if _, ok := authz.UserAssignments[m.ExternalID]; !ok {
+		return nil
+	}
+	delete(authz.UserAssignments, m.ExternalID)
+	out, err := json.Marshal(&authz)
+	if err != nil {
+		return err
+	}
+	log.Printf("[store] dangling-mapping repair: cleared app %q role assignment for deleted app-local user %q (M41)", appID, m.ExternalID)
+	return b.Put([]byte(appID), out)
 }
 
 func (s *BoltStore) removeMappingFromIndex(tx *bolt.Tx, userGUID string, m IdentityMapping) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,12 @@ type PostgresStore struct {
 // OpenPostgres creates a new PostgresStore. dsn is a PostgreSQL connection string
 // (e.g. "postgres://user:pass@host:5432/dbname?sslmode=disable").
 func OpenPostgres(dsn string) (*PostgresStore, error) {
+	return openPostgres(dsn, true)
+}
+
+// openPostgres opens the store. checkMappings runs the dangling-mapping check;
+// TestPostgresConnection turns it off because it only probes the DSN.
+func openPostgres(dsn string, checkMappings bool) (*PostgresStore, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
@@ -42,7 +49,123 @@ func OpenPostgres(dsn string) (*PostgresStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate postgres schema: %w", err)
 	}
+	if checkMappings {
+		// Report identity mappings that still point at a deleted user; remove
+		// them only on opt-in (M41).
+		s.repairDanglingMappings()
+	}
 	return s, nil
+}
+
+// repairDanglingMappings reports identity mappings whose user no longer exists,
+// which DeleteUser left behind before M41. It removes them only when the
+// operator opts in (see danglingRepairEnabled), and then deletes exactly the
+// mappings it logged.
+func (s *PostgresStore) repairDanglingMappings() {
+	type dangling struct{ provider, externalID, guid string }
+	rows, err := s.db.Query(`SELECT m.provider, m.external_id, m.user_guid FROM sa_identity_mappings m
+		WHERE NOT EXISTS (SELECT 1 FROM sa_users u WHERE u.guid = m.user_guid)`)
+	if err != nil {
+		log.Printf("[store] dangling-mapping check: query failed: %v", err)
+		return
+	}
+	var found []dangling
+	for rows.Next() {
+		var d dangling
+		if err := rows.Scan(&d.provider, &d.externalID, &d.guid); err != nil {
+			rows.Close()
+			log.Printf("[store] dangling-mapping check: scan failed: %v", err)
+			return
+		}
+		found = append(found, d)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		log.Printf("[store] dangling-mapping check: query failed: %v", err)
+		return
+	}
+	if len(found) == 0 {
+		return
+	}
+	for _, d := range found {
+		log.Printf("[store] dangling-mapping check: provider=%q external_id=%q points at deleted user %s (M41)", d.provider, d.externalID, d.guid)
+	}
+	if !danglingRepairEnabled() {
+		logDanglingReportOnly(len(found))
+		return
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("[store] dangling-mapping repair FAILED: %v", err)
+		return
+	}
+	defer tx.Rollback()
+	var removed int64
+	for _, d := range found {
+		// Delete only the logged tuple, and only while its user is still missing.
+		res, err := tx.Exec(`DELETE FROM sa_identity_mappings m
+			WHERE m.provider = $1 AND m.external_id = $2 AND m.user_guid = $3
+			AND NOT EXISTS (SELECT 1 FROM sa_users u WHERE u.guid = m.user_guid)`, d.provider, d.externalID, d.guid)
+		if err != nil {
+			log.Printf("[store] dangling-mapping repair FAILED: %v", err)
+			return
+		}
+		n, _ := res.RowsAffected()
+		removed += n
+		if n > 0 && strings.HasPrefix(d.provider, "applocal:") {
+			if err := clearStaleLocalAssignmentPG(tx, strings.TrimPrefix(d.provider, "applocal:"), d.externalID); err != nil {
+				log.Printf("[store] dangling-mapping repair FAILED: %v", err)
+				return
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[store] dangling-mapping repair FAILED: %v", err)
+		return
+	}
+	log.Printf("[store] dangling-mapping repair: SA_REPAIR_DANGLING_MAPPINGS=1, removed %d of %d mapping(s) (M41)", removed, len(found))
+}
+
+// clearStaleLocalAssignmentPG removes the role assignment appID keeps under a
+// deleted app-local user's username, unless a live user can still match that
+// key (see BoltStore clearStaleLocalAssignment).
+func clearStaleLocalAssignmentPG(tx *sql.Tx, appID, username string) error {
+	var liveMatch bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM sa_identity_mappings m JOIN sa_users u ON u.guid = m.user_guid WHERE m.external_id = $1)
+		OR EXISTS (SELECT 1 FROM sa_users WHERE guid = $1 OR data->>'sam_account_name' = $1)`, username).Scan(&liveMatch); err != nil {
+		return err
+	}
+	if liveMatch {
+		log.Printf("[store] dangling-mapping repair: app %q keeps the role assignment for %q, a live user still matches that name (M41)", appID, username)
+		return nil
+	}
+	var data []byte
+	err := tx.QueryRow(`SELECT data FROM sa_app_authz WHERE app_id = $1 FOR UPDATE`, appID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var authz AppAuthz
+	if err := json.Unmarshal(data, &authz); err != nil {
+		log.Printf("[store] dangling-mapping repair: app %q authz unreadable, role assignment for %q not checked: %v (M41)", appID, username, err)
+		return nil
+	}
+	if _, ok := authz.UserAssignments[username]; !ok {
+		return nil
+	}
+	delete(authz.UserAssignments, username)
+	out, err := json.Marshal(&authz)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE sa_app_authz SET data = $2 WHERE app_id = $1`, appID, out); err != nil {
+		return err
+	}
+	log.Printf("[store] dangling-mapping repair: cleared app %q role assignment for deleted app-local user %q (M41)", appID, username)
+	return nil
 }
 
 func (s *PostgresStore) migrate() error {
@@ -365,9 +488,25 @@ func (s *PostgresStore) UpdateUser(u *User) error {
 	return nil
 }
 
+// DeleteUser removes the user row, its identity mappings, its global roles and
+// its direct permissions in one transaction (M41; see BoltStore.DeleteUser).
 func (s *PostgresStore) DeleteUser(guid string) error {
-	_, err := s.db.Exec(`DELETE FROM sa_users WHERE guid = $1`, guid)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM sa_identity_mappings WHERE user_guid = $1`,
+		`DELETE FROM sa_user_roles WHERE guid = $1`,
+		`DELETE FROM sa_user_permissions WHERE guid = $1`,
+		`DELETE FROM sa_users WHERE guid = $1`,
+	} {
+		if _, err := tx.Exec(q, guid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) ListUsers() ([]*User, error) {

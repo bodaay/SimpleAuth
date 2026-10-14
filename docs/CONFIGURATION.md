@@ -568,3 +568,13 @@ Combined, this means an admin can fully sign a user out of every app in under a 
 From v2.3.0, SimpleAuth checks in Active Directory whether a directory user's account is still active (not disabled, not expired, not deleted) at every login, token refresh, and SSO-cookie reuse. The runtime settings `directory_outage_policy` (`grace` default / `block` / `allow`) and `directory_outage_grace_hours` (default `10`) decide what happens when AD cannot be reached.
 
 Full reference, including exact behavior, API examples, and troubleshooting: [ACTIVE-DIRECTORY.md → Disabled, Expired, and Deleted AD Accounts](ACTIVE-DIRECTORY.md#disabled-expired-and-deleted-ad-accounts).
+
+## Startup Data Checks
+
+On every start, SimpleAuth checks its identity mappings. Two environment switches control what it may change. They
+are not config-file keys.
+
+| Env Variable | Default | Description |
+|---|---|---|
+| `SA_REPAIR_DANGLING_MAPPINGS` | (unset) | Set to `1` to remove identity mappings that point at a deleted user. Versions before the M41 fix left them behind when a user was deleted. For an app-local mapping, this also clears the app's role assignment for that username, unless a live user still matches the name. When unset, each such mapping is only logged. Removing an `ldap` or `kerberos` mapping lets that deleted user sign in again with a new account, so review the log first. To remove mappings one at a time, use `DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}`. |
+| `SA_SKIP_MAPPING_REPAIR` | (unset) | Set to `1` to make both startup mapping repairs (H14 and M41) report without writing. Overrides `SA_REPAIR_DANGLING_MAPPINGS`. |

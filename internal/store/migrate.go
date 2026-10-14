@@ -519,8 +519,9 @@ func MigrateFromPostgres(source *PostgresStore, target *BoltStore, statusCh chan
 // TestPostgresConnection tests if a Postgres DSN is reachable.
 // If the target database doesn't exist, it auto-creates it.
 func TestPostgresConnection(dsn string) error {
-	// First try connecting directly
-	pg, err := OpenPostgres(dsn)
+	// First try connecting directly. Skip the dangling-mapping check: this only
+	// probes the DSN.
+	pg, err := openPostgres(dsn, false)
 	if err == nil {
 		pg.Close()
 		return nil
@@ -532,7 +533,7 @@ func TestPostgresConnection(dsn string) error {
 	}
 
 	// Retry after creation
-	pg, err = OpenPostgres(dsn)
+	pg, err = openPostgres(dsn, false)
 	if err != nil {
 		return err
 	}

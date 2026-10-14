@@ -117,6 +117,7 @@ source of truth for what is currently open vs. fixed.
 | M40 | v1 `/api/auth/refresh` copies the stored `aud` forward forever → an admin audience correction never reaches existing sessions | MEDIUM | FIXED | 2026-10-05 (Pass 5, branch `fix/code-review-findings`) |
 | L23 | SSO cookie path moved from `/` to `BasePath` without expiring the old `Path=/` cookie → legacy cookie survives logout and silently signs the user back in | LOW | FIXED | 2026-10-05 (Pass 5, branch `fix/code-review-findings`) |
 | L24 | `handleCreateLocalUser` ignores `SetIdentityMapping` / `GetAppAuthz` errors → nil-deref panic, half-provisioned user | LOW | FIXED | 2026-10-05 (Pass 5, branch `fix/code-review-findings`) |
+| M41 | Deleting a user leaves its identity mappings, roles and permissions → username cannot be provisioned again; admin delete of an app-local user keeps its role assignment; app delete does not revoke tokens | MEDIUM | FIXED | 2026-10-14 (Pass 6, branch `fix/delete-user-mappings`) |
 | L6 | `ValidateToken` did not require `exp` (missing-`exp` token validated) | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L7 | PKCE accepted `plain`/empty downgrade though discovery advertises only S256 | LOW | FIXED | 2026-06-01 (Pass 3) |
 | L8 | Impersonation issued a token for a disabled / access-revoked target | LOW | FIXED | 2026-06-01 (Pass 3) |
@@ -1399,3 +1400,88 @@ that name.
 after the user was already created. The `SetIdentityMapping` error was also
 dropped. **Fix:** load authz before creating anything; on a mapping or authz-save
 failure, roll back the mapping and user and return 500.
+
+## Audit Pass 6 — 2026-10-14 — Claude Opus 5.5 (`claude-opus-5-5`) + operator report
+
+Scope: one issue an operator hit while re-bootstrapping a deployment ("bootstrap
+says the user exists, but the user is gone"), and the related paths found while
+fixing it. Fix on branch `fix/delete-user-mappings`.
+
+### M41 — Deleting a user leaves its identity mappings, roles and permissions — MEDIUM — FIXED 2026-10-14
+
+This closes the follow-up noted under M14: the admin `handleDeleteUser` path had
+the same dangling-mapping pattern.
+
+`DeleteUser` removed only the user row, in both stores. The user's identity
+mappings, global roles and direct permissions stayed, so `local:<username>` kept
+resolving to a GUID with no user:
+
+- `POST /api/admin/bootstrap` resolved the mapping and answered `created: false`
+  for the deleted user. It set roles on a GUID with no user and never created the
+  account again.
+- LDAP import (`handleImportLDAPUsers`) reported the deleted user as already
+  imported (`status: exists`).
+- App self-registration refused the username with 409 for an app-local user
+  deleted through `DELETE /api/admin/users/{guid}`; M14 fixed only
+  `DELETE /api/app/users/{guid}`. The admin path also left the app's role
+  assignment, which is keyed by username, so a user created again under that
+  name would have inherited the old roles.
+- An LDAP or Kerberos login of a deleted directory user resolved the mapping to
+  the deleted GUID and failed. Deleting a directory user therefore blocked them
+  from signing in again, as an undocumented side effect.
+
+Found while fixing it: `DELETE /api/app/users/{guid}` never revoked the deleted
+user's access tokens, refresh tokens or SSO sessions. The admin delete did. A
+token issued before an app-local user was deleted stayed valid until it expired.
+
+No access is gained through the leftover mappings themselves: GUIDs are random
+and never reused.
+
+**Fix:**
+- `DeleteUser` deletes, in the same transaction as the user row, the identity
+  mappings the user still owns, its global roles and its direct permissions.
+  Bolt deletes only forward entries the user still owns, using the helper
+  `deleteOwnedMappings` it now shares with the `DeleteApp` cascade (H8 / H14).
+  Postgres deletes by `user_guid`.
+- Both delete handlers go through the same code:
+  - `deleteLocalUser` clears the app's role assignment for an app-local user. It
+    reads everything before deleting, and reports a failed assignment save
+    instead of ignoring it.
+  - `purgeDeletedUserState` revokes tokens and sessions on both paths.
+  - Both take `localUserMu`, so an app-local create of the same username cannot
+    run between the delete and the cleanup.
+- On open, both stores log every mapping that points at a deleted user and leave
+  it in place. They remove these only when the operator sets
+  `SA_REPAIR_DANGLING_MAPPINGS=1`. Postgres then deletes exactly the logged rows.
+  For an app-local mapping, the repair also clears the app's role assignment
+  for that username, unless a live user can still match the name.
+  `SA_SKIP_MAPPING_REPAIR=1` overrides the opt-in. `TestPostgresConnection`
+  skips the check. A restored Bolt backup is checked on the next start.
+
+**Operator notes (behaviour change):**
+- Deleting a directory (LDAP/Kerberos) user no longer blocks them. Their next
+  login provisions a new account with a new GUID. That account immediately gets
+  any per-app role assignment keyed by their username or sAMAccountName, and any
+  group assignment. To keep a directory user out, disable the account in
+  SimpleAuth or in the directory (H17); do not rely on delete.
+- The startup check is report-only because removing old dangling `ldap` or
+  `kerberos` mappings lets those deleted users sign in again. Review the logged
+  mappings first. Remove single ones with
+  `DELETE /api/admin/users/{guid}/mappings/{provider}/{external_id}`, which
+  does not clear app role assignments. Or remove all of them with
+  `SA_REPAIR_DANGLING_MAPPINGS=1`.
+
+**Tests:**
+- `internal/store/delete_user_test.go` (Bolt) covers:
+  - the cascade;
+  - the owner-scoped delete;
+  - report-only by default, removal on opt-in, and the skip switch;
+  - clearing the app assignment while keeping a name a live user matches.
+- `internal/store/postgres_delete_user_test.go` covers the same for Postgres,
+  plus `TestPostgresConnection` never writing. These run when
+  `SA_TEST_POSTGRES_DSN` is set and clean up their rows.
+- `internal/handler/delete_user_m41_test.go` covers:
+  - after an admin delete, bootstrap creates the user again and the user can
+    sign in;
+  - an admin delete of an app-local user clears its role assignment;
+  - an app delete revokes the user's tokens.

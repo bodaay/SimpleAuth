@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -352,33 +354,70 @@ func (h *Handler) handleListLocalUsers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleDeleteLocalUser(w http.ResponseWriter, r *http.Request) {
 	appID := appIDFromContext(r)
 	guid := pathParam(r, "guid")
+	// Same lock as create, so a create of this username cannot run between the
+	// delete and the assignment cleanup.
+	h.localUserMu.Lock()
+	defer h.localUserMu.Unlock()
 	u, err := h.store.GetUser(guid)
 	if err != nil || u.OwnerAppID != appID {
 		jsonError(w, "user not found", http.StatusNotFound)
 		return
 	}
-	mapKey := "applocal:" + appID
-	mappings, _ := h.store.GetMappingsForUser(guid)
-	if err := h.store.DeleteUser(guid); err != nil {
+	err = h.deleteLocalUser(appID, guid)
+	if err != nil && !errors.Is(err, errLocalAssignmentCleanup) {
 		jsonError(w, "failed to delete user", http.StatusInternalServerError)
 		return
 	}
-	// Drop the user's identity mapping(s) so the username frees up for
-	// re-provisioning (otherwise the dangling mapping made create return 409
-	// forever) and the stale per-app role assignment doesn't outlive the user (M14).
+	h.purgeDeletedUserState(guid)
+	h.audit("app_local_user_deleted", h.appActor(r), getClientIP(r), map[string]interface{}{"app_id": appID, "guid": guid, "actor_kind": h.appActorKind(r)})
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
+}
+
+// errLocalAssignmentCleanup means the user was deleted but the app's role
+// assignment for its username could not be cleared.
+var errLocalAssignmentCleanup = errors.New("user deleted, but clearing its role assignment in the app failed")
+
+// deleteLocalUser deletes an app-local user of appID and the app's role
+// assignment kept under its username. DeleteUser removes the user's identity
+// mappings, which frees the username (M14, M41). The assignment is keyed by
+// username, not GUID, so it must go too, or a user created again under that
+// name would inherit the old roles. Everything is read before anything is
+// deleted, so a read failure leaves the user in place. Callers hold localUserMu
+// and call purgeDeletedUserState afterwards, also on errLocalAssignmentCleanup.
+func (h *Handler) deleteLocalUser(appID, guid string) error {
+	mappings, err := h.store.GetMappingsForUser(guid)
+	if err != nil {
+		return err
+	}
+	authz, err := h.store.GetAppAuthz(appID)
+	if err != nil {
+		return err
+	}
+	if err := h.store.DeleteUser(guid); err != nil {
+		return err
+	}
+	if authz == nil || authz.UserAssignments == nil {
+		return nil
+	}
+	mapKey := "applocal:" + appID
+	changed := false
 	for _, m := range mappings {
-		_ = h.store.DeleteIdentityMapping(m.Provider, m.ExternalID)
-		if m.Provider == mapKey {
-			if authz, err := h.store.GetAppAuthz(appID); err == nil && authz.UserAssignments != nil {
-				if _, ok := authz.UserAssignments[m.ExternalID]; ok {
-					delete(authz.UserAssignments, m.ExternalID)
-					_ = h.store.SaveAppAuthz(authz)
-				}
-			}
+		if _, ok := authz.UserAssignments[m.ExternalID]; ok && m.Provider == mapKey {
+			delete(authz.UserAssignments, m.ExternalID)
+			changed = true
 		}
 	}
-	h.audit("app_local_user_deleted", h.appActor(r), getClientIP(r), map[string]interface{}{"app_id": appID, "guid": guid, "actor_kind": h.appActorKind(r)})
-	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
+	if changed {
+		if err := h.store.SaveAppAuthz(authz); err != nil {
+			log.Printf("[app] delete local user: clear role assignment failed app=%s guid=%s err=%v", appID, guid, err)
+			return errLocalAssignmentCleanup
+		}
+	}
+	return nil
 }
 
 // handleSetLocalUserPassword resets an app-local user's password.

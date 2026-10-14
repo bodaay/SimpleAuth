@@ -1100,6 +1100,12 @@ curl -k -X PUT https://auth.example.com/sauth/api/admin/users/550e8400-e29b-41d4
 
 Delete a user.
 
+The delete also removes the user's identity mappings, global roles, direct permissions, tokens and SSO sessions,
+and, for an app-local user, its role assignment in the app. The username is free to be provisioned again. A deleted
+directory (LDAP/Kerberos) user who signs in again gets a new account, which picks up any app role assignments still
+kept under their username. To keep someone out, disable the account instead
+(`PUT /api/admin/users/{guid}/disabled`).
+
 ```bash
 curl -k -X DELETE \
   -H "Authorization: Bearer ADMIN_KEY" \
@@ -2844,7 +2850,7 @@ credential (Basic or management token):
 | `POST` | `/api/app/users` | Create an app-local user `{username, password, display_name?, email?, roles?}`. |
 | `GET` | `/api/app/users` | List this app's local users. |
 | `PUT` | `/api/app/users/{guid}/password` | Reset a local user's password. |
-| `DELETE` | `/api/app/users/{guid}` | Delete a local user (must be owned by this app). |
+| `DELETE` | `/api/app/users/{guid}` | Delete a local user (must be owned by this app). Also clears its role assignment in the app and revokes its tokens and SSO sessions. |
 
 ```bash
 curl -u portal:$APP_SECRET -X POST …/sauth/api/app/users \

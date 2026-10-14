@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -186,32 +187,51 @@ func (h *Handler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	guid := pathParam(r, "guid")
 	ip := getClientIP(r)
 	log.Printf("[admin] User deleted guid=%s ip=%s", guid, ip)
-	if err := h.store.DeleteUser(guid); err != nil {
+	// An app-local user also has a role assignment in its app, keyed by
+	// username; deleteLocalUser clears it (M41).
+	h.localUserMu.Lock()
+	var err error
+	if u, gerr := h.store.GetUser(guid); gerr == nil && u.OwnerAppID != "" {
+		err = h.deleteLocalUser(u.OwnerAppID, guid)
+	} else {
+		err = h.store.DeleteUser(guid)
+	}
+	h.localUserMu.Unlock()
+	if err != nil && !errors.Is(err, errLocalAssignmentCleanup) {
 		jsonError(w, "failed to delete user", http.StatusInternalServerError)
 		return
 	}
-	// Invalidate everything tied to the deleted user so a still-live token or SSO
-	// session cannot keep acting as them: blacklist outstanding access tokens,
-	// drop refresh-token families, and clear shared SSO sessions. Best-effort —
-	// the user row is already gone (errors logged, not fatal).
+	h.purgeDeletedUserState(guid)
+	h.audit("user_deleted", "admin", ip, map[string]interface{}{"target_guid": guid})
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
+}
+
+// purgeDeletedUserState invalidates everything tied to a deleted user, so a
+// still-live token or SSO session cannot keep acting as them: it blacklists
+// outstanding access tokens, drops refresh-token families, clears shared SSO
+// sessions, UI preferences and the directory-check timestamp. Best effort: the
+// user row is already gone, so errors are logged, not returned.
+func (h *Handler) purgeDeletedUserState(guid string) {
 	if err := h.store.RevokeAllUserAccessTokens(guid, time.Now().Add(h.cfg.AccessTTL)); err != nil {
-		log.Printf("[admin] delete-user: revoke access tokens failed guid=%s err=%v", guid, err)
+		log.Printf("[delete-user] revoke access tokens failed guid=%s err=%v", guid, err)
 	}
 	if err := h.store.RevokeUserTokens(guid); err != nil {
-		log.Printf("[admin] delete-user: revoke refresh tokens failed guid=%s err=%v", guid, err)
+		log.Printf("[delete-user] revoke refresh tokens failed guid=%s err=%v", guid, err)
 	}
 	if err := h.store.DeleteUserSessions(guid); err != nil {
-		log.Printf("[admin] delete-user: clear SSO sessions failed guid=%s err=%v", guid, err)
+		log.Printf("[delete-user] clear SSO sessions failed guid=%s err=%v", guid, err)
 	}
 	if err := h.store.DeleteConfigValue(userPrefsKeyPrefix + guid); err != nil {
-		log.Printf("[admin] delete-user: clear UI preferences failed guid=%s err=%v", guid, err)
+		log.Printf("[delete-user] clear UI preferences failed guid=%s err=%v", guid, err)
 	}
 	h.dirChecked.Delete(guid)
 	if err := h.store.DeleteConfigValue(dirCheckKeyPrefix + guid); err != nil {
-		log.Printf("[admin] delete-user: clear directory-check timestamp failed guid=%s err=%v", guid, err)
+		log.Printf("[delete-user] clear directory-check timestamp failed guid=%s err=%v", guid, err)
 	}
-	h.audit("user_deleted", "admin", ip, map[string]interface{}{"target_guid": guid})
-	jsonResp(w, map[string]string{"status": "deleted"}, http.StatusOK)
 }
 
 func (h *Handler) handleSetPassword(w http.ResponseWriter, r *http.Request) {
