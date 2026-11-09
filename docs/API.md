@@ -2606,7 +2606,7 @@ Every field below is `omitempty`. Missing LDAP attributes result in missing clai
 |-------|------|-------|
 | `roles` | string[] | From SimpleAuth's role assignments. **NOT** a direct mirror of LDAP groups — an admin must map groups to roles, or `default_roles` must be configured. |
 | `permissions` | string[] | Merged: role-derived + direct user permissions |
-| `groups` | string[] | Raw LDAP groups (from `GroupsAttr`, default `memberOf`). Pass-through for apps that key off AD groups directly. |
+| `groups` | string[] | The user's directory groups (from `GroupsAttr`, default `memberOf`), each reduced to its CN (`CN=Finance,OU=…` → `Finance`), not filtered per app. Carried by tokens from an LDAP password or Kerberos login, and by every OIDC access token (authorization-code, `password` and `refresh_token` grants), which take the groups stored at the user's last directory login. Not carried by `/api/auth/refresh`, the hosted login's session-cookie sign-in, or impersonation tokens. Omitted when the user has none. Pass-through for apps that key off AD groups directly. |
 | `realm_access.roles` | string[] | Keycloak-compat mirror of `roles` |
 | `resource_access.{client_id}.roles` | string[] | Keycloak-compat mirror of `roles` |
 

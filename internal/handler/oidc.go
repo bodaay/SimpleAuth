@@ -806,7 +806,9 @@ func (h *Handler) handleOIDCTokenRefresh(w http.ResponseWriter, r *http.Request)
 	}
 
 	issuer := h.oidcIssuer(r)
-	accessClaims := h.buildOIDCAccessClaims(user, roles, perms, nil, "", app)
+	// Groups are re-read from the user on every refresh, like the roles above, so
+	// a refreshed token carries the current set (see issueOIDCTokens).
+	accessClaims := h.buildOIDCAccessClaims(user, roles, perms, user.Groups, "", app)
 	accessToken, err := h.jwt.IssueAccessTokenWithIssuer(accessClaims, h.cfg.AccessTTL, issuer)
 	if err != nil {
 		oidcError(w, "server_error", "token generation failed", http.StatusInternalServerError)
@@ -853,7 +855,12 @@ func (h *Handler) issueOIDCTokens(w http.ResponseWriter, r *http.Request, user *
 	ip := getClientIP(r)
 
 	// Access token with Keycloak-compatible claims (per-app audience in v2).
-	accessClaims := h.buildOIDCAccessClaims(user, roles, perms, nil, scope, app)
+	// Groups are the user's stored directory groups: the set a direct login puts
+	// in its token, which syncUserFromLDAP stores during that same login (bare
+	// CNs, never filtered per app), and the set resolveTokenRoles just read for
+	// the app's group assignments. Empty for a user with none, so the claim is
+	// omitted, as a direct login omits it.
+	accessClaims := h.buildOIDCAccessClaims(user, roles, perms, user.Groups, scope, app)
 	accessToken, err := h.jwt.IssueAccessTokenWithIssuer(accessClaims, h.cfg.AccessTTL, issuer)
 	if err != nil {
 		oidcError(w, "server_error", "token generation failed", http.StatusInternalServerError)

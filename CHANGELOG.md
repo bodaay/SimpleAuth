@@ -8,6 +8,12 @@ Each version's section is published as the top of its GitHub Release (the
 release workflow extracts the `## vX.Y.Z` section matching the pushed tag). The
 auto-generated list of merged PRs follows it.
 
+## Unreleased
+
+### Fixed
+
+- **OIDC tokens now carry the user's `groups`.** Access tokens from the OIDC token endpoint (authorization-code exchange, `password` grant, and every `refresh_token` grant) had no `groups` claim. A user who signed in through the authorization-code flow therefore had no groups in the token, none in OIDC `/userinfo`, and `groups: null` from `/api/auth/userinfo`, while a direct login's token carried them. These tokens now carry the same groups as a direct login: the user's directory groups as bare CNs, as stored at their last LDAP or Kerberos login, not filtered per app (the same set per-app `group_assignments` read for roles). Each refresh re-reads the set, so a refreshed token carries the user's current groups. A user with no groups still gets no `groups` claim. Roles, permissions, audience, lifetimes and the `id_token` are unchanged.
+
 ## v2.3.0
 
 ### ⭐ Highlight: users disabled in Active Directory now lose access
