@@ -812,9 +812,24 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"job_title":          user.JobTitle,
 		"roles":              claims.Roles,
 		"permissions":        claims.Permissions,
-		"groups":             claims.Groups,
+		"groups":             userinfoGroups(user.Groups),
 		"auth_source":        authSource,
 	}, http.StatusOK)
+}
+
+// userinfoGroups is the `groups` member both userinfo endpoints answer: the
+// user's stored groups (the set synced at their last directory sign-in), never
+// the presented token's claim, always as a JSON list, `[]` when there are none.
+// Several token paths set no claim (a local-password direct login,
+// /api/auth/refresh, the session-cookie sign-in, impersonation), so answering
+// from the claim would turn "not carried" into a false "no groups". The list
+// form lets a consumer tell "no groups" from "groups unavailable" (an older
+// SimpleAuth that omits the member or answers null).
+func userinfoGroups(groups []string) []string {
+	if groups == nil {
+		return []string{}
+	}
+	return groups
 }
 
 func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {
