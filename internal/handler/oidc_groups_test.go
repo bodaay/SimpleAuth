@@ -334,3 +334,83 @@ func TestOIDCPasswordGrantCarriesGroups(t *testing.T) {
 	})
 	grpAssertGroups(t, h, "password grant", tokens["access_token"].(string), []string{"CORTEX-Analysts", "Team-B"})
 }
+
+// grpAssertUserinfoGroups checks that both userinfo endpoints answer exactly
+// want, as a JSON list, whatever the presented token's claim holds.
+func grpAssertUserinfoGroups(t *testing.T, h *Handler, label, accessToken string, want []string) {
+	t.Helper()
+	for _, ep := range []struct{ name, path string }{
+		{"OIDC userinfo", "/realms/" + grpRealm + "/protocol/openid-connect/userinfo"},
+		{"/api/auth/userinfo", "/api/auth/userinfo"},
+	} {
+		m := grpGet(t, h, ep.path, accessToken)
+		got, present := grpStrings(t, m, "groups")
+		if !present || m["groups"] == nil || !slices.Equal(got, want) {
+			t.Errorf("%s: %s groups = %#v, want exactly %v", label, ep.name, m["groups"], want)
+		}
+	}
+}
+
+// TestUserinfoAnswersStoredGroups: both userinfo endpoints answer the user's
+// stored groups (the set synced at their last directory sign-in), never the
+// presented token's claim. Tokens from paths that set no claim (a local-password
+// direct login, /api/auth/refresh, impersonation) must not read as "no groups",
+// and a token minted before the directory moved the user reads the current set.
+// The tokens themselves are unchanged.
+func TestUserinfoAnswersStoredGroups(t *testing.T) {
+	h, _ := testSetup(t)
+	cb, _ := grpApp(t, h, "stored", false, nil)
+	guid := grpUser(t, h, "an", "CORTEX-Analysts", "Team-B")
+	grpUser(t, h, "other", "Domain Admins")
+	stored := []string{"CORTEX-Analysts", "Team-B"}
+
+	noClaim := func(label, at string) {
+		t.Helper()
+		if v, ok := decodeJWTPayload(t, at)["groups"]; ok {
+			t.Errorf("%s: token carries groups %v; this path sets no claim and must stay as it was", label, v)
+		}
+	}
+
+	// A direct login that matched a local password sets no claim.
+	w := doJSON(h, "POST", "/api/auth/login", map[string]interface{}{
+		"username": "an", "password": "pass1234", "app_id": "stored",
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("direct login: %d %s", w.Code, w.Body.String())
+	}
+	var direct map[string]interface{}
+	parseJSON(t, w, &direct)
+	noClaim("direct login", direct["access_token"].(string))
+	grpAssertUserinfoGroups(t, h, "direct login", direct["access_token"].(string), stored)
+
+	// /api/auth/refresh never sets the claim.
+	w = doJSON(h, "POST", "/api/auth/refresh", map[string]interface{}{"refresh_token": direct["refresh_token"].(string)}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("direct refresh: %d %s", w.Code, w.Body.String())
+	}
+	var refreshed map[string]interface{}
+	parseJSON(t, w, &refreshed)
+	noClaim("/api/auth/refresh", refreshed["access_token"].(string))
+	grpAssertUserinfoGroups(t, h, "/api/auth/refresh", refreshed["access_token"].(string), stored)
+
+	// Impersonation never sets the claim.
+	w = doJSON(h, "POST", "/api/auth/impersonate", map[string]interface{}{"target_guid": guid, "app_id": "stored"}, adminHeaders())
+	if w.Code != http.StatusOK {
+		t.Fatalf("impersonate: %d %s", w.Code, w.Body.String())
+	}
+	var imp map[string]interface{}
+	parseJSON(t, w, &imp)
+	noClaim("impersonation", imp["access_token"].(string))
+	grpAssertUserinfoGroups(t, h, "impersonation", imp["access_token"].(string), stored)
+
+	// A code-flow token minted before the directory moved the user keeps its
+	// claim, but userinfo answers the current stored set.
+	tokens := grpCodeFlow(t, h, "stored", cb, "an")
+	at := tokens["access_token"].(string)
+	grpSetGroups(t, h, guid, "CORTEX-Analysts", "Team-C")
+	if got, _ := grpStrings(t, decodeJWTPayload(t, at), "groups"); !slices.Equal(got, stored) {
+		t.Errorf("code-flow token claim = %v, want the minted set %v", got, stored)
+	}
+	grpAssertUserinfoGroups(t, h, "code-flow token after a move", at, []string{"CORTEX-Analysts", "Team-C"})
+	grpAssertUserinfoGroups(t, h, "direct token after a move", direct["access_token"].(string), []string{"CORTEX-Analysts", "Team-C"})
+}

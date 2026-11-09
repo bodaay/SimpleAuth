@@ -1022,7 +1022,7 @@ func (h *Handler) handleOIDCUserInfo(w http.ResponseWriter, r *http.Request) {
 	if claims.Roles != nil {
 		resp["roles"] = claims.Roles
 	}
-	resp["groups"] = userinfoGroups(claims.Groups)
+	resp["groups"] = userinfoGroups(user.Groups)
 	if claims.RealmAccess != nil {
 		resp["realm_access"] = claims.RealmAccess
 	}

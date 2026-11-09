@@ -234,7 +234,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 |---|---|
 | `preferred_username` | Local username, falls back to email or display name |
 | `auth_source` | `"local"` for password-based users, `"ldap"` for AD/LDAP users |
-| `groups` | Always a list: the token's groups, or `[]` when it carries none. Older versions answered `null`. |
+| `groups` | Always a list: the user's stored groups (the set synced at their last LDAP or Kerberos sign-in), whatever the presented token carries, or `[]` when there are none. Older versions answered the token's claim, `null` when the token carried none. |
 
 **Error response (401):**
 
@@ -842,7 +842,7 @@ curl -k -H "Authorization: Bearer ACCESS_TOKEN" \
 }
 ```
 
-`groups` is always present as a list: the token's groups, or `[]` when it carries none. Older versions omitted the member when there were none.
+`groups` is always present as a list: the user's stored groups (the set synced at their last LDAP or Kerberos sign-in), whatever the presented token carries, or `[]` when there are none. Older versions answered the token's claim and omitted the member when the token carried none.
 
 **Error response (401):**
 
@@ -2609,7 +2609,7 @@ Every field below is `omitempty`. Missing LDAP attributes result in missing clai
 |-------|------|-------|
 | `roles` | string[] | From SimpleAuth's role assignments. **NOT** a direct mirror of LDAP groups — an admin must map groups to roles, or `default_roles` must be configured. |
 | `permissions` | string[] | Merged: role-derived + direct user permissions |
-| `groups` | string[] | The user's directory groups (from `GroupsAttr`, default `memberOf`), each reduced to its CN (`CN=Finance,OU=…` → `Finance`), not filtered per app. Carried by tokens from an LDAP password or Kerberos login, and by every OIDC access token (authorization-code, `password` and `refresh_token` grants), which take the groups stored at the user's last directory login. Not carried by `/api/auth/refresh`, the hosted login's session-cookie sign-in, or impersonation tokens. Omitted from the token when the user has none; both userinfo endpoints then answer `[]`. Pass-through for apps that key off AD groups directly. |
+| `groups` | string[] | The user's directory groups (from `GroupsAttr`, default `memberOf`), each reduced to its CN (`CN=Finance,OU=…` → `Finance`), not filtered per app. Carried by tokens from an LDAP password or Kerberos login, and by every OIDC access token (authorization-code, `password` and `refresh_token` grants), which take the groups stored at the user's last directory login. Not carried by `/api/auth/refresh`, the hosted login's session-cookie sign-in, or impersonation tokens. Omitted from the token when the user has none. Both userinfo endpoints answer the user's stored groups instead of this claim, `[]` when there are none, so a token from a path that does not carry the claim still gets the groups there. Pass-through for apps that key off AD groups directly. |
 | `realm_access.roles` | string[] | Keycloak-compat mirror of `roles` |
 | `resource_access.{client_id}.roles` | string[] | Keycloak-compat mirror of `roles` |
 
