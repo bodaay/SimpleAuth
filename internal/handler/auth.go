@@ -812,9 +812,21 @@ func (h *Handler) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"job_title":          user.JobTitle,
 		"roles":              claims.Roles,
 		"permissions":        claims.Permissions,
-		"groups":             claims.Groups,
+		"groups":             userinfoGroups(claims.Groups),
 		"auth_source":        authSource,
 	}, http.StatusOK)
+}
+
+// userinfoGroups is the `groups` member both userinfo endpoints answer: always a
+// JSON list, `[]` when the token carries no groups, so a consumer can tell "no
+// groups" from "groups unavailable" (an older SimpleAuth that omits the member
+// or answers null). The token's claim stays omitempty, so a nil claim means the
+// user had none when the token was minted.
+func userinfoGroups(groups []string) []string {
+	if groups == nil {
+		return []string{}
+	}
+	return groups
 }
 
 func (h *Handler) handleImpersonate(w http.ResponseWriter, r *http.Request) {

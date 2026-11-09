@@ -209,20 +209,25 @@ func grpAssertGroups(t *testing.T, h *Handler, label, accessToken string, want [
 	}
 }
 
-// grpAssertNoGroups checks the answers a direct login gives a user with no
-// groups: no `groups` claim in the token, no `groups` member in OIDC userinfo,
-// and `groups: null` from /api/auth/userinfo (which always lists the member).
+// grpAssertNoGroups checks the answers for a user with no groups: no `groups`
+// claim in the access token (the claim stays omitempty), and `"groups": []` from
+// both userinfo endpoints, which always answer the member as a list so a
+// consumer can tell "no groups" from "groups unavailable" (an older SimpleAuth
+// omitted it from OIDC userinfo and answered null from /api/auth/userinfo).
 func grpAssertNoGroups(t *testing.T, h *Handler, label, accessToken string) {
 	t.Helper()
 	if v, ok := decodeJWTPayload(t, accessToken)["groups"]; ok {
 		t.Errorf("%s: access token carries groups %v, want the claim omitted", label, v)
 	}
-	if v, ok := grpGet(t, h, "/realms/"+grpRealm+"/protocol/openid-connect/userinfo", accessToken)["groups"]; ok {
-		t.Errorf("%s: OIDC userinfo carries groups %v, want the member omitted", label, v)
-	}
-	info := grpGet(t, h, "/api/auth/userinfo", accessToken)
-	if v, ok := info["groups"]; !ok || v != nil {
-		t.Errorf("%s: /api/auth/userinfo groups = %v (present=%v), want null", label, v, ok)
+	for _, ep := range []struct{ name, path string }{
+		{"OIDC userinfo", "/realms/" + grpRealm + "/protocol/openid-connect/userinfo"},
+		{"/api/auth/userinfo", "/api/auth/userinfo"},
+	} {
+		v, ok := grpGet(t, h, ep.path, accessToken)["groups"]
+		arr, isArr := v.([]interface{})
+		if !ok || !isArr || len(arr) != 0 {
+			t.Errorf("%s: %s groups = %#v (present=%v), want an empty list []", label, ep.name, v, ok)
+		}
 	}
 }
 
@@ -255,8 +260,8 @@ func TestOIDCCodeFlowCarriesGroups(t *testing.T) {
 
 // TestOIDCRefreshCarriesCurrentGroups: every OIDC refresh grant re-reads the
 // person's stored groups, so a refreshed token carries the current set, and a
-// person the directory has removed from every group gets no groups at all,
-// never the set they signed in with.
+// person the directory has removed from every group gets none (an empty list
+// from userinfo), never the set they signed in with.
 func TestOIDCRefreshCarriesCurrentGroups(t *testing.T) {
 	h, _ := testSetup(t)
 	cb, _ := grpApp(t, h, "cortexr", false, map[string]interface{}{
@@ -287,10 +292,10 @@ func TestOIDCRefreshCarriesCurrentGroups(t *testing.T) {
 	}
 }
 
-// TestOIDCCodeFlowOmitsGroupsForUserWithNone: a person with no groups gets the
-// same answers from the code flow as from a direct login: no claim, no OIDC
-// userinfo member, null from /api/auth/userinfo. Never another user's set.
-func TestOIDCCodeFlowOmitsGroupsForUserWithNone(t *testing.T) {
+// TestOIDCCodeFlowUserWithNoGroups: a person with no groups gets the same
+// answers from the code flow as from a direct login: no claim in the token, and
+// an empty list from both userinfo endpoints. Never another user's set.
+func TestOIDCCodeFlowUserWithNoGroups(t *testing.T) {
 	h, _ := testSetup(t)
 	cb, _ := grpApp(t, h, "plain", false, nil)
 	grpUser(t, h, "nogroups")
