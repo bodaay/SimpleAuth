@@ -174,3 +174,140 @@ func TestStoredUseTLSOnLDAPURLStillUsesStartTLS(t *testing.T) {
 	}
 	assertNoCleartextOps(t, srv)
 }
+
+func TestImportLDAPTLSSettings(t *testing.T) {
+	h, _ := testSetup(t)
+	ca, other := ldaptest.NewCA(t), ldaptest.NewCA(t)
+	importLDAP := func(extra map[string]interface{}) *http.Response {
+		body := map[string]interface{}{"server": "dc02.corp.test", "username": "svc", "password": "pw", "domain": "corp.test"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		return doJSON(h, "POST", "/api/admin/ldap/import", body, adminHeaders()).Result()
+	}
+
+	// Nothing stored: omitted settings are off, given ones are taken.
+	if r := importLDAP(map[string]interface{}{"skip_tls_verify": true, "ca_cert": ca.PEM}); r.StatusCode != http.StatusOK {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	wantTLS(t, h, true, false, ca.PEM)
+
+	// Stored settings are kept when the import omits them (the setup script's
+	// JSON never carries them).
+	putLDAP(t, h, ldapBody("ldap://dc01.corp.test", map[string]interface{}{"skip_tls_verify": true, "allow_insecure": true, "ca_cert": ca.PEM}))
+	if r := importLDAP(nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	if got := getLDAP(t, h)["url"]; got != "ldap://dc02.corp.test:389" {
+		t.Fatalf("import did not replace the config: url %v", got)
+	}
+	wantTLS(t, h, true, true, ca.PEM)
+
+	// Given settings replace the stored ones, including switching them off.
+	if r := importLDAP(map[string]interface{}{"skip_tls_verify": false, "allow_insecure": false, "ca_cert": other.PEM}); r.StatusCode != http.StatusOK {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	wantTLS(t, h, false, false, other.PEM)
+	if r := importLDAP(map[string]interface{}{"ca_cert": ""}); r.StatusCode != http.StatusOK {
+		t.Fatalf("import: %d", r.StatusCode)
+	}
+	wantTLS(t, h, false, false, "")
+
+	// An invalid ca_cert is refused and nothing changes.
+	putLDAP(t, h, ldapBody("ldap://dc01.corp.test", map[string]interface{}{"ca_cert": ca.PEM}))
+	if r := importLDAP(map[string]interface{}{"ca_cert": "not a certificate"}); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("import with an invalid ca_cert: %d, want 400", r.StatusCode)
+	}
+	if got := getLDAP(t, h)["url"]; got != "ldap://dc01.corp.test" {
+		t.Errorf("a refused import replaced the config: url %v", got)
+	}
+}
+
+func autoDiscover(h *Handler, url string, extra map[string]interface{}) (int, string) {
+	body := map[string]interface{}{"server": url, "username": "svc@corp.test", "password": "pw"}
+	for k, v := range extra {
+		body[k] = v
+	}
+	w := doJSON(h, "POST", "/api/admin/ldap/auto-discover", body, adminHeaders())
+	return w.Code, w.Body.String()
+}
+
+// Re-running Connect must not silently drop the pasted CA or the switches: the
+// discovery connection already uses the stored settings, and they are saved
+// again.
+func TestAutoDiscoverKeepsStoredTLSSettings(t *testing.T) {
+	ca := ldaptest.NewCA(t)
+
+	t.Run("ca_cert", func(t *testing.T) {
+		h, _ := testSetup(t)
+		cert := ca.Issue(t, nil, localhostIP)
+		srv := ldaptest.StartTLSServer(t, &cert)
+		putLDAP(t, h, ldapBody("ldap://dc01.corp.test", map[string]interface{}{"ca_cert": ca.PEM}))
+
+		if code, body := autoDiscover(h, "ldap://"+srv.Addr, nil); code != http.StatusOK {
+			t.Fatalf("auto-discover = %d %s", code, body)
+		}
+		if got := getLDAP(t, h)["base_dn"]; got != ldaptest.NamingContext {
+			t.Errorf("base_dn = %v, want the discovered %s", got, ldaptest.NamingContext)
+		}
+		wantTLS(t, h, false, false, ca.PEM)
+		assertNoCleartextOps(t, srv)
+	})
+
+	t.Run("skip and allow_insecure", func(t *testing.T) {
+		h, _ := testSetup(t)
+		srv := ldaptest.StartPlainServer(t) // a directory without a certificate
+		putLDAP(t, h, ldapBody("ldap://dc01.corp.test", map[string]interface{}{
+			"skip_tls_verify": true, "allow_insecure": true, "ca_cert": ca.PEM,
+		}))
+
+		if code, body := autoDiscover(h, "ldap://"+srv.Addr, nil); code != http.StatusOK {
+			t.Fatalf("auto-discover = %d %s", code, body)
+		}
+		wantTLS(t, h, true, true, ca.PEM)
+	})
+}
+
+func TestAutoDiscoverTakesTLSSettings(t *testing.T) {
+	h, _ := testSetup(t)
+	ca := ldaptest.NewCA(t)
+	cert := ca.Issue(t, nil, localhostIP)
+	trusted := "ldap://" + ldaptest.StartTLSServer(t, &cert).Addr
+	untrustedCert := ldaptest.NewCA(t).Issue(t, nil, localhostIP)
+	untrusted := "ldap://" + ldaptest.StartTLSServer(t, &untrustedCert).Addr
+
+	// Without the CA the directory's certificate is refused.
+	if code, body := autoDiscover(h, trusted, nil); code != http.StatusBadGateway || !strings.Contains(body, "certificate") {
+		t.Errorf("auto-discover without ca_cert = %d %s, want 502 with a certificate error", code, body)
+	}
+
+	// With it, Connect verifies the certificate and saves the CA.
+	if code, body := autoDiscover(h, trusted, map[string]interface{}{"ca_cert": ca.PEM}); code != http.StatusOK {
+		t.Fatalf("auto-discover with ca_cert = %d %s", code, body)
+	}
+	wantTLS(t, h, false, false, ca.PEM)
+
+	// skip_tls_verify given in the request is used for the connection and saved;
+	// the stored CA is kept.
+	if code, body := autoDiscover(h, untrusted, map[string]interface{}{"skip_tls_verify": true}); code != http.StatusOK {
+		t.Fatalf("auto-discover with skip_tls_verify = %d %s", code, body)
+	}
+	wantTLS(t, h, true, false, ca.PEM)
+
+	// A request value overrides the stored one: verification back on fails closed.
+	if code, body := autoDiscover(h, untrusted, map[string]interface{}{"skip_tls_verify": false}); code != http.StatusBadGateway || !strings.Contains(body, "certificate") {
+		t.Errorf("auto-discover with skip_tls_verify=false = %d %s, want 502 with a certificate error", code, body)
+	}
+
+	// allow_insecure given in the request reaches a directory without StartTLS.
+	plain := ldaptest.StartPlainServer(t)
+	if code, body := autoDiscover(h, "ldap://"+plain.Addr, map[string]interface{}{"allow_insecure": true, "skip_tls_verify": false}); code != http.StatusOK {
+		t.Fatalf("auto-discover with allow_insecure = %d %s", code, body)
+	}
+	wantTLS(t, h, false, true, ca.PEM)
+
+	// An invalid ca_cert is refused before anything is dialled.
+	if code, body := autoDiscover(h, trusted, map[string]interface{}{"ca_cert": "not a certificate"}); code != http.StatusBadRequest || !strings.Contains(body, "invalid ca_cert") {
+		t.Errorf("auto-discover with an invalid ca_cert = %d %s, want 400", code, body)
+	}
+}

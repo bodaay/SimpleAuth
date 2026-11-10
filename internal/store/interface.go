@@ -20,6 +20,9 @@ var (
 	// callers distinguish "no such app" from a real store error (so they can fail
 	// closed on the latter instead of treating it as not-found).
 	ErrAppNotFound = errors.New("app not found")
+	// ErrLDAPNotConfigured is returned by GetLDAPConfig when no LDAP config is
+	// stored, so callers can tell it apart from a real store error.
+	ErrLDAPNotConfigured = errors.New("ldap not configured")
 )
 
 // Store defines the storage interface for SimpleAuth. Both BoltDB and

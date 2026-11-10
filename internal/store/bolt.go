@@ -491,7 +491,7 @@ func (s *BoltStore) GetLDAPConfig() (*LDAPConfig, error) {
 	err := s.view(func(tx *bolt.Tx) error {
 		data := tx.Bucket(bucketConfig).Get([]byte("ldap:config"))
 		if data == nil {
-			return fmt.Errorf("ldap not configured")
+			return ErrLDAPNotConfigured
 		}
 		return json.Unmarshal(data, &cfg)
 	})

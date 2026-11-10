@@ -399,7 +399,7 @@ func (s *PostgresStore) GetLDAPConfig() (*LDAPConfig, error) {
 		return nil, err
 	}
 	if val == nil {
-		return nil, fmt.Errorf("ldap not configured")
+		return nil, ErrLDAPNotConfigured
 	}
 	var cfg LDAPConfig
 	return &cfg, json.Unmarshal(val, &cfg)
