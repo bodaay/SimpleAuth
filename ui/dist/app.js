@@ -840,6 +840,60 @@ function UsersPage() {
   `;
 }
 
+// === LDAP TLS settings ===
+// The URL scheme decides the transport (ldaps:// = TLS from the first byte,
+// ldap:// = StartTLS before any bind). These three settings decide which
+// certificates are trusted, plus the two escape hatches. Every LDAP form sends
+// all three, so saving never resets one silently.
+const LDAP_TLS_KEYS = ['ca_cert', 'skip_tls_verify', 'allow_insecure'];
+function ldapTLSFrom(src) {
+  return { ca_cert: (src && src.ca_cert) || '', skip_tls_verify: !!(src && src.skip_tls_verify), allow_insecure: !!(src && src.allow_insecure) };
+}
+function ldapPayload(f) { return { ...f, ...ldapTLSFrom(f) }; }
+function hasLDAPTLS(f) { return !!(f && (f.ca_cert || f.skip_tls_verify || f.allow_insecure)); }
+
+let ldapTLSFieldsSeq = 0; // unique ids: the Connect card and a modal can both be on screen
+function LDAPTLSFields({ form, setForm, url }) {
+  const idRef = useRef(null);
+  if (!idRef.current) idRef.current = 'ldap-tls-' + (++ldapTLSFieldsSeq);
+  const id = idRef.current;
+  const ldaps = /^ldaps:\/\//i.test((url || '').trim());
+  const skip = !!form.skip_tls_verify, insecure = !!form.allow_insecure;
+  return html`
+    <div class="form-group">
+      <label class="form-label" for=${id + '-ca'}>AD root CA certificate (PEM)</label>
+      <textarea id=${id + '-ca'} aria-describedby=${id + '-ca-help'} class="form-textarea" rows="5" spellcheck="false" autocomplete="off" wrap="off"
+        style="font-family:var(--font-mono);font-size:0.75rem;white-space:pre;overflow-x:auto"
+        value=${form.ca_cert || ''} onInput=${e => setForm({ ...form, ca_cert: e.target.value })}
+        placeholder=${'-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----'}></textarea>
+      <div class="form-help" id=${id + '-ca-help'}>Optional. Paste the root CA certificate that issued your domain controllers' certificates (Base-64 / PEM; several may be pasted). SimpleAuth trusts it in addition to the system CAs, so certificate verification stays on. This is the recommended fix for "certificate signed by unknown authority".</div>
+    </div>
+    <div class="form-group">
+      <label class="ldap-tls-check"><input type="checkbox" aria-describedby=${id + '-skip-help'} checked=${skip} onChange=${e => setForm({ ...form, skip_tls_verify: e.target.checked })} /> Skip certificate verification</label>
+      <div id=${id + '-skip-help'} class=${skip ? 'alert alert-warning' : 'form-help'} style="margin-top:var(--sp-1)">
+        Testing only. Without verification, anyone between SimpleAuth and AD could impersonate AD and capture the passwords sent to it.${skip && form.ca_cert ? ' The root CA above is not used while this is on.' : ' Paste the root CA above instead.'}
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="ldap-tls-check"><input type="checkbox" aria-describedby=${id + '-insecure-help'} checked=${insecure} onChange=${e => setForm({ ...form, allow_insecure: e.target.checked })} /> Allow cleartext (no StartTLS)</label>
+      <div id=${id + '-insecure-help'} class=${insecure && !ldaps ? 'alert alert-error' : 'form-help'} style="margin-top:var(--sp-1)">
+        ${ldaps
+          ? 'Has no effect on ldaps:// URLs, which are always encrypted.'
+          : 'Dangerous. SimpleAuth then connects to ldap:// without StartTLS: the service-account password and every user\'s password cross the network unencrypted, readable by anyone on the path. Only for a test directory without a certificate; never in production.'}
+      </div>
+    </div>
+  `;
+}
+
+// One-line summary of how SimpleAuth reaches the directory, for the dashboard.
+function ldapTLSSummary(cfg) {
+  const ldaps = /^ldaps:\/\//i.test(cfg.url || '');
+  if (!ldaps && cfg.allow_insecure) return { transport: 'None — cleartext, no StartTLS (allow_insecure)', transportBad: true, cert: '—' };
+  const transport = ldaps ? 'TLS (ldaps://)' : 'StartTLS';
+  if (cfg.skip_tls_verify) return { transport, cert: 'Off (skip_tls_verify)', certBad: true };
+  return { transport, cert: cfg.ca_cert ? 'On — system CAs + AD root CA' : 'On — system CAs' };
+}
+
 // === LDAP Settings Page ===
 function LDAPPage() {
   const [ldapConfig, setLdapConfig] = useState(null); // null = loading, false = not configured
@@ -857,6 +911,7 @@ function LDAPPage() {
   const [searchResults, setSearchResults] = useState(null); // null = not searched, [] = no results
   const [searchLoading, setSearchLoading] = useState(false);
   const [selectedImports, setSelectedImports] = useState(new Set());
+  const [connectError, setConnectError] = useState(''); // last Connect failure, kept on screen (a toast is too short for a TLS error)
 
   const load = () => {
     api('GET', '/api/admin/ldap').then(cfg => {
@@ -881,20 +936,21 @@ function LDAPPage() {
 
   // --- Wizard Actions ---
   const autoDiscover = async () => {
+    setConnectError('');
     try {
       const result = await api('POST', '/api/admin/ldap/auto-discover', {
-        server: form.server, username: form.username, password: form.password
+        server: form.server, username: form.username, password: form.password, ...ldapTLSFrom(form)
       });
       setLdapConfig(result);
       setConnectionStatus('ok');
       setWizardStep(1);
       showToast('Connected and configured');
-    } catch (e) { showToast(e.message, 'error'); }
+    } catch (e) { setConnectError(e.message); }
   };
 
   const saveManualConfig = async () => {
     try {
-      await api('PUT', '/api/admin/ldap', form);
+      await api('PUT', '/api/admin/ldap', ldapPayload(form));
       const result = await api('POST', '/api/admin/ldap/test');
       if (result.status === 'ok') {
         setConnectionStatus('ok');
@@ -943,7 +999,7 @@ function LDAPPage() {
   const importConfig = async () => {
     try {
       const cfg = JSON.parse(form.import_json);
-      const result = await api('POST', '/api/admin/ldap/import', cfg);
+      const result = await api('POST', '/api/admin/ldap/import', { ...cfg, ...ldapTLSFrom(form) });
       showToast('Config imported');
       if (result.kerberos_error) showToast('Kerberos: ' + result.kerberos_error, 'warning');
       setModal(null);
@@ -953,7 +1009,7 @@ function LDAPPage() {
 
   const saveConfig = async () => {
     try {
-      await api('PUT', '/api/admin/ldap', form);
+      await api('PUT', '/api/admin/ldap', ldapPayload(form));
       showToast('Settings saved');
       setEditing(null);
       load();
@@ -1071,7 +1127,16 @@ function LDAPPage() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => setForm({ ...form, import_json: ev.target.result });
+    reader.onload = (ev) => {
+      const next = { ...form, import_json: ev.target.result };
+      // The file may carry the TLS settings too; invalid JSON is reported on Import.
+      let parsed = null;
+      try { parsed = JSON.parse(ev.target.result); } catch (_) { parsed = null; }
+      if (parsed && typeof parsed === 'object') {
+        for (const k of LDAP_TLS_KEYS) if (k in parsed) next[k] = parsed[k];
+      }
+      setForm(next);
+    };
     reader.readAsText(file);
   };
 
@@ -1089,7 +1154,7 @@ function LDAPPage() {
       <div class="page-header">
         <h2>LDAP Settings</h2>
         <div style="display:flex;gap:var(--sp-2)">
-          <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
+          <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm(ldapTLSFrom(form)); }}>Import Config</button>
           <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
           <button class="btn btn-secondary" onClick=${downloadLinuxSetupScript}>Linux SSO Script</button>
         </div>
@@ -1112,14 +1177,21 @@ function LDAPPage() {
           <label class="form-label">Password</label>
           <input class="form-input" type="password" value=${form.password || ''} onInput=${e => setForm({ ...form, password: e.target.value })} />
         </div>
+        <details open=${/certificate/i.test(connectError) || hasLDAPTLS(form)} style="margin-top:var(--sp-3)">
+          <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">TLS & certificates (AD root CA, verification)</summary>
+          <div style="margin-top:var(--sp-2)">
+            <${LDAPTLSFields} form=${form} setForm=${setForm} url=${form.server} />
+          </div>
+        </details>
 
         <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-4)">
           <button class="btn btn-primary" disabled=${!form.server || !form.username || !form.password} onClick=${autoDiscover}>Connect</button>
           <button class="btn btn-secondary" onClick=${() => {
-            setForm({ url: '', base_dn: '', bind_dn: '', bind_password: '', username_attr: 'sAMAccountName', custom_filter: '', display_name_attr: 'displayName', email_attr: 'mail', department_attr: 'department', company_attr: 'company', job_title_attr: 'title', groups_attr: 'memberOf' });
+            setForm({ url: '', base_dn: '', bind_dn: '', bind_password: '', username_attr: 'sAMAccountName', custom_filter: '', display_name_attr: 'displayName', email_attr: 'mail', department_attr: 'department', company_attr: 'company', job_title_attr: 'title', groups_attr: 'memberOf', ...ldapTLSFrom(form) });
             setModal('manual-setup');
           }}>Manual Setup</button>
         </div>
+        ${connectError && html`<div class="alert alert-error" role="alert" style="margin:var(--sp-3) 0 0 0;word-break:break-word">${connectError}</div>`}
       </div>
 
       ${modal === 'manual-setup' && html`
@@ -1137,6 +1209,13 @@ function LDAPPage() {
               <option value="mail">mail (Email)</option>
             </select>
           </div>
+          <details open=${hasLDAPTLS(form)} style="margin-top:var(--sp-3)">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">TLS & certificates</summary>
+            <div style="margin-top:var(--sp-2)">
+              <div class="form-help" style="margin:0 0 var(--sp-3) 0">ldaps:// connects with TLS; ldap:// is upgraded with StartTLS before any password is sent.</div>
+              <${LDAPTLSFields} form=${form} setForm=${setForm} url=${form.url} />
+            </div>
+          </details>
           <details style="margin-top:var(--sp-3)">
             <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">Advanced</summary>
             <div style="margin-top:var(--sp-2)">
@@ -1166,6 +1245,12 @@ function LDAPPage() {
           <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the AD setup script.</p>
           <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-3)" />
           ${form.import_json && html`<pre style="font-size:0.75rem;background:var(--bg-secondary);padding:var(--sp-2);border-radius:var(--radius);max-height:200px;overflow:auto">${form.import_json.replace(/"password":\s*"[^"]*"/, '"password": "••••••••"')}</pre>`}
+          <details open=${hasLDAPTLS(form)} style="margin-top:var(--sp-3)">
+            <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">TLS & certificates</summary>
+            <div style="margin-top:var(--sp-2)">
+              <${LDAPTLSFields} form=${form} setForm=${setForm} url=${''} />
+            </div>
+          </details>
           <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
             <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
             <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import</button>
@@ -1185,7 +1270,7 @@ function LDAPPage() {
       <div style="display:flex;gap:var(--sp-2)">
         <button class="btn btn-secondary" onClick=${downloadSetupScript}>AD Script</button>
           <button class="btn btn-secondary" onClick=${downloadLinuxSetupScript}>Linux SSO Script</button>
-        <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm({}); }}>Import Config</button>
+        <button class="btn btn-secondary" onClick=${() => { setModal('import-config'); setForm(ldapTLSFrom(ldapConfig)); }}>Import Config</button>
         <button class="btn btn-secondary" onClick=${syncAll}>Sync All Users</button>
         <button class="btn btn-secondary" onClick=${() => { setForm({}); setModal('sync-user'); }}>Sync User</button>
       </div>
@@ -1209,12 +1294,19 @@ function LDAPPage() {
           <span style="color:var(--text-muted)">Base DN</span><span>${ldapConfig.base_dn}</span>
           <span style="color:var(--text-muted)">Bind DN</span><span>${ldapConfig.bind_dn}</span>
           ${ldapConfig.domain && html`<span style="color:var(--text-muted)">Domain</span><span>${ldapConfig.domain}</span>`}
+          ${(() => { const t = ldapTLSSummary(ldapConfig); return html`
+            <span style="color:var(--text-muted)">Encryption</span><span style=${t.transportBad ? 'color:var(--status-error-text);font-weight:600' : ''}>${t.transport}</span>
+            <span style="color:var(--text-muted)">Cert check</span><span style=${t.certBad ? 'color:var(--status-warning-text);font-weight:600' : ''}>${t.cert}</span>
+          `; })()}
         </div>
       ` : html`
         <div class="form-group"><label class="form-label">URL</label><input class="form-input" value=${form.url || ''} onInput=${e => setForm({ ...form, url: e.target.value })} /></div>
         <div class="form-group"><label class="form-label">Base DN</label><input class="form-input" value=${form.base_dn || ''} onInput=${e => setForm({ ...form, base_dn: e.target.value })} /></div>
         <div class="form-group"><label class="form-label">Bind DN</label><input class="form-input" value=${form.bind_dn || ''} onInput=${e => setForm({ ...form, bind_dn: e.target.value })} /></div>
         <div class="form-group"><label class="form-label">Bind Password</label><input class="form-input" type="password" value=${form.bind_password || ''} onInput=${e => setForm({ ...form, bind_password: e.target.value })} /></div>
+        <h4 style="margin:var(--sp-4) 0 var(--sp-1) 0;font-size:0.875rem">TLS & certificates</h4>
+        <div class="form-help" style="margin:0 0 var(--sp-3) 0">ldaps:// connects with TLS; ldap:// is upgraded with StartTLS before any password is sent.</div>
+        <${LDAPTLSFields} form=${form} setForm=${setForm} url=${form.url} />
         <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-3)">
           <button class="btn btn-primary" onClick=${saveConfig}>Save</button>
           <button class="btn btn-secondary" onClick=${() => setEditing(null)}>Cancel</button>
@@ -1390,6 +1482,13 @@ function LDAPPage() {
         <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:var(--sp-4)">Upload the <strong>simpleauth-config.json</strong> file generated by the AD setup script.</p>
         <input type="file" accept=".json" onChange=${handleFileImport} style="margin-bottom:var(--sp-3)" />
         ${form.import_json && html`<pre style="font-size:0.75rem;background:var(--bg-secondary);padding:var(--sp-2);border-radius:var(--radius);max-height:200px;overflow:auto">${form.import_json.replace(/"password":\s*"[^"]*"/, '"password": "••••••••"')}</pre>`}
+        <details open=${hasLDAPTLS(form)} style="margin-top:var(--sp-3)">
+          <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.875rem">TLS & certificates</summary>
+          <div style="margin-top:var(--sp-2)">
+            <div class="form-help" style="margin:0 0 var(--sp-3) 0">Prefilled with the current settings; the import applies them to the new config.</div>
+            <${LDAPTLSFields} form=${form} setForm=${setForm} url=${''} />
+          </div>
+        </details>
         <div style="display:flex;gap:var(--sp-2);justify-content:flex-end;margin-top:var(--sp-4)">
           <button class="btn btn-secondary" onClick=${() => setModal(null)}>Cancel</button>
           <button class="btn btn-primary" disabled=${!form.import_json} onClick=${importConfig}>Import</button>

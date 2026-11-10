@@ -65,18 +65,25 @@ type AppAdmin struct {
 }
 
 type LDAPConfig struct {
-	URL           string `json:"url"`
-	BaseDN        string `json:"base_dn"`
-	BindDN        string `json:"bind_dn"`
-	BindPassword  string `json:"bind_password"`
-	UsernameAttr  string `json:"username_attr"`
-	CustomFilter  string `json:"custom_filter,omitempty"`
-	UseTLS        bool   `json:"use_tls"`
-	SkipTLSVerify bool   `json:"skip_tls_verify"`
+	URL          string `json:"url"`
+	BaseDN       string `json:"base_dn"`
+	BindDN       string `json:"bind_dn"`
+	BindPassword string `json:"bind_password"`
+	UsernameAttr string `json:"username_attr"`
+	CustomFilter string `json:"custom_filter,omitempty"`
+	// UseTLS mirrors the URL scheme (true for ldaps://). It is kept in the JSON
+	// for compatibility and set from the URL on every save; connections never
+	// read it — the scheme decides (ldaps:// = TLS, ldap:// = StartTLS).
+	UseTLS        bool `json:"use_tls"`
+	SkipTLSVerify bool `json:"skip_tls_verify"`
 	// AllowInsecure permits binds over a cleartext ldap:// connection that could
 	// not be upgraded with StartTLS. Default false: ldap:// is StartTLS-upgraded
 	// and fails closed, so bind/user passwords are never sent in the clear.
-	AllowInsecure   bool      `json:"allow_insecure,omitempty"`
+	AllowInsecure bool `json:"allow_insecure,omitempty"`
+	// CACert is PEM text with one or more CA certificates (the AD root CA)
+	// trusted for the directory's certificate in addition to the system pool.
+	// Not a secret, but only "set / not set" goes to the audit log.
+	CACert          string    `json:"ca_cert,omitempty"`
 	DisplayNameAttr string    `json:"display_name_attr"`
 	EmailAttr       string    `json:"email_attr"`
 	DepartmentAttr  string    `json:"department_attr"`

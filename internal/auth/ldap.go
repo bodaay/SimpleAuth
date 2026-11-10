@@ -2,8 +2,11 @@ package auth
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,15 +23,20 @@ var ErrLDAPUserNotFound = errors.New("ldap user not found")
 var ErrLDAPAccountDisabled = errors.New("directory account disabled")
 
 type LDAPConfig struct {
-	URL             string
-	BaseDN          string
-	BindDN          string
-	BindPassword    string
-	UsernameAttr    string
-	CustomFilter    string
-	UseTLS          bool
-	SkipTLSVerify   bool
-	AllowInsecure   bool
+	URL          string
+	BaseDN       string
+	BindDN       string
+	BindPassword string
+	UsernameAttr string
+	CustomFilter string
+	// TLS is decided by the URL scheme alone: ldaps:// is TLS from the first
+	// byte, ldap:// is upgraded with StartTLS before any bind (unless
+	// AllowInsecure). There is deliberately no UseTLS switch here.
+	SkipTLSVerify bool
+	AllowInsecure bool
+	// CACert is PEM text with one or more CA certificates (typically the AD root
+	// CA) trusted for the directory's certificate in addition to the system pool.
+	CACert          string
 	DisplayNameAttr string
 	EmailAttr       string
 	DepartmentAttr  string
@@ -52,17 +60,127 @@ type LDAPResult struct {
 	Disabled bool
 }
 
-func LDAPConnect(cfg *LDAPConfig) (*ldap.Conn, error) {
-	var conn *ldap.Conn
-	var err error
+// ldapRootCAs is the trust pool for directory certificates; nil means the system
+// pool (which honours SSL_CERT_FILE). Tests point it at their own CA.
+var ldapRootCAs *x509.CertPool
 
-	if cfg.UseTLS {
-		// ldaps:// — implicit TLS from the first byte.
-		conn, err = ldap.DialURL(cfg.URL, ldap.DialWithTLSConfig(&tls.Config{
-			InsecureSkipVerify: cfg.SkipTLSVerify,
-		}))
+// IsLDAPS reports whether rawURL uses the ldaps:// scheme (TLS from the first
+// byte). The scheme alone decides how LDAPConnect secures the connection.
+func IsLDAPS(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(u.Scheme, "ldaps")
+}
+
+// ParseLDAPCACert parses PEM text holding one or more CA certificates (text
+// around the blocks, such as OpenSSL "Bag Attributes" headers, is ignored). It
+// fails when the text holds no certificate, when a block is not a certificate
+// (for example a private key pasted by mistake), when a block is damaged, or
+// when a certificate does not parse, so a bad paste is reported instead of
+// being dropped silently.
+func ParseLDAPCACert(pemText string) ([]*x509.Certificate, error) {
+	// pem.Decode needs the BEGIN/END lines at the start of a line; a paste from
+	// an e-mail or a document is often indented, so trim every line first.
+	lines := strings.Split(pemText, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSpace(l)
+	}
+	pemText = strings.Join(lines, "\n")
+
+	var certs []*x509.Certificate
+	rest := []byte(pemText)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("found a %q PEM block; only CERTIFICATE blocks are accepted (paste the CA certificate, never a key)", block.Type)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("ldap connect: %w", err)
+			return nil, fmt.Errorf("certificate %d does not parse: %w", len(certs)+1, err)
+		}
+		certs = append(certs, cert)
+	}
+	// pem.Decode skips a block it cannot decode (damaged base64, missing END
+	// line) and moves on, so count the BEGIN markers to catch a truncated paste.
+	if begun := strings.Count(pemText, "-----BEGIN "); begun > len(certs) {
+		return nil, fmt.Errorf("%d of %d PEM blocks could not be decoded (damaged or truncated paste?)", begun-len(certs), begun)
+	}
+	if len(certs) == 0 {
+		return nil, errors.New("no PEM certificate found (expected text starting with -----BEGIN CERTIFICATE-----; on Windows export the CA certificate as \"Base-64 encoded X.509\")")
+	}
+	return certs, nil
+}
+
+// ldapTLSConfig returns the TLS settings for a connection to cfg.URL, used for
+// both ldaps:// and StartTLS.
+//
+// ServerName must be set explicitly: StartTLS wraps an already-open socket with
+// tls.Client, which (unlike tls.Dial for ldaps://) does not derive it from the
+// address, and without it every verified handshake fails with "either ServerName
+// or InsecureSkipVerify must be specified in the tls.Config".
+//
+// With cfg.CACert set, the trust pool is the system pool plus those
+// certificates. A CACert that does not parse is an error, never a silent fall
+// back to the system pool.
+func ldapTLSConfig(cfg *LDAPConfig) (*tls.Config, error) {
+	tc := &tls.Config{InsecureSkipVerify: cfg.SkipTLSVerify, RootCAs: ldapRootCAs}
+	if u, err := url.Parse(cfg.URL); err == nil {
+		tc.ServerName = u.Hostname()
+	}
+	if strings.TrimSpace(cfg.CACert) == "" {
+		return tc, nil
+	}
+	certs, err := ParseLDAPCACert(cfg.CACert)
+	if err != nil {
+		return nil, fmt.Errorf("ldap ca_cert: %w", err)
+	}
+	var pool *x509.CertPool
+	if ldapRootCAs != nil {
+		pool = ldapRootCAs.Clone()
+	} else if pool, err = x509.SystemCertPool(); err != nil {
+		return nil, fmt.Errorf("ldap ca_cert: load system certificate pool: %w", err)
+	}
+	for _, c := range certs {
+		pool.AddCert(c)
+	}
+	tc.RootCAs = pool
+	return tc, nil
+}
+
+// ldapUntrustedCAHint points at ca_cert when a handshake failed because the
+// directory's certificate chains to a CA that is not trusted — the usual case
+// for an AD whose certificates come from an internal CA. go-ldap formats the
+// StartTLS handshake error with %v, so the message has to be matched too (the
+// second phrase is how the macOS verifier words it).
+func ldapUntrustedCAHint(err error) string {
+	var unknown x509.UnknownAuthorityError
+	msg := err.Error()
+	if errors.As(err, &unknown) || strings.Contains(msg, "certificate signed by unknown authority") || strings.Contains(msg, "certificate is not trusted") {
+		return "; the directory certificate is issued by a CA SimpleAuth does not trust: set ca_cert to the AD root CA certificate (PEM)"
+	}
+	return ""
+}
+
+// LDAPConnect opens a connection that is encrypted before any bind: ldaps:// is
+// TLS from the first byte, ldap:// is upgraded with StartTLS (fail closed unless
+// cfg.AllowInsecure). Both use the same TLS settings (ServerName, ca_cert,
+// skip_tls_verify).
+func LDAPConnect(cfg *LDAPConfig) (*ldap.Conn, error) {
+	tlsCfg, err := ldapTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if IsLDAPS(cfg.URL) {
+		// ldaps:// — implicit TLS from the first byte. go-ldap dials ldaps://
+		// with TLS whatever options it gets; without this config it would use
+		// its defaults and ignore ca_cert and skip_tls_verify.
+		conn, err := ldap.DialURL(cfg.URL, ldap.DialWithTLSConfig(tlsCfg))
+		if err != nil {
+			return nil, fmt.Errorf("ldap connect: %w%s", err, ldapUntrustedCAHint(err))
 		}
 		return conn, nil
 	}
@@ -71,16 +189,16 @@ func LDAPConnect(cfg *LDAPConfig) (*ldap.Conn, error) {
 	// so the service-account and end-user passwords are never transmitted in
 	// cleartext. Fail closed if the upgrade fails, unless the operator has
 	// explicitly opted into insecure cleartext binds (allow_insecure).
-	conn, err = ldap.DialURL(cfg.URL)
+	conn, err := ldap.DialURL(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("ldap connect: %w", err)
 	}
 	if cfg.AllowInsecure {
 		return conn, nil
 	}
-	if err := conn.StartTLS(&tls.Config{InsecureSkipVerify: cfg.SkipTLSVerify}); err != nil {
+	if err := conn.StartTLS(tlsCfg); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("ldap StartTLS upgrade failed; refusing cleartext bind (use ldaps:// or set allow_insecure): %w", err)
+		return nil, fmt.Errorf("ldap StartTLS upgrade failed; refusing cleartext bind (use ldaps:// or set allow_insecure): %w%s", err, ldapUntrustedCAHint(err))
 	}
 	return conn, nil
 }

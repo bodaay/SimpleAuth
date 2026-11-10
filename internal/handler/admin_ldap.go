@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,7 +29,85 @@ func (h *Handler) handleGetLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, resp, http.StatusOK)
 }
 
-// handleSaveLDAPConfig saves or updates the LDAP configuration.
+// ldapTLSRequest carries the TLS settings an import or auto-discover request may
+// set. A nil field was omitted from the request: the stored value is kept.
+type ldapTLSRequest struct {
+	SkipTLSVerify *bool   `json:"skip_tls_verify"`
+	AllowInsecure *bool   `json:"allow_insecure"`
+	CACert        *string `json:"ca_cert"`
+}
+
+// ldapTLSSettings is the TLS part of an LDAP config.
+type ldapTLSSettings struct {
+	SkipTLSVerify bool
+	AllowInsecure bool
+	CACert        string
+}
+
+// resolveLDAPTLS lays req over the TLS settings of the stored config, so an
+// import or a new Connect that does not mention them keeps a pasted CA and the
+// switches instead of resetting them. With nothing stored, omitted fields are
+// off. A store error other than "not configured" is returned, not ignored.
+func (h *Handler) resolveLDAPTLS(req ldapTLSRequest) (ldapTLSSettings, error) {
+	var out ldapTLSSettings
+	stored, err := h.store.GetLDAPConfig()
+	switch {
+	case err == nil:
+		out = ldapTLSSettings{SkipTLSVerify: stored.SkipTLSVerify, AllowInsecure: stored.AllowInsecure, CACert: stored.CACert}
+	case !errors.Is(err, store.ErrLDAPNotConfigured):
+		return out, fmt.Errorf("read stored ldap config: %w", err)
+	}
+	if req.SkipTLSVerify != nil {
+		out.SkipTLSVerify = *req.SkipTLSVerify
+	}
+	if req.AllowInsecure != nil {
+		out.AllowInsecure = *req.AllowInsecure
+	}
+	if req.CACert != nil {
+		out.CACert = *req.CACert
+	}
+	return out, nil
+}
+
+// validateLDAPCACert trims a ca_cert value and checks that it holds only
+// parseable certificates. Empty means "no extra CA".
+func validateLDAPCACert(caCert string) (string, error) {
+	caCert = strings.TrimSpace(caCert)
+	if caCert == "" {
+		return "", nil
+	}
+	if _, err := auth.ParseLDAPCACert(caCert); err != nil {
+		return "", fmt.Errorf("invalid ca_cert: %w", err)
+	}
+	return caCert, nil
+}
+
+// prepareLDAPConfig validates the TLS settings of a config about to be saved and
+// sets use_tls from the URL scheme. Connections decide TLS from the scheme
+// alone; use_tls is kept in the JSON only so readers see a consistent value.
+func prepareLDAPConfig(cfg *store.LDAPConfig) error {
+	caCert, err := validateLDAPCACert(cfg.CACert)
+	if err != nil {
+		return err
+	}
+	cfg.CACert = caCert
+	cfg.UseTLS = auth.IsLDAPS(cfg.URL)
+	return nil
+}
+
+// ldapAuditDetails adds the TLS switches to an audit entry. The CA certificate
+// itself is not logged, only whether one is set.
+func ldapAuditDetails(cfg *store.LDAPConfig, details map[string]interface{}) map[string]interface{} {
+	details["url"] = cfg.URL
+	details["ca_cert_set"] = cfg.CACert != ""
+	details["skip_tls_verify"] = cfg.SkipTLSVerify
+	details["allow_insecure"] = cfg.AllowInsecure
+	return details
+}
+
+// handleSaveLDAPConfig saves the LDAP configuration. It is a full replace: a
+// field left out of the body is stored as empty/false (the bind password is the
+// exception, see below). TLS follows the URL scheme; use_tls is derived from it.
 // PUT /api/admin/ldap
 func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	var cfg store.LDAPConfig
@@ -38,6 +117,10 @@ func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.URL == "" || cfg.BaseDN == "" {
 		jsonError(w, "url and base_dn are required", http.StatusBadRequest)
+		return
+	}
+	if err := prepareLDAPConfig(&cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -60,7 +143,7 @@ func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit("ldap_config_saved", "admin", getClientIP(r), map[string]interface{}{"url": cfg.URL})
+	h.audit("ldap_config_saved", "admin", getClientIP(r), ldapAuditDetails(&cfg, map[string]interface{}{}))
 
 	jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
 }
@@ -138,6 +221,8 @@ func (h *Handler) handleTestLDAPUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleImportLDAP imports LDAP config from the PowerShell-generated JSON.
+// skip_tls_verify, allow_insecure and ca_cert are optional; omitted ones keep
+// their stored values.
 // POST /api/admin/ldap/import
 func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -148,6 +233,7 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		BaseDN          string `json:"base_dn"`
 		ServiceHostname string `json:"service_hostname"`
 		SPN             string `json:"spn"`
+		ldapTLSRequest
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -156,6 +242,13 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 
 	if req.Server == "" || req.Username == "" || req.Password == "" {
 		jsonError(w, "server, username, and password required", http.StatusBadRequest)
+		return
+	}
+
+	tlsSettings, err := h.resolveLDAPTLS(req.ldapTLSRequest)
+	if err != nil {
+		log.Printf("[admin] LDAP import: %v", err)
+		jsonError(w, "failed to read the stored ldap config", http.StatusInternalServerError)
 		return
 	}
 
@@ -197,7 +290,9 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		BindDN:          bindDN,
 		BindPassword:    req.Password,
 		UsernameAttr:    "sAMAccountName",
-		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
+		SkipTLSVerify:   tlsSettings.SkipTLSVerify,
+		AllowInsecure:   tlsSettings.AllowInsecure,
+		CACert:          tlsSettings.CACert,
 		DisplayNameAttr: "displayName",
 		EmailAttr:       "mail",
 		DepartmentAttr:  "department",
@@ -206,6 +301,10 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		GroupsAttr:      "memberOf",
 		Domain:          req.Domain,
 	}
+	if err := prepareLDAPConfig(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.saveLDAPConfigEncrypted(cfg); err != nil {
 		log.Printf("[admin] Failed to save LDAP config: %v", err)
@@ -213,7 +312,7 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit("ldap_config_imported", "admin", getClientIP(r), map[string]interface{}{"url": cfg.URL})
+	h.audit("ldap_config_imported", "admin", getClientIP(r), ldapAuditDetails(cfg, map[string]interface{}{}))
 
 	resp := map[string]interface{}{
 		"status": "ok",
@@ -233,12 +332,15 @@ func (h *Handler) handleImportLDAP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAutoDiscoverLDAP connects to a server, discovers config, and saves it.
+// skip_tls_verify, allow_insecure and ca_cert are optional; omitted ones keep
+// their stored values, and the connection already uses them.
 // POST /api/admin/ldap/auto-discover
 func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Server   string `json:"server"`
 		Username string `json:"username"`
 		Password string `json:"password"`
+		ldapTLSRequest
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -246,6 +348,17 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	}
 	if req.Server == "" || req.Username == "" || req.Password == "" {
 		jsonError(w, "server, username, and password required", http.StatusBadRequest)
+		return
+	}
+
+	tlsSettings, err := h.resolveLDAPTLS(req.ldapTLSRequest)
+	if err != nil {
+		log.Printf("[admin] LDAP auto-discover: %v", err)
+		jsonError(w, "failed to read the stored ldap config", http.StatusInternalServerError)
+		return
+	}
+	if tlsSettings.CACert, err = validateLDAPCACert(tlsSettings.CACert); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -263,8 +376,16 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Step 1: Connect
-	conn, err := ldaplib.DialURL(serverURL)
+	// Step 1: Connect with the same TLS settings the saved config will have
+	// (ldaps://, or ldap:// upgraded with StartTLS; ca_cert, skip_tls_verify,
+	// allow_insecure), so the service-account password is never sent in
+	// cleartext during discovery unless the config allows it for every login.
+	conn, err := auth.LDAPConnect(&auth.LDAPConfig{
+		URL:           serverURL,
+		SkipTLSVerify: tlsSettings.SkipTLSVerify,
+		AllowInsecure: tlsSettings.AllowInsecure,
+		CACert:        tlsSettings.CACert,
+	})
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to connect to %s: %v", serverURL, err), http.StatusBadGateway)
 		return
@@ -345,7 +466,9 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		BindDN:          bindDN,
 		BindPassword:    req.Password,
 		UsernameAttr:    usernameAttr,
-		UseTLS:          strings.HasPrefix(serverURL, "ldaps://"),
+		SkipTLSVerify:   tlsSettings.SkipTLSVerify,
+		AllowInsecure:   tlsSettings.AllowInsecure,
+		CACert:          tlsSettings.CACert,
 		DisplayNameAttr: "displayName",
 		EmailAttr:       "mail",
 		DepartmentAttr:  "department",
@@ -354,6 +477,10 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		GroupsAttr:      "memberOf",
 		Domain:          domain,
 	}
+	if err := prepareLDAPConfig(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if err := h.saveLDAPConfigEncrypted(cfg); err != nil {
 		log.Printf("[admin] Auto-discover save failed: %v", err)
@@ -361,9 +488,9 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.audit("ldap_config_saved", "admin", getClientIP(r), map[string]interface{}{
-		"url": cfg.URL, "auto_discovered": true,
-	})
+	h.audit("ldap_config_saved", "admin", getClientIP(r), ldapAuditDetails(cfg, map[string]interface{}{
+		"auto_discovered": true,
+	}))
 
 	// Mask password in response
 	resp := *cfg

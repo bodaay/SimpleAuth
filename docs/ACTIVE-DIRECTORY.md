@@ -14,6 +14,7 @@ Before you start, you need:
   - LDAP: port 389 (or LDAPS: port 636)
   - Kerberos: port 88 (only if using SPNEGO)
 - DNS resolution of your domain controller hostnames
+- A TLS certificate on the domain controllers (AD CS issues one automatically). If it comes from an internal CA, have the **root CA certificate** (PEM) ready; see [TLS and Certificates](#tls-and-certificates).
 
 ---
 
@@ -58,41 +59,55 @@ If your AD has restricted read permissions, the service account needs:
 
 ### Using the API
 
+`PUT /api/admin/ldap` replaces the whole configuration. This example uses StartTLS on port 389 and trusts the AD root CA in `corp-root-ca.pem` (`jq` puts the PEM file into the JSON):
+
 ```bash
-curl -k -X POST https://auth.corp.local:8080/api/admin/ldap \
+jq -n --rawfile ca corp-root-ca.pem '{
+    url: "ldap://dc01.corp.local:389",
+    base_dn: "DC=corp,DC=local",
+    bind_dn: "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
+    bind_password: "YourStrongPassword",
+    username_attr: "sAMAccountName",
+    ca_cert: $ca,
+    display_name_attr: "displayName",
+    email_attr: "mail",
+    department_attr: "department",
+    company_attr: "company",
+    job_title_attr: "title",
+    groups_attr: "memberOf"
+  }' |
+curl -k -X PUT https://auth.corp.local:8080/api/admin/ldap \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Corporate Active Directory",
-    "url": "ldaps://dc01.corp.local:636",
-    "base_dn": "DC=corp,DC=local",
-    "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
-    "bind_password": "YourStrongPassword",
-    "username_attr": "sAMAccountName",
-    "use_tls": true,
-    "skip_tls_verify": false,
-    "display_name_attr": "displayName",
-    "email_attr": "mail",
-    "department_attr": "department",
-    "company_attr": "company",
-    "job_title_attr": "title",
-    "groups_attr": "memberOf",
-    "priority": 10
-  }'
+  --data-binary @-
 ```
+
+Leave out `ca_cert` if the domain controllers' certificates already chain to a CA in the system trust store.
 
 ### Using the Admin UI
 
-Navigate to `/admin` on your SimpleAuth instance in a browser and use the built-in admin UI to configure LDAP visually.
+Navigate to `/admin` on your SimpleAuth instance, then **LDAP Settings**. **Connect** auto-discovers the rest from a server name and a service account; **Manual Setup** takes every field. Both forms, **Import Config**, and **Edit** on the Connection card have a **TLS & certificates** section:
+
+| Setting | API field | Use |
+|---|---|---|
+| **AD root CA certificate (PEM)** | `ca_cert` | Paste the root CA that issued the domain controllers' certificates. Certificate verification stays on. **Recommended.** |
+| **Skip certificate verification** | `skip_tls_verify` | Testing only. The connection is still encrypted, but anyone between SimpleAuth and AD could impersonate AD and capture the passwords sent to it. |
+| **Allow cleartext (no StartTLS)** | `allow_insecure` | Dangerous. On `ldap://`, SimpleAuth does not use StartTLS at all, so the service-account password and every user's password cross the network unencrypted. No effect on `ldaps://`. Never in production. |
+
+Saving any LDAP form sends all three, so editing the connection or the attribute mapping never resets them. The Connection card shows the result: **Encryption** (StartTLS, TLS, or none) and **Cert check** (on with the system CAs, on with the system CAs plus the AD root CA, or off).
 
 ### Auto-Discovery
 
-If your DNS is properly configured with SRV records, SimpleAuth can auto-discover your domain controllers:
+The console's **Connect** button calls auto-discover. It connects to the server with the service account, reads the base DN from the RootDSE, detects AD vs. OpenLDAP, and saves the config:
 
 ```bash
 curl -k -X POST https://auth.corp.local:8080/api/admin/ldap/auto-discover \
-  -H "Authorization: Bearer YOUR_ADMIN_KEY"
+  -H "Authorization: Bearer YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"server": "dc01.corp.local", "username": "svc-sauth-prod@corp.local", "password": "YourStrongPassword"}'
 ```
+
+A bare host name becomes `ldap://host:389` (StartTLS). The discovery connection uses the same TLS settings the saved config will have. Add `ca_cert`, `skip_tls_verify`, or `allow_insecure` to the body to set them; a field you leave out keeps its stored value.
 
 ---
 
@@ -122,12 +137,14 @@ curl -k -X POST https://auth.corp.local:8080/api/auth/login \
 
 | Field | Example | Description |
 |---|---|---|
-| `url` | `ldaps://dc01.corp.local:636` | LDAP server URL. Use `ldaps://` for LDAPS (port 636) or `ldap://` for StartTLS (port 389). |
+| `url` | `ldap://dc01.corp.local:389` | LDAP server URL. **The scheme decides the encryption:** `ldaps://` is TLS from the first byte (port 636); `ldap://` is upgraded with StartTLS before any bind (port 389). Use the host name that is on the DC's certificate. |
 | `base_dn` | `DC=corp,DC=local` | Base DN for user searches. Use your domain's DN. |
 | `bind_dn` | `CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local` | Full DN of the service account. |
 | `bind_password` | (string) | Service account password. |
-| `use_tls` | `true` | Enable TLS. Should always be `true` in production. |
-| `skip_tls_verify` | `false` | Skip TLS certificate verification. Only for testing. |
+| `ca_cert` | PEM text | Optional. One or more CA certificates (PEM) trusted in addition to the system CAs, typically the AD root CA. Must hold only certificates; anything else is refused with `400`. |
+| `skip_tls_verify` | `false` | Skip certificate verification. Testing only. |
+| `allow_insecure` | `false` | On `ldap://`, do not use StartTLS: passwords are sent unencrypted. Never in production. |
+| `use_tls` | (derived) | Kept for compatibility. Set from the URL scheme on every save (`true` for `ldaps://`) and not used to connect. |
 
 ### User Search
 
@@ -158,6 +175,51 @@ These map AD attributes to SimpleAuth user fields:
 | Field | Default | Description |
 |---|---|---|
 | `priority` | `0` | Provider priority (reserved for future use). |
+
+---
+
+## TLS and Certificates
+
+SimpleAuth encrypts the connection to AD before it sends any password, and verifies the domain controller's certificate.
+
+### How the connection is secured
+
+| URL | Encryption | Notes |
+|---|---|---|
+| `ldaps://dc01.corp.local:636` | TLS from the first byte | |
+| `ldap://dc01.corp.local:389` | StartTLS before any bind | If StartTLS fails, SimpleAuth refuses to bind (fails closed). |
+| `ldap://…` with `allow_insecure: true` | **None** | Passwords in cleartext. Only for a test directory without a certificate. |
+
+`use_tls` plays no part: the scheme decides. (Before this release, `ldap://` with `"use_tls": true` skipped StartTLS and bound in cleartext, and `ldaps://` saved from the console ignored `skip_tls_verify`.)
+
+For both schemes the certificate must:
+
+1. chain to a trusted CA: the system CAs plus `ca_cert`, and
+2. name the host in the URL. Use the DC's DNS name as it appears on the certificate, not an IP address (unless the certificate lists that IP).
+
+The same settings apply to logins, **Test Connection**, **Connect** (auto-discover), import, user sync, and the Kerberos setup and cleanup paths.
+
+### Recommended: paste the AD root CA
+
+Domain controller certificates usually come from the organisation's own CA (AD Certificate Services), which is not in the SimpleAuth host's trust store. Without it, every connection fails with:
+
+```
+x509: certificate signed by unknown authority; the directory certificate is issued by a CA SimpleAuth does not trust: set ca_cert to the AD root CA certificate (PEM)
+```
+
+Get the root CA certificate in PEM (Base-64) form, for example:
+
+- On the CA server: `certutil -ca.cert corp-root-ca.cer` (DER), then `certutil -encode corp-root-ca.cer corp-root-ca.pem`.
+- Or on any domain-joined Windows machine: `certlm.msc` → **Trusted Root Certification Authorities** → the CA → **All Tasks → Export** → **Base-64 encoded X.509 (.CER)**.
+
+Check its fingerprint with your AD team (`openssl x509 -in corp-root-ca.pem -noout -fingerprint -sha256`), then paste it into **AD root CA certificate (PEM)** in the console, or send it as `ca_cert`. Several certificates may be pasted one after another (for example two root CAs during a CA migration). The CA certificate is not secret; the audit log records only whether one is set.
+
+Adding the CA to the host's trust store (or pointing `SSL_CERT_FILE` at a bundle that contains it) also works, but `ca_cert` keeps the setting with the LDAP config and does not affect anything else on the host.
+
+### Not recommended
+
+- **`skip_tls_verify: true`** keeps the connection encrypted but accepts any certificate. Anyone on the network path between SimpleAuth and AD can then pose as AD and receive the service-account password and every user password. Use it only to confirm that a certificate problem is the cause, then set `ca_cert` and turn it off.
+- **`allow_insecure: true`** sends all passwords unencrypted. Never use it in production. Samba AD, and Windows DCs that require LDAP signing, refuse such binds anyway ("Strong Auth Required").
 
 ---
 
@@ -439,11 +501,13 @@ These are included in JWT tokens as-is. Your app can parse the CN to get the gro
 - Check the `username_attr` -- it must match the attribute users log in with (e.g., `sAMAccountName`)
 - Verify the `base_dn` contains the user's OU
 
-### "TLS certificate verification failed"
+### TLS certificate errors
 
-- Your DC's certificate might be signed by an internal CA
-- Add the CA certificate to the system trust store on the SimpleAuth server
-- Or set `"skip_tls_verify": true` (not recommended for production)
+- **`certificate signed by unknown authority`** (or `certificate is not trusted`): the DC's certificate comes from a CA that SimpleAuth does not trust. Paste the AD root CA into **AD root CA certificate (PEM)** (`ca_cert`). See [TLS and Certificates](#tls-and-certificates).
+- **`certificate is valid for dc01.corp.local, not 10.0.0.5`**: the URL uses a name or IP that is not on the certificate. Use the DC's DNS name.
+- **`either ServerName or InsecureSkipVerify must be specified`**: StartTLS on SimpleAuth v2.3.0 and earlier. Upgrade.
+- **`invalid ca_cert: …`** (HTTP 400 on save): the text is not a PEM certificate. Paste the Base-64 export (it starts with `-----BEGIN CERTIFICATE-----`), never a private key. A truncated paste is refused too.
+- `"skip_tls_verify": true` makes the error go away, but only use it to confirm the cause. See [Not recommended](#not-recommended).
 
 ### Groups not showing up in tokens
 
