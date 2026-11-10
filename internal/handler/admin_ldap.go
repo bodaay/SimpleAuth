@@ -28,7 +28,45 @@ func (h *Handler) handleGetLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, resp, http.StatusOK)
 }
 
-// handleSaveLDAPConfig saves or updates the LDAP configuration.
+// validateLDAPCACert trims a ca_cert value and checks that it holds only
+// parseable certificates. Empty means "no extra CA".
+func validateLDAPCACert(caCert string) (string, error) {
+	caCert = strings.TrimSpace(caCert)
+	if caCert == "" {
+		return "", nil
+	}
+	if _, err := auth.ParseLDAPCACert(caCert); err != nil {
+		return "", fmt.Errorf("invalid ca_cert: %w", err)
+	}
+	return caCert, nil
+}
+
+// prepareLDAPConfig validates the TLS settings of a config about to be saved and
+// sets use_tls from the URL scheme. Connections decide TLS from the scheme
+// alone; use_tls is kept in the JSON only so readers see a consistent value.
+func prepareLDAPConfig(cfg *store.LDAPConfig) error {
+	caCert, err := validateLDAPCACert(cfg.CACert)
+	if err != nil {
+		return err
+	}
+	cfg.CACert = caCert
+	cfg.UseTLS = auth.IsLDAPS(cfg.URL)
+	return nil
+}
+
+// ldapAuditDetails adds the TLS switches to an audit entry. The CA certificate
+// itself is not logged, only whether one is set.
+func ldapAuditDetails(cfg *store.LDAPConfig, details map[string]interface{}) map[string]interface{} {
+	details["url"] = cfg.URL
+	details["ca_cert_set"] = cfg.CACert != ""
+	details["skip_tls_verify"] = cfg.SkipTLSVerify
+	details["allow_insecure"] = cfg.AllowInsecure
+	return details
+}
+
+// handleSaveLDAPConfig saves the LDAP configuration. It is a full replace: a
+// field left out of the body is stored as empty/false (the bind password is the
+// exception, see below). TLS follows the URL scheme; use_tls is derived from it.
 // PUT /api/admin/ldap
 func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	var cfg store.LDAPConfig
@@ -38,6 +76,10 @@ func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.URL == "" || cfg.BaseDN == "" {
 		jsonError(w, "url and base_dn are required", http.StatusBadRequest)
+		return
+	}
+	if err := prepareLDAPConfig(&cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -60,7 +102,7 @@ func (h *Handler) handleSaveLDAPConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit("ldap_config_saved", "admin", getClientIP(r), map[string]interface{}{"url": cfg.URL})
+	h.audit("ldap_config_saved", "admin", getClientIP(r), ldapAuditDetails(&cfg, map[string]interface{}{}))
 
 	jsonResp(w, map[string]string{"status": "ok"}, http.StatusOK)
 }
@@ -266,7 +308,7 @@ func (h *Handler) handleAutoDiscoverLDAP(w http.ResponseWriter, r *http.Request)
 	// Step 1: Connect with the same TLS policy the saved config will have
 	// (ldaps://, or ldap:// upgraded with StartTLS), so the service-account
 	// password is never sent in cleartext during discovery.
-	conn, err := auth.LDAPConnect(&auth.LDAPConfig{URL: serverURL, UseTLS: strings.HasPrefix(serverURL, "ldaps://")})
+	conn, err := auth.LDAPConnect(&auth.LDAPConfig{URL: serverURL})
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to connect to %s: %v", serverURL, err), http.StatusBadGateway)
 		return
