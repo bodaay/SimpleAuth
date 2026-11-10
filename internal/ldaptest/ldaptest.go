@@ -1,7 +1,9 @@
 // Package ldaptest is a minimal LDAP server for tests of the connection/TLS layer.
-// It speaks just enough of the protocol to answer a StartTLS extended request; it
-// records the tag of every operation the client sends before TLS is established, so
-// tests can assert that no bind or search ever crosses the wire in cleartext.
+// It speaks just enough of the protocol to answer a StartTLS extended request and,
+// once the connection is secured, a bind (any credentials succeed) and a RootDSE
+// search; it records the tag of every operation the client sends before TLS is
+// established, so tests can assert that no bind or search ever crosses the wire in
+// cleartext.
 package ldaptest
 
 import (
@@ -11,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
 	"math/big"
 	"net"
@@ -24,7 +27,16 @@ const (
 	TagBindRequest     = 0x60
 	TagSearchRequest   = 0x63
 	TagExtendedRequest = 0x77
+
+	tagBindResponse     = 0x61
+	tagUnbindRequest    = 0x42
+	tagSearchResEntry   = 0x64
+	tagSearchResDone    = 0x65
+	tagExtendedResponse = 0x78
 )
+
+// NamingContext is the defaultNamingContext the RootDSE reports.
+const NamingContext = "DC=corp,DC=test"
 
 // Server is a fake directory listening on 127.0.0.1.
 type Server struct {
@@ -75,21 +87,19 @@ func StartTLSServer(t *testing.T, cert *tls.Certificate) *Server {
 func (s *Server) serve(c net.Conn, cert *tls.Certificate) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
-	id, tag, err := readMessage(c)
+	id, tag, _, err := readMessage(c)
 	if err != nil {
 		return
 	}
-	s.mu.Lock()
-	s.cleartext = append(s.cleartext, tag)
-	s.mu.Unlock()
+	s.recordCleartext(tag)
 	if tag != TagExtendedRequest {
 		return
 	}
 	if cert == nil {
-		c.Write(extendedResponse(id, 2)) // protocolError: StartTLS not supported
+		c.Write(message(id, ldapResult(tagExtendedResponse, 2))) // protocolError: StartTLS not supported
 		return
 	}
-	c.Write(extendedResponse(id, 0))
+	c.Write(message(id, ldapResult(tagExtendedResponse, 0)))
 	tc := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{*cert}})
 	if err := tc.Handshake(); err != nil {
 		return
@@ -97,11 +107,73 @@ func (s *Server) serve(c net.Conn, cert *tls.Certificate) {
 	s.mu.Lock()
 	s.tlsUpgraded = true
 	s.mu.Unlock()
-	io.Copy(io.Discard, tc)
+	s.serveDirectory(tc, false)
 }
 
-// StartLDAPSServer starts an ldaps:// server (TLS from the first byte) that only
-// completes the handshake.
+// StartPlainServer starts a cleartext ldap:// server without a certificate: it
+// refuses StartTLS (protocolError) and answers binds and searches in cleartext,
+// recording every operation. It stands for a directory used with allow_insecure.
+func StartPlainServer(t *testing.T) *Server {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	s := &Server{Addr: ln.Addr().String()}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				c.SetDeadline(time.Now().Add(5 * time.Second))
+				s.serveDirectory(c, true)
+			}()
+		}
+	}()
+	return s
+}
+
+func (s *Server) recordCleartext(tag byte) {
+	s.mu.Lock()
+	s.cleartext = append(s.cleartext, tag)
+	s.mu.Unlock()
+}
+
+// serveDirectory answers operations until the client unbinds or sends something
+// it does not know: any bind succeeds, a search of the RootDSE (empty base)
+// returns defaultNamingContext, any other search returns no entries, and
+// StartTLS is refused. With cleartext set every operation is recorded.
+func (s *Server) serveDirectory(c net.Conn, cleartext bool) {
+	for {
+		id, tag, op, err := readMessage(c)
+		if err != nil {
+			return
+		}
+		if cleartext {
+			s.recordCleartext(tag)
+		}
+		switch tag {
+		case TagBindRequest:
+			c.Write(message(id, ldapResult(tagBindResponse, 0)))
+		case TagSearchRequest:
+			if baseTag, base, _ := splitTLV(op); baseTag == 0x04 && len(base) == 0 {
+				c.Write(message(id, rootDSE()))
+			}
+			c.Write(message(id, ldapResult(tagSearchResDone, 0)))
+		case TagExtendedRequest:
+			c.Write(message(id, ldapResult(tagExtendedResponse, 2)))
+		default: // unbind, abandon, anything else
+			return
+		}
+	}
+}
+
+// StartLDAPSServer starts an ldaps:// server (TLS from the first byte) that
+// completes the handshake and then answers like the directory behind StartTLS.
 func StartLDAPSServer(t *testing.T, cert tls.Certificate) *Server {
 	t.Helper()
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
@@ -119,29 +191,31 @@ func StartLDAPSServer(t *testing.T, cert tls.Certificate) *Server {
 			go func() {
 				defer c.Close()
 				c.SetDeadline(time.Now().Add(5 * time.Second))
-				if err := c.(*tls.Conn).Handshake(); err == nil {
-					s.mu.Lock()
-					s.tlsUpgraded = true
-					s.mu.Unlock()
+				if err := c.(*tls.Conn).Handshake(); err != nil {
+					return
 				}
-				io.Copy(io.Discard, c)
+				s.mu.Lock()
+				s.tlsUpgraded = true
+				s.mu.Unlock()
+				s.serveDirectory(c, false)
 			}()
 		}
 	}()
 	return s
 }
 
-// readMessage reads one LDAPMessage and returns its message ID bytes and protocol-op tag.
-func readMessage(r io.Reader) (id []byte, tag byte, err error) {
+// readMessage reads one LDAPMessage and returns its message ID bytes, its
+// protocol-op tag and the protocol-op content.
+func readMessage(r io.Reader) (id []byte, tag byte, op []byte, err error) {
 	hdr := make([]byte, 2)
 	if _, err = io.ReadFull(r, hdr); err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	n := int(hdr[1])
 	if n&0x80 != 0 {
 		lenBytes := make([]byte, n&0x7f)
 		if _, err = io.ReadFull(r, lenBytes); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		n = 0
 		for _, b := range lenBytes {
@@ -150,23 +224,76 @@ func readMessage(r io.Reader) (id []byte, tag byte, err error) {
 	}
 	body := make([]byte, n)
 	if _, err = io.ReadFull(r, body); err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	// body: INTEGER messageID (02 len value...), then the protocol op.
-	idLen := int(body[1])
-	return body[2 : 2+idLen], body[2+idLen], nil
+	_, id, rest := splitTLV(body)
+	tag, op, _ = splitTLV(rest)
+	return id, tag, op, nil
 }
 
-// extendedResponse encodes an ExtendedResponse with the given result code.
-func extendedResponse(id []byte, resultCode byte) []byte {
-	body := append([]byte{0x02, byte(len(id))}, id...)
-	body = append(body, 0x78, 0x07, 0x0a, 0x01, resultCode, 0x04, 0x00, 0x04, 0x00)
-	return append([]byte{0x30, byte(len(body))}, body...)
+// splitTLV splits the first BER element off b: its tag, its content and the
+// bytes after it. Malformed input yields a zero tag.
+func splitTLV(b []byte) (tag byte, content, rest []byte) {
+	if len(b) < 2 {
+		return 0, nil, nil
+	}
+	n, off := int(b[1]), 2
+	if n&0x80 != 0 {
+		k := n & 0x7f
+		if 2+k > len(b) {
+			return 0, nil, nil
+		}
+		n = 0
+		for _, x := range b[2 : 2+k] {
+			n = n<<8 | int(x)
+		}
+		off += k
+	}
+	if off+n > len(b) {
+		return 0, nil, nil
+	}
+	return b[0], b[off : off+n], b[off+n:]
+}
+
+// tlv encodes one BER element whose content is the concatenation of parts.
+func tlv(tag byte, parts ...[]byte) []byte {
+	var body []byte
+	for _, p := range parts {
+		body = append(body, p...)
+	}
+	switch n := len(body); {
+	case n < 0x80:
+		return append([]byte{tag, byte(n)}, body...)
+	case n < 0x100:
+		return append([]byte{tag, 0x81, byte(n)}, body...)
+	default:
+		return append([]byte{tag, 0x82, byte(n >> 8), byte(n)}, body...)
+	}
+}
+
+// message wraps a protocol op in an LDAPMessage with the given message ID.
+func message(id, op []byte) []byte {
+	return tlv(0x30, tlv(0x02, id), op)
+}
+
+// ldapResult encodes an LDAPResult-shaped response (BindResponse,
+// SearchResultDone, ExtendedResponse) with an empty matchedDN and message.
+func ldapResult(tag, resultCode byte) []byte {
+	return tlv(tag, tlv(0x0a, []byte{resultCode}), tlv(0x04), tlv(0x04))
+}
+
+// rootDSE encodes a SearchResultEntry for the RootDSE.
+func rootDSE() []byte {
+	attr := tlv(0x30, tlv(0x04, []byte("defaultNamingContext")), tlv(0x31, tlv(0x04, []byte(NamingContext))))
+	return tlv(tagSearchResEntry, tlv(0x04), tlv(0x30, attr))
 }
 
 // CA is a throwaway certificate authority.
 type CA struct {
 	Pool *x509.CertPool
+	// PEM is the CA certificate as an operator would paste it into ca_cert.
+	PEM  string
 	cert *x509.Certificate
 	key  *ecdsa.PrivateKey
 }
@@ -194,7 +321,8 @@ func NewCA(t *testing.T) *CA {
 	cert, _ := x509.ParseCertificate(der)
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
-	return &CA{Pool: pool, cert: cert, key: key}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return &CA{Pool: pool, PEM: string(certPEM), cert: cert, key: key}
 }
 
 // Issue returns a server certificate for the given DNS names and IP addresses.
