@@ -743,8 +743,17 @@ tr:hover td { background: var(--bg-hover); }
 .alert code { background: rgba(0,0,0,0.1); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
 .alert-success { background: rgba(16,185,129,0.15); color: #065f46; border: 1px solid rgba(16,185,129,0.3); }
 .alert-error { background: rgba(239,68,68,0.15); color: #991b1b; border: 1px solid rgba(239,68,68,0.3); }
+.alert-warning { background: var(--status-warning-bg); color: var(--status-warning-text); border: 1px solid currentColor; }
 [data-theme="dark"] .alert-success { color: #6ee7b7; }
 [data-theme="dark"] .alert-error { color: #fca5a5; }
+/* Same for the Auto theme on a dark OS (no data-theme attribute). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .alert-success { color: #6ee7b7; }
+  :root:not([data-theme="light"]) .alert-error { color: #fca5a5; }
+}
+
+/* LDAP TLS switches: checkbox + label on one line. */
+.ldap-tls-check { display: flex; align-items: center; gap: var(--sp-2); font-size: 0.875rem; font-weight: 600; color: var(--text-primary); cursor: pointer; }
 
 /* === Responsive === */
 @media (max-width: 768px) {
