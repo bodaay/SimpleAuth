@@ -1635,7 +1635,7 @@ SimpleAuth supports a single LDAP/Active Directory configuration. All LDAP endpo
 
 **Auth:** Admin Key
 
-Get the current LDAP configuration. Returns `null` if not configured. The bind password is masked in the response.
+Get the current LDAP configuration. Returns `null` if not configured. The bind password is masked in the response; `ca_cert` (not secret) is returned as stored.
 
 ```bash
 curl -k -H "Authorization: Bearer ADMIN_KEY" \
@@ -1648,20 +1648,21 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 
 **Auth:** Admin Key
 
-Save or update the LDAP configuration.
+Save the LDAP configuration. This is a **full replace**: a field left out of the body is stored empty or `false` (the masked bind password is the exception, see below). Send every field, including the TLS ones.
 
 ```bash
 curl -k -X PUT https://auth.example.com/sauth/api/admin/ldap \
   -H "Authorization: Bearer ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "url": "ldaps://dc01.corp.local:636",
+    "url": "ldap://dc01.corp.local:389",
     "base_dn": "DC=corp,DC=local",
     "bind_dn": "CN=svc-sauth-prod,OU=Service Accounts,DC=corp,DC=local",
     "bind_password": "ServiceAccountPassword",
     "username_attr": "sAMAccountName",
-    "use_tls": true,
+    "ca_cert": "-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----\n",
     "skip_tls_verify": false,
+    "allow_insecure": false,
     "display_name_attr": "displayName",
     "email_attr": "mail",
     "department_attr": "department",
@@ -1673,11 +1674,18 @@ curl -k -X PUT https://auth.example.com/sauth/api/admin/ldap \
 
 | Field | Description |
 |---|---|
+| `url` | `ldaps://host:636` (TLS from the first byte) or `ldap://host:389` (StartTLS before any bind). **The scheme alone decides the encryption.** |
+| `ca_cert` | Optional. PEM text with one or more CA certificates (typically the AD root CA), trusted in addition to the system CAs for both StartTLS and `ldaps://`. Refused with `400 {"error": "invalid ca_cert: …"}` if it holds no certificate, a non-certificate block (e.g. a private key), a damaged or truncated block, or a certificate that does not parse. |
+| `skip_tls_verify` | Optional, default `false`. Accept any certificate. Testing only: anyone on the network path could pose as AD and receive passwords. |
+| `allow_insecure` | Optional, default `false`. On `ldap://`, do not use StartTLS; passwords are sent unencrypted. No effect on `ldaps://`. Never in production. |
+| `use_tls` | Ignored on input. Set from the URL scheme on save (`true` for `ldaps://`) and returned for compatibility; not used to connect. |
 | `username_attr` | LDAP attribute for username lookup. Common values: `sAMAccountName` (AD), `userPrincipalName` (AD), `uid` (OpenLDAP), `mail` |
 | `custom_filter` | Optional. Advanced LDAP filter with `{{username}}` placeholder. Overrides `username_attr` when set. Example: `(&(objectClass=person)(sAMAccountName={{username}}))` |
 | `domain` | Optional. AD domain name (e.g., `corp.local`). Used by auto-discover and setup scripts |
 
 If the bind password is sent as `••••••••`, the existing password is preserved (allows updating other fields without re-entering the password).
+
+Recommended setup for an AD whose certificates come from an internal CA: `ldap://` or `ldaps://` with the AD root CA in `ca_cert`, and both switches off. See [ACTIVE-DIRECTORY.md → TLS and Certificates](ACTIVE-DIRECTORY.md#tls-and-certificates).
 
 ---
 
@@ -1699,7 +1707,7 @@ curl -k -X DELETE \
 
 **Auth:** Admin Key
 
-Test connectivity and bind credentials for the saved LDAP configuration.
+Test connectivity and bind credentials for the saved LDAP configuration, with its TLS settings. A certificate from an untrusted CA fails with an error that ends in `set ca_cert to the AD root CA certificate (PEM)`.
 
 ```bash
 curl -k -X POST \
@@ -1775,9 +1783,13 @@ curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/auto-discover \
   }'
 ```
 
-The server can be a hostname, `hostname:port`, or full URL (`ldap://` or `ldaps://`). Default port is 389 for ldap, 636 for ldaps.
+The server can be a hostname, `hostname:port`, or full URL (`ldap://` or `ldaps://`). Default port is 389 for ldap, 636 for ldaps. A bare host name uses `ldap://` (StartTLS).
+
+Optional TLS fields: `ca_cert`, `skip_tls_verify`, `allow_insecure` (as for `PUT`). A field the body leaves out **keeps its stored value** (off when nothing is stored); a field it sends replaces it (`"ca_cert": ""` clears the CA). The discovery connection already uses the resulting settings. An invalid `ca_cert` is refused with `400` before anything is dialled.
 
 **Response (200):** Returns the discovered and saved LDAP configuration (with masked password).
+
+**Errors:** `400` invalid `ca_cert`; `401` bind failed; `502` connection or TLS failure (for example `certificate signed by unknown authority`).
 
 ---
 
@@ -1803,6 +1815,8 @@ curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/import \
 ```
 
 If `service_hostname` is provided, Kerberos setup is automatically triggered after the LDAP config is saved.
+
+Optional TLS fields: `ca_cert`, `skip_tls_verify`, `allow_insecure`. The setup script's JSON does not contain them, so by default an import **keeps the stored values**; a field in the body replaces the stored one. An invalid `ca_cert` is refused with `400` and nothing is saved.
 
 ---
 
@@ -2212,9 +2226,9 @@ curl -k -H "Authorization: Bearer ADMIN_KEY" \
 | `oidc_authorize` | OIDC authorization code issued |
 | `oidc_token` | OIDC token issued |
 | `oidc_logout` | OIDC logout |
-| `ldap_config_saved` | LDAP configuration saved |
+| `ldap_config_saved` | LDAP configuration saved (`url`, `ca_cert_set`, `skip_tls_verify`, `allow_insecure`; `auto_discovered` for Connect). The CA certificate itself is not logged. |
 | `ldap_config_removed` | LDAP configuration deleted |
-| `ldap_config_imported` | LDAP config imported from setup script |
+| `ldap_config_imported` | LDAP config imported from setup script (same fields as `ldap_config_saved`) |
 | `ldap_sync_user` | Single user synced from LDAP |
 | `ldap_sync_all` | All LDAP users synced |
 | `ldap_user_imported` | User imported from LDAP directory |

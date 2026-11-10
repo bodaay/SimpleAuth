@@ -8,6 +8,39 @@ Each version's section is published as the top of its GitHub Release (the
 release workflow extracts the `## vX.Y.Z` section matching the pushed tag). The
 auto-generated list of merged PRs follows it.
 
+## Unreleased
+
+### ⭐ Highlight: Active Directory with an internal CA works with certificate verification on
+
+On v2.3.0 a `ldap://` directory could not be used with certificate verification: every StartTLS upgrade failed with `tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config` ([#75](https://github.com/bodaay/SimpleAuth/pull/75) fixes that). Once it is fixed, an AD whose domain controllers have certificates from the organisation's own CA fails with `certificate signed by unknown authority`, and the only way out was `skip_tls_verify` (which the console did not even offer).
+
+**New: `ca_cert` on the LDAP config.** Paste the AD root CA (PEM) in **Admin UI → LDAP Settings → TLS & certificates → AD root CA certificate (PEM)**, or send it as `ca_cert`. SimpleAuth trusts it in addition to the system CAs, for both StartTLS and `ldaps://`, and keeps verifying the certificate. Full documentation: [docs/ACTIVE-DIRECTORY.md → TLS and Certificates](https://github.com/bodaay/SimpleAuth/blob/master/docs/ACTIVE-DIRECTORY.md#tls-and-certificates).
+
+### ⚠️ Upgrade notes (behavior changes)
+
+1. **The URL scheme alone decides the encryption.** `ldaps://` is TLS from the first byte; `ldap://` is upgraded with StartTLS before any bind (unless `allow_insecure`). `use_tls` is no longer read; it is set from the scheme on every save.
+   - A config with `ldap://` and `"use_tls": true` used to skip StartTLS and **bind in cleartext**. It now uses StartTLS. If that directory has no certificate, the connection now fails with the StartTLS error; fix the certificate, or set `allow_insecure` knowingly.
+   - A config with `ldaps://` saved from the console (`use_tls` false) used go-ldap's default TLS settings and ignored `skip_tls_verify`. It now uses the configured settings.
+2. **`PUT /api/admin/ldap` refuses an invalid `ca_cert`** with `400` (no certificate, a private key, a damaged or truncated block).
+3. **Console saves now send `skip_tls_verify`, `allow_insecure` and `ca_cert`.** Before, saving from the console reset `skip_tls_verify` and `allow_insecure` set through the API to `false`.
+
+### Security fixes
+
+- `ldap://` with `"use_tls": true` sent the service-account and user passwords in cleartext (see above).
+
+### Admin console
+
+- **TLS & certificates** section in Connect, Manual Setup, Import Config and the Connection card's Edit: **AD root CA certificate (PEM)**, **Skip certificate verification** (with a warning), **Allow cleartext (no StartTLS)** (with a stronger warning).
+- The Connection card shows **Encryption** (StartTLS / TLS / none) and **Cert check**.
+- A failed **Connect** stays on screen, and a certificate error opens the TLS section.
+
+### Added
+
+- LDAP config field `ca_cert` (PEM, one or more CA certificates) in `GET`/`PUT /api/admin/ldap`, `POST /api/admin/ldap/auto-discover` and `POST /api/admin/ldap/import`.
+- `auto-discover` and `import` accept `skip_tls_verify`, `allow_insecure` and `ca_cert`. Fields the request leaves out keep their stored values instead of being reset; the setup script's JSON never contains them.
+- TLS errors caused by an untrusted CA end with `set ca_cert to the AD root CA certificate (PEM)`.
+- Audit events `ldap_config_saved` / `ldap_config_imported` record `ca_cert_set`, `skip_tls_verify` and `allow_insecure` (never the certificate).
+
 ## v2.3.0
 
 ### ⭐ Highlight: users disabled in Active Directory now lose access
