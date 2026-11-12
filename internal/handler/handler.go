@@ -48,11 +48,12 @@ type Handler struct {
 	// directoryLinkMu serializes POST /api/admin/ldap/link-users, so two runs
 	// cannot check and write the same user's mappings at once.
 	directoryLinkMu sync.Mutex
-	// ldapSearchUser and ldapAuthenticate are the directory calls of the sign-in
-	// path and the link path (auth.LDAPSearchUser / auth.LDAPAuthenticate);
-	// tests replace them to stand in for AD.
+	// The directory calls of the password sign-in (ldapAuthenticate), of the AD
+	// account-state check (ldapSearchUser) and of the link run (ldapUserFinder:
+	// one connection per run). Tests replace them to stand in for AD.
 	ldapSearchUser   func(cfg *auth.LDAPConfig, field, value string) (*auth.LDAPResult, error)
 	ldapAuthenticate func(cfg *auth.LDAPConfig, username, password string) (*auth.LDAPResult, error)
+	ldapUserFinder   func(cfg *auth.LDAPConfig) (directoryFinder, error)
 }
 
 func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
@@ -66,6 +67,7 @@ func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS,
 
 		ldapSearchUser:   auth.LDAPSearchUser,
 		ldapAuthenticate: auth.LDAPAuthenticate,
+		ldapUserFinder:   newLDAPUserFinder,
 	}
 	// Set trusted proxy CIDRs for getClientIP
 	trustedCIDRs = cfg.TrustedProxyCIDRs

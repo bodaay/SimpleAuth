@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -19,9 +22,37 @@ import (
 type fakeDirectory struct {
 	users     map[string]*auth.LDAPResult // key: lower-case sAMAccountName
 	passwords map[string]string           // key: lower-case sAMAccountName
-	searchErr error
-	searches  int
+	ambiguous map[string]bool             // names that match more than one entry
+	searchErr error                       // every link lookup fails with it
+	openErr   error                       // opening the link connection fails with it
+	onFind    func(name string)           // runs at each link lookup
+	searches  int                         // link lookups
+	opens     int                         // link connections opened
+	closes    int
 }
+
+type fakeFinder struct{ d *fakeDirectory }
+
+func (f *fakeFinder) Find(name string) (*auth.LDAPResult, error) {
+	d := f.d
+	d.searches++
+	if d.onFind != nil {
+		d.onFind(name)
+	}
+	if d.searchErr != nil {
+		return nil, d.searchErr
+	}
+	if d.ambiguous[strings.ToLower(name)] {
+		return nil, fmt.Errorf("%w: %s", auth.ErrLDAPAmbiguous, name)
+	}
+	if r, ok := d.users[strings.ToLower(name)]; ok {
+		c := *r
+		return &c, nil
+	}
+	return nil, fmt.Errorf("%w: %s", auth.ErrLDAPUserNotFound, name)
+}
+
+func (f *fakeFinder) Close() { f.d.closes++ }
 
 func (d *fakeDirectory) install(t *testing.T, h *Handler) {
 	t.Helper()
@@ -31,10 +62,6 @@ func (d *fakeDirectory) install(t *testing.T, h *Handler) {
 		t.Fatal(err)
 	}
 	h.ldapSearchUser = func(_ *auth.LDAPConfig, field, value string) (*auth.LDAPResult, error) {
-		d.searches++
-		if d.searchErr != nil {
-			return nil, d.searchErr
-		}
 		if field != "sAMAccountName" {
 			return nil, fmt.Errorf("unexpected search field %q", field)
 		}
@@ -43,6 +70,13 @@ func (d *fakeDirectory) install(t *testing.T, h *Handler) {
 			return &c, nil
 		}
 		return nil, fmt.Errorf("%w: %s=%s", auth.ErrLDAPUserNotFound, field, value)
+	}
+	h.ldapUserFinder = func(_ *auth.LDAPConfig) (directoryFinder, error) {
+		d.opens++
+		if d.openErr != nil {
+			return nil, d.openErr
+		}
+		return &fakeFinder{d}, nil
 	}
 	h.ldapAuthenticate = func(_ *auth.LDAPConfig, username, password string) (*auth.LDAPResult, error) {
 		k := strings.ToLower(username)
@@ -73,7 +107,7 @@ func localUser(t *testing.T, s store.Store, name, password string, roles ...stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := &store.User{DisplayName: "Local " + name, Email: name + "@old.test", PasswordHash: hash}
+	u := &store.User{DisplayName: "Local " + name, Email: strings.ToLower(name) + "@corp.test", PasswordHash: hash}
 	if err := s.CreateUser(u); err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +124,9 @@ func localUser(t *testing.T, s store.Store, name, password string, roles ...stri
 
 type linkResult struct {
 	GUID                 string `json:"guid"`
+	Email                string `json:"email"`
+	DirectoryDisplayName string `json:"directory_display_name"`
+	DirectoryEmail       string `json:"directory_email"`
 	LocalUsername        string `json:"local_username"`
 	DirectoryUsername    string `json:"directory_username"`
 	SpellingDiffers      bool   `json:"spelling_differs"`
@@ -237,7 +274,7 @@ func TestLinkUsersDryRunChangesNothing(t *testing.T) {
 		t.Fatalf("dry run changed mappings: %v -> %v", mappingsBefore, after)
 	}
 	got, _ := s.GetUser(u.GUID)
-	if got.SAMAccountName != "" || got.PasswordHash == "" || got.Email != "jdoe@old.test" {
+	if got.SAMAccountName != "" || got.PasswordHash == "" || got.DisplayName != "Local jdoe" {
 		t.Fatalf("dry run changed the user: %+v", got)
 	}
 }
@@ -519,5 +556,260 @@ func TestLinkUsersAllWithPasswordRemoval(t *testing.T) {
 	want := map[string]string{alice.GUID: "linked", carol.GUID: "already_linked"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("results %v, want %v", got, want)
+	}
+}
+
+// Review C1: AD matches names in any case, SimpleAuth's mappings do not. A
+// sign-in typed in another case must still land on the linked user, and must
+// never move the linked user's mappings to a new one.
+func TestSignInInAnotherCaseKeepsTheLinkedUser(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{
+		users:     map[string]*auth.LDAPResult{"jdoe": adUser("jdoe")},
+		passwords: map[string]string{"jdoe": "ad-pass-1"},
+	}
+	dir.install(t, h)
+	u := localUser(t, s, "jdoe", "local-pass-1", "analyst")
+	linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}, "remove_local_password": true}, 200)
+	before := userCount(t, s)
+	mappingsBefore := mappingSet(t, s, u.GUID)
+
+	for _, typed := range []string{"JDOE", "JDoe", "jdoe"} {
+		if sub, code := signInSubject(t, h, typed, "ad-pass-1"); sub != u.GUID {
+			t.Fatalf("AD sign-in as %q: sub %q (code %d), want the linked user %s", typed, sub, code, u.GUID)
+		}
+	}
+	if n := userCount(t, s); n != before {
+		t.Fatalf("a sign-in in another case created a user: %d users, want %d", n, before)
+	}
+	for _, m := range mappingsBefore {
+		if !containsString(mappingSet(t, s, u.GUID), m) {
+			t.Fatalf("the linked user lost %s: %v", m, mappingSet(t, s, u.GUID))
+		}
+	}
+	if roles, _ := s.GetUserRoles(u.GUID); !reflect.DeepEqual(roles, []string{"analyst"}) {
+		t.Fatalf("roles changed: %v", roles)
+	}
+}
+
+// The first AD sign-in of a user that was NOT linked still provisions a new
+// user, but must not take the SimpleAuth username away from the existing one
+// (that left the original user, with its roles, with no way to sign in).
+func TestFirstADSignInDoesNotTakeAnExistingUsersName(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{
+		users:     map[string]*auth.LDAPResult{"bob": adUser("bob")},
+		passwords: map[string]string{"bob": "ad-pass-1"},
+	}
+	dir.install(t, h)
+	old := localUser(t, s, "bob", "local-pass-1", "analyst")
+
+	sub, code := signInSubject(t, h, "bob", "ad-pass-1")
+	if code != 200 || sub == old.GUID {
+		t.Fatalf("AD sign-in of an unlinked user: sub %q code %d (a new user is expected)", sub, code)
+	}
+	if guid, _ := s.ResolveMapping("local", "bob"); guid != old.GUID {
+		t.Fatalf("local:bob moved to %s, want it kept on %s", guid, old.GUID)
+	}
+	if got, code := signInSubject(t, h, "bob", "local-pass-1"); got != old.GUID {
+		t.Fatalf("the existing user's SimpleAuth password no longer signs in: sub %q code %d", got, code)
+	}
+}
+
+// Review I2/I4: one directory connection per run (one bind, then a search per
+// user), closed at the end.
+func TestLinkUsersUsesOneDirectoryConnectionPerRun(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"a1": adUser("a1"), "a2": adUser("a2"), "a3": adUser("a3")}}
+	dir.install(t, h)
+	for _, n := range []string{"a1", "a2", "a3"} {
+		localUser(t, s, n, "local-pass-1")
+	}
+	resp := linkUsers(t, h, map[string]interface{}{"all": true}, 200)
+	if resp.Summary["linked"] != 3 {
+		t.Fatalf("unexpected summary %v", resp.Summary)
+	}
+	if dir.opens != 1 || dir.closes != 1 || dir.searches != 3 {
+		t.Fatalf("opens=%d closes=%d searches=%d, want 1, 1, 3", dir.opens, dir.closes, dir.searches)
+	}
+	// A run with nothing to look up opens no connection.
+	dir.opens = 0
+	linkUsers(t, h, map[string]interface{}{"all": true}, 200)
+	if dir.opens != 0 {
+		t.Fatalf("a run without lookups opened %d connection(s)", dir.opens)
+	}
+}
+
+func TestLinkUsersStopsWhenTheDirectoryCannotBeReached(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"alice": adUser("alice")}, openErr: errors.New("ldap: bind refused")}
+	dir.install(t, h)
+	alice := localUser(t, s, "alice", "local-pass-1")
+	resp := linkUsers(t, h, map[string]interface{}{"guids": []string{alice.GUID}}, 502)
+	if !strings.Contains(resp.Error, "bind refused") || dir.searches != 0 {
+		t.Fatalf("error %q searches %d", resp.Error, dir.searches)
+	}
+}
+
+// A name that matches more than one directory entry is never linked.
+func TestLinkUsersDoesNotLinkAnAmbiguousDirectoryName(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{}, ambiguous: map[string]bool{"sam": true}}
+	dir.install(t, h)
+	u := localUser(t, s, "sam", "local-pass-1")
+	resp := linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}}, 200)
+	if r := resp.Results[0]; r.Status != "ambiguous" {
+		t.Fatalf("unexpected result %+v", r)
+	}
+	if _, err := s.ResolveMapping("ldap", "sam"); err == nil {
+		t.Fatal("an ambiguous name was linked")
+	}
+}
+
+// Review I3: the same name is not proof of the same person. When both sides
+// have an email and they differ, the user is linked only once the admin
+// confirms it; the results show both identities.
+func TestLinkUsersNeedsConfirmationWhenTheEmailsDiffer(t *testing.T) {
+	h, s := testSetup(t)
+	other := adUser("ahmed")
+	other.DisplayName, other.Email = "Ahmed Hassan", "ahmed.hassan@corp.test"
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"ahmed": other}}
+	dir.install(t, h)
+	u := localUser(t, s, "ahmed", "local-pass-1", "analyst")
+	u.DisplayName, u.Email = "Ahmed Ali", "ahmed.ali@corp.test"
+	s.UpdateUser(u)
+
+	for _, dry := range []bool{true, false} {
+		for _, body := range []map[string]interface{}{{"guids": []string{u.GUID}}, {"all": true}} {
+			body["dry_run"] = dry
+			resp := linkUsers(t, h, body, 200)
+			r := resp.Results[0]
+			if r.Status != "email_differs" || r.Email != "ahmed.ali@corp.test" || r.DirectoryEmail != "ahmed.hassan@corp.test" || r.DirectoryDisplayName != "Ahmed Hassan" {
+				t.Fatalf("%v: unexpected result %+v", body, r)
+			}
+		}
+	}
+	if _, err := s.ResolveMapping("ldap", "ahmed"); err == nil {
+		t.Fatal("linked without confirmation")
+	}
+
+	resp := linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}, "confirmed": []string{u.GUID}}, 200)
+	if r := resp.Results[0]; r.Status != "linked" {
+		t.Fatalf("confirmed link: %+v", r)
+	}
+	entries, err := s.QueryAuditLog(store.AuditQuery{Event: "ldap_link_user", Limit: 10})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("audit entries %d, %v", len(entries), err)
+	}
+	if entries[0].Data["previous_email"] != "ahmed.ali@corp.test" || entries[0].Data["previous_display_name"] != "Ahmed Ali" {
+		t.Fatalf("the audit record lacks the previous profile: %v", entries[0].Data)
+	}
+}
+
+// Review I5: a store failure is an error, never "not found" or "free".
+type failingStore struct {
+	store.Store
+	getUserErr, resolveErr error
+}
+
+func (f *failingStore) GetUser(guid string) (*store.User, error) {
+	if f.getUserErr != nil {
+		return nil, f.getUserErr
+	}
+	return f.Store.GetUser(guid)
+}
+
+func (f *failingStore) ResolveMapping(provider, externalID string) (string, error) {
+	if f.resolveErr != nil && provider == "ldap" {
+		return "", f.resolveErr
+	}
+	return f.Store.ResolveMapping(provider, externalID)
+}
+
+func TestLinkUsersStopsOnAStoreFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fs   failingStore
+	}{
+		{"GetUser", failingStore{getUserErr: errors.New("disk I/O error")}},
+		{"ResolveMapping", failingStore{resolveErr: errors.New("connection reset")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s := testSetup(t)
+			dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"jdoe": adUser("jdoe")}}
+			dir.install(t, h)
+			u := localUser(t, s, "jdoe", "local-pass-1")
+			fs := tc.fs
+			fs.Store = s
+			h.store = &fs
+			resp := linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}}, 500)
+			if resp.Error == "" || len(resp.Results) != 0 {
+				t.Fatalf("unexpected response %+v", resp)
+			}
+			h.store = s
+			if _, err := s.ResolveMapping("ldap", "jdoe"); err == nil {
+				t.Fatal("linked although the store failed")
+			}
+		})
+	}
+}
+
+// Review M6: a change an admin makes while the directory is asked (disable)
+// is not overwritten by the link's write.
+func TestLinkUsersKeepsAChangeMadeDuringTheLookup(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"jdoe": adUser("jdoe")}}
+	dir.install(t, h)
+	u := localUser(t, s, "jdoe", "local-pass-1")
+	dir.onFind = func(string) {
+		cur, _ := s.GetUser(u.GUID)
+		cur.Disabled = true
+		s.UpdateUser(cur)
+	}
+	resp := linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}, "remove_local_password": true}, 200)
+	if r := resp.Results[0]; r.Status != "linked" || !r.LocalPasswordRemoved {
+		t.Fatalf("unexpected result %+v", r)
+	}
+	if got, _ := s.GetUser(u.GUID); !got.Disabled || got.PasswordHash != "" {
+		t.Fatalf("disabled=%v password set=%v, want true and false", got.Disabled, got.PasswordHash != "")
+	}
+}
+
+// A run whose request is gone (client closed, server timeout) stops at once.
+func TestLinkUsersStopsWhenTheRequestIsCanceled(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"a1": adUser("a1"), "a2": adUser("a2")}}
+	dir.install(t, h)
+	u1 := localUser(t, s, "a1", "local-pass-1")
+	u2 := localUser(t, s, "a2", "local-pass-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	dir.onFind = func(string) { cancel() }
+	body, _ := json.Marshal(map[string]interface{}{"guids": []string{u1.GUID, u2.GUID}})
+	req := httptest.NewRequest("POST", "/api/admin/ldap/link-users", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-admin-key")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if dir.searches != 1 {
+		t.Fatalf("kept looking up after the request was canceled: %d searches", dir.searches)
+	}
+	if _, err := s.ResolveMapping("ldap", "a2"); err == nil {
+		t.Fatal("linked a user after the request was canceled")
+	}
+}
+
+// AD's spelling of the name is already another user's SimpleAuth username:
+// linking would make the two share a sign-in name, so it is a conflict.
+func TestLinkUsersReportsAConflictOnTheDirectorySpelling(t *testing.T) {
+	h, s := testSetup(t)
+	dir := &fakeDirectory{users: map[string]*auth.LDAPResult{"jdoe": adUser("JDoe")}}
+	dir.install(t, h)
+	u := localUser(t, s, "jdoe", "local-pass-1")
+	other := localUser(t, s, "JDoe", "local-pass-2")
+	resp := linkUsers(t, h, map[string]interface{}{"guids": []string{u.GUID}}, 200)
+	if r := resp.Results[0]; r.Status != "conflict" || r.ConflictGUID != other.GUID {
+		t.Fatalf("unexpected result %+v", r)
+	}
+	if _, err := s.ResolveMapping("ldap", "jdoe"); err == nil {
+		t.Fatal("linked despite the conflict")
 	}
 }

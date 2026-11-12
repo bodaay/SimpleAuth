@@ -19,35 +19,38 @@ import (
 //
 // Why it is needed: authenticateUser tries the SimpleAuth password first and
 // then AD. When AD accepts the password, the user is found by the "ldap"
-// mapping. A user created in SimpleAuth has only a "local" mapping, so the
-// first AD sign-in JIT-provisions a SECOND user and re-points local:<name> to
-// it; the first user, with its roles, is left behind. Linking writes the
-// ldap:<name> mapping on the existing user before that happens.
+// mapping. A user created in SimpleAuth has only a "local" mapping, so its
+// first AD sign-in JIT-provisions a SECOND user, and the first user, with its
+// roles, is not the one signed in. Linking writes the ldap mappings on the
+// existing user before that happens.
 //
-// Linking needs the AD account to exist, under the user's SimpleAuth username,
-// matched on the LDAP config's username attribute (sAMAccountName by default):
-// it writes ldap:<that name> plus ldap:<AD's own spelling> when the two differ,
+// The AD account is found with the sign-in's own search (custom_filter, else
+// username_attr), limited to person entries, over one connection per run. It
+// must be exactly one enabled entry that no other user holds. When both sides
+// have an email and they differ, the same name is not taken as proof of the
+// same person: the user is linked only when its guid is also in "confirmed".
+// Linking writes ldap:<name> plus ldap:<AD's own spelling> when the two differ,
 // then takes the profile, groups and sAMAccountName from AD exactly as an AD
-// sign-in would. It never re-points a mapping another user holds; that case is
-// reported as a conflict and left to the admin.
+// sign-in does. It never re-points a mapping another user holds.
 //
 // The SimpleAuth password stays unless remove_local_password is set: until it
 // is removed, it keeps working beside the AD password (authenticateUser still
-// re-checks AD and refuses it when the AD account is disabled). To remove it
-// later, call again with remove_local_password: a user that is already linked
-// and still has a SimpleAuth password is in scope then, and only its password
-// is touched.
+// re-checks AD and refuses it when the AD account is disabled, subject to the
+// directory_outage_policy). To remove it later, call again with
+// remove_local_password: a user that is already linked and still has a
+// SimpleAuth password is in scope then, and only its password is touched.
 
 // maxLinkGUIDs bounds one request's list; all:true has no such bound.
 const maxLinkGUIDs = 1000
 
 // Link statuses. "linked" and "linkable" (the dry run's word for it) are the
-// only ones that change, or would change, anything.
+// only ones that change, or would change, the mappings.
 const (
 	linkStatusLinked        = "linked"
 	linkStatusLinkable      = "linkable"
 	linkStatusNotInAD       = "not_in_directory"
 	linkStatusDisabledInAD  = "disabled_in_directory"
+	linkStatusEmailDiffers  = "email_differs"
 	linkStatusConflict      = "conflict"
 	linkStatusAmbiguous     = "ambiguous"
 	linkStatusAlreadyLinked = "already_linked"
@@ -57,14 +60,28 @@ const (
 	linkStatusNotFound      = "not_found"
 )
 
+// directoryFinder looks directory users up over one connection
+// (auth.LDAPUserFinder); tests replace it.
+type directoryFinder interface {
+	Find(username string) (*auth.LDAPResult, error)
+	Close()
+}
+
+func newLDAPUserFinder(cfg *auth.LDAPConfig) (directoryFinder, error) {
+	return auth.NewLDAPUserFinder(cfg)
+}
+
 type directoryLinkResult struct {
 	GUID        string `json:"guid"`
 	DisplayName string `json:"display_name,omitempty"`
+	Email       string `json:"email,omitempty"`
 	// LocalUsername is the SimpleAuth username the AD account was found under.
 	LocalUsername string `json:"local_username,omitempty"`
 	// DirectoryUsername is the account's name as AD spells it (the value of the
 	// username attribute); after linking it is the token's samaccountname claim.
-	DirectoryUsername string `json:"directory_username,omitempty"`
+	DirectoryUsername    string `json:"directory_username,omitempty"`
+	DirectoryDisplayName string `json:"directory_display_name,omitempty"`
+	DirectoryEmail       string `json:"directory_email,omitempty"`
 	// SpellingDiffers: AD spells the name differently (e.g. by case). An app that
 	// keys its own users on samaccountname sees AD's spelling from now on.
 	SpellingDiffers bool   `json:"spelling_differs,omitempty"`
@@ -86,12 +103,42 @@ type linkStop struct {
 
 func (e *linkStop) Error() string { return e.msg }
 
+// linkRun is one request's state: the options and the directory connection,
+// opened at the first lookup and closed when the run ends.
+type linkRun struct {
+	h              *Handler
+	cfg            *auth.LDAPConfig
+	finder         directoryFinder
+	dryRun         bool
+	removePassword bool
+	confirmed      map[string]bool
+	ip             string
+}
+
+func (run *linkRun) find(name string) (*auth.LDAPResult, error) {
+	if run.finder == nil {
+		f, err := run.h.ldapUserFinder(run.cfg)
+		if err != nil {
+			return nil, &linkStop{http.StatusBadGateway, fmt.Sprintf("connecting to the directory failed: %v", err)}
+		}
+		run.finder = f
+	}
+	return run.finder.Find(name)
+}
+
+func (run *linkRun) close() {
+	if run.finder != nil {
+		run.finder.Close()
+	}
+}
+
 func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		GUIDs               []string `json:"guids"`
 		All                 bool     `json:"all"`
 		DryRun              bool     `json:"dry_run"`
 		RemoveLocalPassword bool     `json:"remove_local_password"`
+		Confirmed           []string `json:"confirmed"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -110,15 +157,17 @@ func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Requ
 		jsonError(w, "ldap not configured", http.StatusNotFound)
 		return
 	}
-	cfg := ldapConfigFromStore(p)
-	attr := cfg.UsernameAttr
-	if attr == "" {
-		attr = "sAMAccountName"
+	run := &linkRun{
+		h: h, cfg: ldapConfigFromStore(p), dryRun: req.DryRun, removePassword: req.RemoveLocalPassword,
+		confirmed: map[string]bool{}, ip: getClientIP(r),
 	}
-	ip := getClientIP(r)
+	for _, g := range req.Confirmed {
+		run.confirmed[g] = true
+	}
 
 	h.directoryLinkMu.Lock()
 	defer h.directoryLinkMu.Unlock()
+	defer run.close()
 
 	guids := req.GUIDs
 	if req.All {
@@ -135,18 +184,27 @@ func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Requ
 
 	results := []directoryLinkResult{}
 	summary := map[string]int{}
+	stopWith := func(guid string, stop *linkStop) {
+		log.Printf("[admin] Link users to directory stopped at guid=%s: %s", guid, stop.msg)
+		jsonResp(w, map[string]interface{}{
+			"error":   stop.msg + "; stopped there: later users were not looked at, users listed in results are done",
+			"dry_run": req.DryRun,
+			"results": results,
+			"summary": summary,
+		}, stop.code)
+	}
 	for _, guid := range guids {
-		res, err := h.linkUserToDirectory(cfg, attr, guid, req.DryRun, req.RemoveLocalPassword, ip)
+		// The client is gone or the server's write deadline passed: stop
+		// rather than keep writing what nobody will see.
+		if err := r.Context().Err(); err != nil {
+			stopWith(guid, &linkStop{http.StatusServiceUnavailable, fmt.Sprintf("request ended (%v)", err)})
+			return
+		}
+		res, err := run.user(guid)
 		if err != nil {
 			stop := &linkStop{code: http.StatusInternalServerError, msg: err.Error()}
 			errors.As(err, &stop)
-			log.Printf("[admin] Link users to directory stopped at guid=%s: %s", guid, stop.msg)
-			jsonResp(w, map[string]interface{}{
-				"error":   stop.msg + "; stopped there: later users were not looked at, users listed in results are done",
-				"dry_run": req.DryRun,
-				"results": results,
-				"summary": summary,
-			}, stop.code)
+			stopWith(guid, stop)
 			return
 		}
 		// all:true lists only the users it is about: SimpleAuth usernames
@@ -159,7 +217,7 @@ func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Requ
 		summary[res.Status]++
 	}
 
-	log.Printf("[admin] Link users to directory dry_run=%v all=%v summary=%v ip=%s", req.DryRun, req.All, summary, ip)
+	log.Printf("[admin] Link users to directory dry_run=%v all=%v summary=%v ip=%s", req.DryRun, req.All, summary, run.ip)
 	jsonResp(w, map[string]interface{}{
 		"dry_run": req.DryRun,
 		"results": results,
@@ -180,16 +238,33 @@ func inScopeOfAll(res directoryLinkResult, removePassword bool) bool {
 	return true
 }
 
-// linkUserToDirectory checks one user and, unless dryRun, links it. A non-nil
-// error is a *linkStop: the run must end there.
-func (h *Handler) linkUserToDirectory(cfg *auth.LDAPConfig, attr, guid string, dryRun, removePassword bool, ip string) (directoryLinkResult, error) {
+// mappingOwner is the user holding provider:name, "" when nobody does; an
+// error is a store failure.
+func (h *Handler) mappingOwner(provider, name string) (string, error) {
+	guid, err := h.store.ResolveMapping(provider, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", &linkStop{http.StatusInternalServerError, fmt.Sprintf("reading mapping %s:%s failed: %v", provider, name, err)}
+	}
+	return guid, nil
+}
+
+// user checks one user and, unless dryRun, links it. A non-nil error is a
+// *linkStop: the run must end there.
+func (run *linkRun) user(guid string) (directoryLinkResult, error) {
+	h := run.h
 	res := directoryLinkResult{GUID: guid}
 	user, err := h.store.GetUser(guid)
-	if err != nil {
+	if errors.Is(err, store.ErrNotFound) {
 		res.Status = linkStatusNotFound
 		return res, nil
 	}
-	res.DisplayName = user.DisplayName
+	if err != nil {
+		return res, &linkStop{http.StatusInternalServerError, fmt.Sprintf("reading user %s failed: %v", guid, err)}
+	}
+	res.DisplayName, res.Email = user.DisplayName, user.Email
 	if user.OwnerAppID != "" {
 		res.Status = linkStatusAppLocal
 		return res, nil
@@ -221,8 +296,8 @@ func (h *Handler) linkUserToDirectory(cfg *auth.LDAPConfig, attr, guid string, d
 	if len(ldapNames) > 0 {
 		res.Status = linkStatusAlreadyLinked
 		res.DirectoryUsername = ldapNames[0]
-		if removePassword && res.HasLocalPassword && !dryRun {
-			if err := h.removeLocalPassword(user, &res, ip); err != nil {
+		if run.removePassword && res.HasLocalPassword && !run.dryRun {
+			if err := run.removeLocalPassword(guid, &res); err != nil {
 				return res, err
 			}
 		}
@@ -238,9 +313,17 @@ func (h *Handler) linkUserToDirectory(cfg *auth.LDAPConfig, attr, guid string, d
 	var found *auth.LDAPResult
 	var matched []string
 	for _, name := range localNames {
-		entry, err := h.ldapSearchUser(cfg, attr, name)
+		entry, err := run.find(name)
 		if errors.Is(err, auth.ErrLDAPUserNotFound) {
 			continue
+		}
+		if errors.Is(err, auth.ErrLDAPAmbiguous) {
+			res.Status = linkStatusAmbiguous
+			return res, nil
+		}
+		var stop *linkStop
+		if errors.As(err, &stop) {
+			return res, stop
 		}
 		if err != nil {
 			return res, &linkStop{http.StatusBadGateway, fmt.Sprintf("directory lookup of %q failed: %v", name, err)}
@@ -262,36 +345,58 @@ func (h *Handler) linkUserToDirectory(cfg *auth.LDAPConfig, attr, guid string, d
 		dirName = matched[0]
 	}
 	res.DirectoryUsername = dirName
+	res.DirectoryDisplayName, res.DirectoryEmail = found.DisplayName, found.Email
 	res.SpellingDiffers = dirName != matched[0]
 	if found.Disabled {
 		res.Status = linkStatusDisabledInAD
 		return res, nil
 	}
-
 	// The names the AD sign-in looks the user up by: what people type today and
 	// AD's own spelling. None of them may belong to another user.
-	keys := matched
+	keys := append([]string{}, matched...)
 	if !containsString(keys, dirName) {
-		keys = append(append([]string{}, matched...), dirName)
+		keys = append(keys, dirName)
 	}
 	for _, k := range keys {
-		if other, err := h.store.ResolveMapping("ldap", k); err == nil && other != guid {
+		owner, err := h.mappingOwner("ldap", k)
+		if err != nil {
+			return res, err
+		}
+		if owner != "" && owner != guid {
 			res.Status = linkStatusConflict
-			res.ConflictGUID = other
+			res.ConflictGUID = owner
 			return res, nil
 		}
 	}
-	if other, err := h.store.ResolveMapping("local", dirName); err == nil && other != guid {
+	owner, err := h.mappingOwner("local", dirName)
+	if err != nil {
+		return res, err
+	}
+	if owner != "" && owner != guid {
 		res.Status = linkStatusConflict
-		res.ConflictGUID = other
+		res.ConflictGUID = owner
 		return res, nil
 	}
 
-	if dryRun {
+	// The same name is not proof of the same person: when both sides have an
+	// email and they differ, link only what the admin confirmed.
+	if user.Email != "" && found.Email != "" && !strings.EqualFold(user.Email, found.Email) && !run.confirmed[guid] {
+		res.Status = linkStatusEmailDiffers
+		return res, nil
+	}
+
+	if run.dryRun {
 		res.Status = linkStatusLinkable
 		return res, nil
 	}
 
+	// Write from a fresh copy: the user may have changed (disabled, locked)
+	// while the directory was asked.
+	user, err = h.store.GetUser(guid)
+	if err != nil {
+		return res, &linkStop{http.StatusInternalServerError, fmt.Sprintf("re-reading user %s failed: %v", guid, err)}
+	}
+	previousName, previousEmail := user.DisplayName, user.Email
 	for _, k := range keys {
 		if err := h.store.SetIdentityMapping("ldap", k, guid); err != nil {
 			return res, &linkStop{http.StatusInternalServerError, fmt.Sprintf("saving ldap:%s for user %s failed: %v", k, guid, err)}
@@ -303,36 +408,46 @@ func (h *Handler) linkUserToDirectory(cfg *auth.LDAPConfig, attr, guid string, d
 	h.recordDirectoryCheck(guid)
 	res.Status = linkStatusLinked
 
-	if removePassword && user.PasswordHash != "" {
-		if err := h.removeLocalPassword(user, &res, ip); err != nil {
+	if run.removePassword && user.PasswordHash != "" {
+		if err := run.removeLocalPassword(guid, &res); err != nil {
 			return res, err
 		}
 	}
 
 	log.Printf("[admin] Linked user to directory guid=%s local=%q directory=%q password_removed=%v ip=%s",
-		guid, res.LocalUsername, res.DirectoryUsername, res.LocalPasswordRemoved, ip)
-	h.audit("ldap_link_user", "admin", ip, map[string]interface{}{
+		guid, res.LocalUsername, res.DirectoryUsername, res.LocalPasswordRemoved, run.ip)
+	h.audit("ldap_link_user", "admin", run.ip, map[string]interface{}{
 		"user_guid":              guid,
 		"local_username":         res.LocalUsername,
 		"directory_username":     res.DirectoryUsername,
+		"directory_dn":           found.DN,
+		"previous_display_name":  previousName,
+		"previous_email":         previousEmail,
+		"email_confirmed":        run.confirmed[guid],
 		"local_password_removed": res.LocalPasswordRemoved,
 	})
 	return res, nil
 }
 
 // removeLocalPassword removes a linked user's SimpleAuth password (and its
-// history), so AD is the only way in.
-func (h *Handler) removeLocalPassword(user *store.User, res *directoryLinkResult, ip string) error {
+// history), so AD is the only way in. It re-reads the user so a change made
+// meanwhile is not overwritten.
+func (run *linkRun) removeLocalPassword(guid string, res *directoryLinkResult) error {
+	h := run.h
+	user, err := h.store.GetUser(guid)
+	if err != nil {
+		return &linkStop{http.StatusInternalServerError, fmt.Sprintf("re-reading user %s failed: %v", guid, err)}
+	}
 	user.PasswordHash = ""
 	user.PasswordHistory = nil
 	user.ForcePasswordChange = false
 	if err := h.store.UpdateUser(user); err != nil {
-		return &linkStop{http.StatusInternalServerError, fmt.Sprintf("removing the SimpleAuth password of user %s failed: %v", user.GUID, err)}
+		return &linkStop{http.StatusInternalServerError, fmt.Sprintf("removing the SimpleAuth password of user %s failed: %v", guid, err)}
 	}
 	res.HasLocalPassword = false
 	res.LocalPasswordRemoved = true
-	log.Printf("[admin] SimpleAuth password removed from directory-linked user guid=%s ip=%s", user.GUID, ip)
-	h.audit("local_password_removed", "admin", ip, map[string]interface{}{"user_guid": user.GUID})
+	log.Printf("[admin] SimpleAuth password removed from directory-linked user guid=%s ip=%s", guid, run.ip)
+	h.audit("local_password_removed", "admin", run.ip, map[string]interface{}{"user_guid": guid})
 	return nil
 }
 
