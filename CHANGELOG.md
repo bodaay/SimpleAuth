@@ -8,6 +8,16 @@ Each version's section is published as the top of its GitHub Release (the
 release workflow extracts the `## vX.Y.Z` section matching the pushed tag). The
 auto-generated list of merged PRs follows it.
 
+## Unreleased
+
+### Added: link existing SimpleAuth users to their AD account
+
+Users created in SimpleAuth before AD was configured can now be moved onto their AD account of the same name, keeping the user: same GUID, roles, permissions and app assignments. Until now, such a user's first AD sign-in created a second user and the first one (with its roles) was left behind.
+
+- **Admin UI → Users:** **Link to AD** per user, **Link selected to AD** for ticked users, **Link all to AD** for everyone. Each shows a preview first (*Will be linked*, *Not found in AD*, *Disabled in AD*, *AD account used by another user*, ...).
+- Optional: **remove their SimpleAuth password** so AD is the only way in, at link time or later.
+- **API:** `POST /api/admin/ldap/link-users` (`guids` or `all`, `dry_run`, `remove_local_password`). See [docs/API.md](https://github.com/bodaay/SimpleAuth/blob/master/docs/API.md#post-apiadminldaplink-users) and [docs/ACTIVE-DIRECTORY.md](https://github.com/bodaay/SimpleAuth/blob/master/docs/ACTIVE-DIRECTORY.md#moving-existing-simpleauth-users-to-ad).
+
 ## v2.3.0
 
 ### ⭐ Highlight: users disabled in Active Directory now lose access

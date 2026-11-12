@@ -1942,6 +1942,89 @@ The `errors` array is only present when there are failures.
 
 ---
 
+### `POST /api/admin/ldap/link-users`
+
+**Auth:** Admin Key
+
+Link users that were created in SimpleAuth (a `local` username with a SimpleAuth password) to their Active Directory account of the same name. The user is kept: same GUID, roles, permissions, app assignments and sessions. From then on the AD password signs them in to that user.
+
+Without a link, a user created in SimpleAuth who signs in with their AD password gets a **new** user (the LDAP step finds users by their `ldap` mapping only), and the `local:<username>` mapping moves to the new user. The first user, with its roles, is left behind.
+
+For each user, SimpleAuth looks the SimpleAuth username up in AD on the configured username attribute (`sAMAccountName` by default). When exactly one enabled AD account matches and no other user holds it, it:
+
+- writes `ldap:<username>`, plus `ldap:<AD spelling>` when AD spells the name differently (for example by case);
+- takes the profile, groups and `sAMAccountName` from AD, as an AD sign-in does;
+- with `remove_local_password: true`, removes the SimpleAuth password (and its history), so the user can sign in only with AD.
+
+Without `remove_local_password`, the SimpleAuth password keeps working beside the AD password; SimpleAuth still refuses it when the AD account is disabled (see [Disabled, Expired, and Deleted AD Accounts](ACTIVE-DIRECTORY.md#disabled-expired-and-deleted-ad-accounts)). To remove it later, call again with `remove_local_password: true`: users that are already linked and still have a SimpleAuth password are then in scope too, and only their password changes.
+
+**Request** — exactly one of `guids` or `all`:
+
+| Field | Type | Description |
+|---|---|---|
+| `guids` | string[] | The users to act on: one or more, at most 1000 |
+| `all` | bool | Every user with a SimpleAuth username and no AD link; with `remove_local_password`, also every linked user that still has a SimpleAuth password. App-local and merged users are never included |
+| `dry_run` | bool | Look everything up and report, change nothing |
+| `remove_local_password` | bool | Also remove the SimpleAuth password of each user it links, or that is already linked (default `false`) |
+
+```bash
+# Preview every user
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/link-users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"all": true, "dry_run": true}'
+
+# Link two users
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/link-users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"guids": ["550e8400-...", "660e8400-..."]}'
+
+# Later: remove the SimpleAuth passwords of every linked user
+curl -k -X POST https://auth.example.com/sauth/api/admin/ldap/link-users \
+  -H "Authorization: Bearer ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"all": true, "remove_local_password": true}'
+```
+
+**Response (200):**
+
+```json
+{
+  "dry_run": false,
+  "results": [
+    {"guid": "550e8400-...", "display_name": "John Doe", "local_username": "jdoe",
+     "directory_username": "JDoe", "spelling_differs": true, "has_local_password": true,
+     "status": "linked"},
+    {"guid": "660e8400-...", "display_name": "Old Account", "local_username": "olduser",
+     "has_local_password": true, "status": "not_in_directory"}
+  ],
+  "summary": {"linked": 1, "not_in_directory": 1}
+}
+```
+
+| Status | Meaning | Changed |
+|---|---|---|
+| `linked` | Linked to the AD account | yes |
+| `linkable` | `dry_run`: would be linked | no |
+| `not_in_directory` | No AD account has this username | no |
+| `disabled_in_directory` | The AD account is disabled or expired | no |
+| `conflict` | Another user already holds this AD account (`conflict_guid`), for example one imported with `import-users` | no |
+| `ambiguous` | The user's SimpleAuth usernames match different AD accounts | no |
+| `already_linked` | The user has an `ldap` mapping already | only the password, with `remove_local_password` |
+| `skipped_app_local` | An app-local user (their password belongs to the app) | no |
+| `skipped_merged` | A merged user | no |
+| `no_local_username` | The user has no SimpleAuth username | no |
+| `not_found` | No user with this GUID | no |
+
+`has_local_password` says whether the user has a SimpleAuth password after the call; `local_password_removed` says this call removed it.
+
+`spelling_differs: true` means AD spells the name differently from the SimpleAuth username. After linking, the token's `samaccountname` claim carries AD's spelling, so an app that keys its own users on that claim must match it.
+
+**Errors:** `400` without exactly one of `guids`/`all`, or more than 1000 `guids`; `404` when LDAP is not configured. When a directory lookup fails (AD unreachable, bind refused), the run stops at that user with `502`. The response carries `error` and the `results` so far: those users are done; later users were not looked at.
+
+---
+
 ### `POST /api/admin/ldap/setup-kerberos`
 
 **Auth:** Admin Key
