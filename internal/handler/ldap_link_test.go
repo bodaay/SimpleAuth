@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"reflect"
 	"sort"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -811,5 +811,11 @@ func TestLinkUsersReportsAConflictOnTheDirectorySpelling(t *testing.T) {
 	}
 	if _, err := s.ResolveMapping("ldap", "jdoe"); err == nil {
 		t.Fatal("linked despite the conflict")
+	}
+}
+
+func TestLogSafeKeepsOneLine(t *testing.T) {
+	if got := logSafe("a\nb\r\nc"); got != "abc" {
+		t.Fatalf("logSafe = %q", got)
 	}
 }

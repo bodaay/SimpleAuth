@@ -291,14 +291,14 @@ func (h *Handler) setMappingIfFree(provider, name, guid string) {
 	case err == nil && owner == guid:
 		return
 	case err == nil:
-		log.Printf("[auth] %s:%s belongs to guid=%s; not given to guid=%s", provider, name, owner, guid)
+		log.Printf("[auth] %s:%s belongs to guid=%s; not given to guid=%s", provider, logSafe(name), owner, guid)
 		return
 	case !errors.Is(err, store.ErrNotFound):
-		log.Printf("[auth] mapping lookup %s:%s failed, not set for guid=%s: %v", provider, name, guid, err)
+		log.Printf("[auth] mapping lookup %s:%s failed, not set for guid=%s: %s", provider, logSafe(name), guid, logSafe(err.Error()))
 		return
 	}
 	if err := h.store.SetIdentityMapping(provider, name, guid); err != nil {
-		log.Printf("[auth] setting %s:%s for guid=%s failed: %v", provider, name, guid, err)
+		log.Printf("[auth] setting %s:%s for guid=%s failed: %s", provider, logSafe(name), guid, logSafe(err.Error()))
 	}
 }
 

@@ -185,7 +185,7 @@ func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Requ
 	results := []directoryLinkResult{}
 	summary := map[string]int{}
 	stopWith := func(guid string, stop *linkStop) {
-		log.Printf("[admin] Link users to directory stopped at guid=%s: %s", guid, stop.msg)
+		log.Printf("[admin] Link users to directory stopped at guid=%s: %s", logSafe(guid), logSafe(stop.msg))
 		jsonResp(w, map[string]interface{}{
 			"error":   stop.msg + "; stopped there: later users were not looked at, users listed in results are done",
 			"dry_run": req.DryRun,
@@ -217,7 +217,15 @@ func (h *Handler) handleLinkUsersToDirectory(w http.ResponseWriter, r *http.Requ
 		summary[res.Status]++
 	}
 
-	log.Printf("[admin] Link users to directory dry_run=%v all=%v summary=%v ip=%s", req.DryRun, req.All, summary, run.ip)
+	// Labels, not the request's values, go to the log.
+	mode, scope := "apply", "guids"
+	if req.DryRun {
+		mode = "dry run"
+	}
+	if req.All {
+		scope = "all"
+	}
+	log.Printf("[admin] Link users to directory (%s, %s) summary=%v ip=%s", mode, scope, summary, run.ip)
 	jsonResp(w, map[string]interface{}{
 		"dry_run": req.DryRun,
 		"results": results,
@@ -414,8 +422,14 @@ func (run *linkRun) user(guid string) (directoryLinkResult, error) {
 		}
 	}
 
-	log.Printf("[admin] Linked user to directory guid=%s local=%q directory=%q password_removed=%v ip=%s",
-		guid, res.LocalUsername, res.DirectoryUsername, res.LocalPasswordRemoved, run.ip)
+	// The store's GUID and a yes/no label go to the log, never request text or
+	// a password field.
+	pwd := "kept"
+	if res.LocalPasswordRemoved {
+		pwd = "removed"
+	}
+	log.Printf("[admin] Linked user to directory guid=%s local=%s directory=%s SimpleAuth password %s ip=%s",
+		user.GUID, logSafe(res.LocalUsername), logSafe(res.DirectoryUsername), pwd, run.ip)
 	h.audit("ldap_link_user", "admin", run.ip, map[string]interface{}{
 		"user_guid":              guid,
 		"local_username":         res.LocalUsername,
@@ -446,9 +460,16 @@ func (run *linkRun) removeLocalPassword(guid string, res *directoryLinkResult) e
 	}
 	res.HasLocalPassword = false
 	res.LocalPasswordRemoved = true
-	log.Printf("[admin] SimpleAuth password removed from directory-linked user guid=%s ip=%s", guid, run.ip)
+	log.Printf("[admin] SimpleAuth password removed from directory-linked user guid=%s ip=%s", user.GUID, run.ip)
 	h.audit("local_password_removed", "admin", run.ip, map[string]interface{}{"user_guid": guid})
 	return nil
+}
+
+// logSafe keeps a value on one log line: line breaks out, so a name typed at
+// sign-in or sent in a request cannot forge log entries.
+func logSafe(s string) string {
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.ReplaceAll(s, "\r", "")
 }
 
 func containsString(list []string, s string) bool {
