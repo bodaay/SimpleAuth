@@ -175,7 +175,7 @@ func (h *Handler) authenticateUser(username, password string, app *store.App) (s
 		ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 		if ldapErr == nil {
 			cfg := ldapConfigFromStore(ldapCfg)
-			result, err := auth.LDAPAuthenticate(cfg, username, password)
+			result, err := h.ldapAuthenticate(cfg, username, password)
 			if err == nil {
 				ldapGroups = result.Groups
 				ldapResult = result
@@ -539,7 +539,7 @@ func (h *Handler) directoryAccountDisabled(user *store.User) bool {
 	if attr == "" {
 		attr = "sAMAccountName"
 	}
-	result, err := auth.LDAPSearchUser(cfg, attr, name)
+	result, err := h.ldapSearchUser(cfg, attr, name)
 	if err != nil {
 		if errors.Is(err, auth.ErrLDAPUserNotFound) {
 			log.Printf("[auth] Directory account not found user=%q guid=%s — denying", name, user.GUID)
