@@ -175,16 +175,23 @@ func (h *Handler) authenticateUser(username, password string, app *store.App) (s
 		ldapCfg, ldapErr := h.getLDAPConfigDecrypted()
 		if ldapErr == nil {
 			cfg := ldapConfigFromStore(ldapCfg)
-			result, err := auth.LDAPAuthenticate(cfg, username, password)
+			result, err := h.ldapAuthenticate(cfg, username, password)
 			if err == nil {
 				ldapGroups = result.Groups
 				ldapResult = result
 				authenticated = true
 				log.Printf("[auth] LDAP auth success user=%q name=%q email=%q groups=%d", username, result.DisplayName, result.Email, len(result.Groups))
 
-				// Resolve or JIT-provision user
-				guid, mapErr := h.store.ResolveMapping("ldap", username)
-				if mapErr == nil {
+				// Resolve or JIT-provision the user: by the name as typed, then by
+				// AD's own spelling. AD matches names in any case, mapping keys do
+				// not, so a sign-in typed in another case must still find the user
+				// rather than provision a second one.
+				guid, found, mapErr := h.resolveDirectoryUser(username, result.Username)
+				if mapErr != nil {
+					log.Printf("[auth] LDAP user lookup failed user=%q err=%v", username, mapErr)
+					return "", nil, fmt.Errorf("user resolution failed")
+				}
+				if found {
 					userGUID = guid
 					log.Printf("[auth] LDAP user resolved user=%q guid=%s", username, guid)
 				} else {
@@ -199,14 +206,16 @@ func (h *Handler) authenticateUser(username, password string, app *store.App) (s
 					}
 					h.store.CreateUser(newUser)
 					userGUID = newUser.GUID
-					h.store.SetIdentityMapping("ldap", username, userGUID)
-					h.store.SetIdentityMapping("local", username, userGUID)
-					// Also map under the real sAMAccountName so future lookups
-					// by the authoritative AD identifier work, regardless of
-					// what string the user originally typed into the form.
+					// Map the name as typed and the real sAMAccountName, so future
+					// lookups by the authoritative AD identifier work regardless of
+					// what was typed. Only names nobody holds: re-pointing
+					// local:<name> took the username, and with it the only way in,
+					// from a user created in SimpleAuth before AD was configured.
+					h.setMappingIfFree("ldap", username, userGUID)
+					h.setMappingIfFree("local", username, userGUID)
 					if result.Username != "" && result.Username != username {
-						h.store.SetIdentityMapping("ldap", result.Username, userGUID)
-						h.store.SetIdentityMapping("local", result.Username, userGUID)
+						h.setMappingIfFree("ldap", result.Username, userGUID)
+						h.setMappingIfFree("local", result.Username, userGUID)
 					}
 					log.Printf("[auth] JIT provisioned user=%q guid=%s name=%q email=%q sam=%q", username, newUser.GUID, result.DisplayName, result.Email, result.Username)
 				}
@@ -253,6 +262,44 @@ func (h *Handler) authenticateUser(username, password string, app *store.App) (s
 	}
 
 	return finalUser.GUID, ldapGroups, nil
+}
+
+// resolveDirectoryUser finds the user an AD sign-in belongs to: ldap:<typed>,
+// then ldap:<AD's own spelling>. found is false when neither is mapped; err is
+// a store failure (never "not mapped").
+func (h *Handler) resolveDirectoryUser(typed, directoryName string) (guid string, found bool, err error) {
+	for _, name := range []string{typed, directoryName} {
+		if name == "" {
+			continue
+		}
+		guid, err := h.store.ResolveMapping("ldap", name)
+		if err == nil {
+			return guid, true, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return "", false, err
+		}
+	}
+	return "", false, nil
+}
+
+// setMappingIfFree points provider:name at guid unless another user holds it;
+// a mapping that belongs to someone else is left where it is, and logged.
+func (h *Handler) setMappingIfFree(provider, name, guid string) {
+	owner, err := h.store.ResolveMapping(provider, name)
+	switch {
+	case err == nil && owner == guid:
+		return
+	case err == nil:
+		log.Printf("[auth] %s:%s belongs to guid=%s; not given to guid=%s", provider, logSafe(name), owner, guid)
+		return
+	case !errors.Is(err, store.ErrNotFound):
+		log.Printf("[auth] mapping lookup %s:%s failed, not set for guid=%s: %s", provider, logSafe(name), guid, logSafe(err.Error()))
+		return
+	}
+	if err := h.store.SetIdentityMapping(provider, name, guid); err != nil {
+		log.Printf("[auth] setting %s:%s for guid=%s failed: %s", provider, logSafe(name), guid, logSafe(err.Error()))
+	}
 }
 
 // isAccountLocked checks if a user account is currently locked due to failed login attempts.
@@ -539,7 +586,7 @@ func (h *Handler) directoryAccountDisabled(user *store.User) bool {
 	if attr == "" {
 		attr = "sAMAccountName"
 	}
-	result, err := auth.LDAPSearchUser(cfg, attr, name)
+	result, err := h.ldapSearchUser(cfg, attr, name)
 	if err != nil {
 		if errors.Is(err, auth.ErrLDAPUserNotFound) {
 			log.Printf("[auth] Directory account not found user=%q guid=%s — denying", name, user.GUID)

@@ -45,6 +45,15 @@ type Handler struct {
 	// (guid -> time.Time); persisted as config value "dircheck:<guid>" so the
 	// AD-outage grace window survives restarts.
 	dirChecked sync.Map
+	// directoryLinkMu serializes POST /api/admin/ldap/link-users, so two runs
+	// cannot check and write the same user's mappings at once.
+	directoryLinkMu sync.Mutex
+	// The directory calls of the password sign-in (ldapAuthenticate), of the AD
+	// account-state check (ldapSearchUser) and of the link run (ldapUserFinder:
+	// one connection per run). Tests replace them to stand in for AD.
+	ldapSearchUser   func(cfg *auth.LDAPConfig, field, value string) (*auth.LDAPResult, error)
+	ldapAuthenticate func(cfg *auth.LDAPConfig, username, password string) (*auth.LDAPResult, error)
+	ldapUserFinder   func(cfg *auth.LDAPConfig) (directoryFinder, error)
 }
 
 func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS, version string) *Handler {
@@ -55,6 +64,10 @@ func New(cfg *config.Config, s store.Store, jwtMgr *auth.JWTManager, uiFS fs.FS,
 		loginLimiter: newRateLimiter(cfg.RateLimitMax, cfg.RateLimitWindow),
 		mux:          http.NewServeMux(),
 		version:      version,
+
+		ldapSearchUser:   auth.LDAPSearchUser,
+		ldapAuthenticate: auth.LDAPAuthenticate,
+		ldapUserFinder:   newLDAPUserFinder,
 	}
 	// Set trusted proxy CIDRs for getClientIP
 	trustedCIDRs = cfg.TrustedProxyCIDRs
@@ -224,6 +237,7 @@ func (h *Handler) registerRoutes(uiFS fs.FS) {
 	h.mux.HandleFunc("POST /api/admin/ldap/cleanup-kerberos", h.requireMasterAdmin(h.handleCleanupKerberos))
 	h.mux.HandleFunc("POST /api/admin/ldap/sync-user", h.requireMasterAdmin(h.handleSyncUser))
 	h.mux.HandleFunc("POST /api/admin/ldap/sync-all", h.requireMasterAdmin(h.handleSyncAll))
+	h.mux.HandleFunc("POST /api/admin/ldap/link-users", h.requireMasterAdmin(h.handleLinkUsersToDirectory))
 	h.mux.HandleFunc("GET /api/admin/setup-script", h.requireMasterAdmin(h.handleSetupScript))
 	h.mux.HandleFunc("GET /api/admin/linux-setup-script", h.requireMasterAdmin(h.handleLinuxSetupScript))
 	h.mux.HandleFunc("GET /api/admin/kerberos/status", h.requireMasterAdmin(h.handleKerberosStatus))

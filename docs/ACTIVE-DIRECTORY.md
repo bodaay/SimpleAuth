@@ -382,6 +382,41 @@ curl -k -X PUT https://auth.corp.local/sauth/api/admin/settings \
 
 ---
 
+## Moving Existing SimpleAuth Users to AD
+
+If users were created in SimpleAuth (with a SimpleAuth password) before AD was configured, and their SimpleAuth username is their AD username, **link them before they sign in with their AD password**.
+
+An unlinked user who signs in with their AD password gets a second, new user: the LDAP step finds users by their `ldap` mapping, and a user created in SimpleAuth has only a `local` one. Their roles and app assignments stay on the first user.
+
+Linking keeps the user (same GUID, roles, permissions and app assignments) and makes the AD password sign in to it.
+
+**Admin UI → Users:**
+
+- **Link to AD** on a user's row (or in the user's details) links that user.
+- Tick several users and choose **Link selected to AD**.
+- **Link all to AD** takes every user with a SimpleAuth username and no AD link.
+
+Each of these first shows what will happen, user by user, with the SimpleAuth user and the AD account side by side: *Will be linked*, *Not found in AD*, *Disabled in AD*, *AD account used by another user* and so on. Only the users marked *Will be linked* are changed when you confirm.
+
+The AD account is found with the same search a sign-in uses (your `custom_filter`, if any), limited to person entries; a name that matches more than one entry is not linked. **The same name is not proof of the same person:** when both sides have an email and the two differ, the row says *Different email in AD* and is left alone unless you tick *Same person: link* for it.
+
+**Also remove their SimpleAuth password** (off by default) makes AD the only way in. Leave it off to keep the old password as a fallback until AD sign-in is confirmed. Note that once a user is linked, that fallback password is also checked against AD and follows the [AD outage behavior](#what-happens-when-ad-cannot-be-reached-outage-behavior). To remove it later, open the same dialog again (**Link all to AD**, ticked users, or **Remove SimpleAuth Password** in a linked user's details) and tick the box: linked users that still have a SimpleAuth password are then listed with *SimpleAuth password will be removed*.
+
+**API:** [`POST /api/admin/ldap/link-users`](API.md#post-apiadminldaplink-users), with `guids` or `all`, `dry_run` for a preview, and `remove_local_password`.
+
+Things to check first:
+
+- **Spelling.** The link is made under the SimpleAuth username and AD's spelling of it. After linking, tokens carry AD's spelling in `samaccountname`. If an app keys its users on that claim and stores the name differently (for example in another case), update the app's names to AD's spelling.
+- **Duplicates already made.** If someone signed in with AD before being linked, SimpleAuth made a second user for them:
+  - with this version, the first user keeps its username, and linking it reports *AD account used by another user* (the second user holds the AD account);
+  - with earlier versions, the second user also took the username, so the first user (with the roles) has none left: the Users page shows it by GUID only, and linking reports *No SimpleAuth username*.
+
+  In both cases, decide which user to keep, give it the roles and app assignments, delete the other, then link if needed.
+- **AD account used by another user** (a conflict) can also come from **Import users from LDAP**, which creates AD users of its own.
+- **Do not run "Import users from LDAP" for these users first.** The import checks only for `ldap` mappings, so it would create duplicates. Once linked, the import reports them as existing.
+
+---
+
 ## Attribute Mapping Details
 
 ### What SimpleAuth Reads from AD

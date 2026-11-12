@@ -19,6 +19,10 @@ var ErrLDAPUserNotFound = errors.New("ldap user not found")
 // disabled or expired (AD userAccountControl / accountExpires).
 var ErrLDAPAccountDisabled = errors.New("directory account disabled")
 
+// ErrLDAPAmbiguous is returned (wrapped) by LDAPUserFinder.Find when a name
+// matches more than one directory entry.
+var ErrLDAPAmbiguous = errors.New("ldap name matches more than one entry")
+
 type LDAPConfig struct {
 	URL             string
 	BaseDN          string
@@ -188,18 +192,7 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 		return nil, fmt.Errorf("service account bind failed: %w", err)
 	}
 
-	// Search for user — use custom filter if set, otherwise build from username_attr
-	escapedUser := ldap.EscapeFilter(username)
-	var filter string
-	if cfg.CustomFilter != "" {
-		filter = strings.Replace(cfg.CustomFilter, "{{username}}", escapedUser, -1)
-	} else {
-		attr := cfg.UsernameAttr
-		if attr == "" {
-			attr = "sAMAccountName"
-		}
-		filter = fmt.Sprintf("(%s=%s)", attr, escapedUser)
-	}
+	filter := signInFilter(cfg, username)
 	attrs := ldapAttrs(cfg)
 
 	sr, err := conn.Search(ldap.NewSearchRequest(
@@ -229,6 +222,76 @@ func LDAPAuthenticate(cfg *LDAPConfig, username, password string) (*LDAPResult, 
 	}
 	return result, nil
 }
+
+// signInFilter is the search a password sign-in runs for username: the custom
+// filter if set ({{username}} replaced), otherwise (username_attr=username).
+func signInFilter(cfg *LDAPConfig, username string) string {
+	escapedUser := ldap.EscapeFilter(username)
+	if cfg.CustomFilter != "" {
+		return strings.Replace(cfg.CustomFilter, "{{username}}", escapedUser, -1)
+	}
+	attr := cfg.UsernameAttr
+	if attr == "" {
+		attr = "sAMAccountName"
+	}
+	return fmt.Sprintf("(%s=%s)", attr, escapedUser)
+}
+
+// linkFilter is signInFilter limited to person entries (AD users and
+// inetOrgPerson both are), so a group or other object named like a user is
+// never taken for one.
+func linkFilter(cfg *LDAPConfig, username string) string {
+	return "(&(objectClass=person)" + signInFilter(cfg, username) + ")"
+}
+
+// LDAPUserFinder looks directory users up by the name they sign in with, over
+// one connection bound as the service account: for runs over many users
+// (POST /api/admin/ldap/link-users) that would otherwise connect and bind once
+// per user.
+type LDAPUserFinder struct {
+	cfg  *LDAPConfig
+	conn *ldap.Conn
+}
+
+// NewLDAPUserFinder connects and binds as the service account.
+func NewLDAPUserFinder(cfg *LDAPConfig) (*LDAPUserFinder, error) {
+	conn, err := LDAPConnect(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.Bind(cfg.BindDN, cfg.BindPassword); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("service account bind failed: %w", err)
+	}
+	return &LDAPUserFinder{cfg: cfg, conn: conn}, nil
+}
+
+// Find returns the one person entry the sign-in filter matches for username:
+// ErrLDAPUserNotFound when none does, ErrLDAPAmbiguous when more than one does
+// (both wrapped); any other error is the directory failing.
+func (f *LDAPUserFinder) Find(username string) (*LDAPResult, error) {
+	sr, err := f.conn.Search(ldap.NewSearchRequest(
+		f.cfg.BaseDN,
+		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 30, false,
+		linkFilter(f.cfg, username), ldapAttrs(f.cfg), nil,
+	))
+	if err != nil && !ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) {
+		return nil, fmt.Errorf("ldap search: %w", err)
+	}
+	if sr == nil || len(sr.Entries) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("ldap search: %w", err)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrLDAPUserNotFound, username)
+	}
+	if len(sr.Entries) > 1 || err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrLDAPAmbiguous, username)
+	}
+	return entryToResult(sr.Entries[0], f.cfg), nil
+}
+
+// Close ends the connection.
+func (f *LDAPUserFinder) Close() { f.conn.Close() }
 
 // LDAPTestConnection tests connectivity and bind with a service account.
 func LDAPTestConnection(cfg *LDAPConfig) error {
