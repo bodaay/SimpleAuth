@@ -473,8 +473,37 @@ const LINK_STATUS = {
   skipped_merged: ['', 'Merged user'],
   no_local_username: ['', 'No SimpleAuth username'],
   not_found: ['badge-error', 'User not found'],
+  email_differs: ['badge-warning', 'Different email in AD'],
 };
 const linkStatusBadge = (status) => LINK_STATUS[status] || ['', status];
+
+// POST /api/admin/ldap/link-users. Unlike api(), a run that stopped (a 5xx
+// with the users already done in "results") keeps those results: they are on
+// err.partial.
+async function linkUsersCall(body) {
+  let res;
+  try {
+    res = await fetch(BASE_PATH + '/api/admin/ldap/link-users', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${getApiKey()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error('Network error — is the server reachable?');
+  }
+  if (res.status === 401) {
+    clearApiKey();
+    window.dispatchEvent(new CustomEvent('sa-auth-expired'));
+    throw new Error('Session expired — please sign in again');
+  }
+  const data = (res.headers.get('content-type') || '').includes('application/json') ? await res.json().catch(() => null) : null;
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `Request failed (${res.status})`);
+    err.partial = data;
+    throw err;
+  }
+  return data;
+}
 
 function UsersPage() {
   const [users, setUsers] = useState([]);
@@ -496,6 +525,7 @@ function UsersPage() {
   // ({ scope, preview, done, loading, applying, removePassword, error }).
   const [selected, setSelected] = useState(new Set());
   const [link, setLink] = useState(null);
+  const linkSeq = useRef(0); // the dialog shows only the answer to its latest preview
 
   const load = () => { setLoading(true); setError(null); return api('GET', '/api/admin/users?include=identities').then(setUsers).catch(e => setError(e.message)).finally(() => setLoading(false)); };
   useEffect(load, []);
@@ -568,28 +598,41 @@ function UsersPage() {
   // since that changes who is in scope); confirming applies it to exactly the
   // users the dry run marked, in batches the server accepts.
   const openLink = async (scope, removePassword = false) => {
-    setLink({ scope, loading: true, removePassword });
+    const id = ++linkSeq.current;
+    setLink({ id, scope, loading: true, removePassword, confirmed: new Set() });
     try {
-      const preview = await api('POST', '/api/admin/ldap/link-users', { ...scope, dry_run: true, remove_local_password: removePassword });
-      setLink(l => l && { ...l, loading: false, preview });
-    } catch (e) { setLink(l => l && { ...l, loading: false, error: e.message }); }
+      const preview = await linkUsersCall({ ...scope, dry_run: true, remove_local_password: removePassword });
+      setLink(l => l && l.id === id ? { ...l, loading: false, preview } : l);
+    } catch (e) { setLink(l => l && l.id === id ? { ...l, loading: false, error: e.message } : l); }
   };
 
-  // Results the confirm button acts on: users to link, and (when removing
-  // passwords) linked users that still have a SimpleAuth password.
-  const willLink = (r) => r.status === 'linkable';
+  // Results the confirm button acts on: users to link (a different email in AD
+  // only once the admin ticked "Same person"), and, when removing passwords,
+  // linked users that still have a SimpleAuth password.
+  const willLink = (r, l) => r.status === 'linkable' || (r.status === 'email_differs' && l.confirmed.has(r.guid));
   const willRemovePassword = (r, removePassword) => removePassword && r.status === 'already_linked' && r.has_local_password;
 
+  const toggleConfirmed = (guid) => {
+    const confirmed = new Set(link.confirmed);
+    confirmed.has(guid) ? confirmed.delete(guid) : confirmed.add(guid);
+    setLink({ ...link, confirmed });
+  };
+
   const applyLink = async () => {
-    const guids = link.preview.results.filter(r => willLink(r) || willRemovePassword(r, link.removePassword)).map(r => r.guid);
+    const guids = link.preview.results.filter(r => willLink(r, link) || willRemovePassword(r, link.removePassword)).map(r => r.guid);
     setLink({ ...link, applying: true, error: null });
     const results = [];
     const summary = {};
+    const add = (resp) => {
+      results.push(...((resp && resp.results) || []));
+      Object.entries((resp && resp.summary) || {}).forEach(([k, n]) => { summary[k] = (summary[k] || 0) + n; });
+    };
     try {
-      for (let i = 0; i < guids.length; i += 1000) {
-        const resp = await api('POST', '/api/admin/ldap/link-users', { guids: guids.slice(i, i + 1000), remove_local_password: link.removePassword });
-        results.push(...resp.results);
-        Object.entries(resp.summary || {}).forEach(([k, n]) => { summary[k] = (summary[k] || 0) + n; });
+      // Small batches: each one is a request of its own, well inside the
+      // server's write timeout.
+      for (let i = 0; i < guids.length; i += 100) {
+        const batch = guids.slice(i, i + 100);
+        add(await linkUsersCall({ guids: batch, remove_local_password: link.removePassword, confirmed: batch.filter(g => link.confirmed.has(g)) }));
       }
       setLink(l => l && { ...l, applying: false, done: { results, summary } });
       const n = summary.linked || 0;
@@ -597,7 +640,9 @@ function UsersPage() {
       const parts = [n ? `linked ${n} user${n !== 1 ? 's' : ''} to AD` : '', p ? `removed ${p} SimpleAuth password${p !== 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
       showToast(parts ? parts[0].toUpperCase() + parts.slice(1) : 'Nothing was changed');
     } catch (e) {
-      // Batches before the failing one are linked; show them with the error.
+      // Earlier batches, and the users the failing one finished, are done:
+      // show them with the error.
+      add(e.partial);
       setLink(l => l && { ...l, applying: false, error: e.message, done: { results, summary } });
     }
     setSelected(new Set());
@@ -707,7 +752,7 @@ function UsersPage() {
   });
 
   const linkView = link && (link.done || link.preview);
-  const linkCount = link && link.preview ? link.preview.results.filter(willLink).length : 0;
+  const linkCount = link && link.preview ? link.preview.results.filter(r => willLink(r, link)).length : 0;
   const passwordCount = link && link.preview ? link.preview.results.filter(r => willRemovePassword(r, link.removePassword)).length : 0;
   const applyLabel = linkCount && passwordCount
     ? `Link ${linkCount}, remove ${passwordCount} password${passwordCount !== 1 ? 's' : ''}`
@@ -717,9 +762,15 @@ function UsersPage() {
         ? `Link ${linkCount} user${linkCount !== 1 ? 's' : ''}`
         : 'Nothing to change';
   const spellingCount = linkView ? linkView.results.filter(r => r.spelling_differs).length : 0;
+  const emailDiffersCount = link && link.preview && !link.done ? link.preview.results.filter(r => r.status === 'email_differs').length : 0;
   const linkable = filtered.filter(hasLocalName);
   const allTicked = linkable.length > 0 && linkable.every(u => selected.has(u.guid));
-  const toggleAllTicked = () => setSelected(allTicked ? new Set() : new Set(linkable.map(u => u.guid)));
+  // Ticks or unticks the users shown; ticked users hidden by the search stay.
+  const toggleAllTicked = () => {
+    const next = new Set(selected);
+    linkable.forEach(u => allTicked ? next.delete(u.guid) : next.add(u.guid));
+    setSelected(next);
+  };
 
   return html`
     <div class="page-header">
@@ -810,13 +861,23 @@ function UsersPage() {
                       <td>
                         <div>${r.display_name || '—'}</div>
                         <div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-muted)">${r.local_username || r.guid.substring(0, 8) + '…'}</div>
+                        ${r.email ? html`<div style="font-size:0.75rem;color:var(--text-muted)">${r.email}</div>` : ''}
                       </td>
-                      <td style="font-family:var(--font-mono);font-size:0.8rem">
-                        ${r.directory_username || '—'}
-                        ${r.spelling_differs ? html` <span class="badge badge-warning" title="AD spells this name differently">spelled differently</span>` : ''}
+                      <td>
+                        <div style="font-family:var(--font-mono);font-size:0.8rem">
+                          ${r.directory_username || '—'}
+                          ${r.spelling_differs ? html` <span class="badge badge-warning">spelled differently</span>` : ''}
+                        </div>
+                        ${r.directory_display_name ? html`<div style="font-size:0.8rem">${r.directory_display_name}</div>` : ''}
+                        ${r.directory_email ? html`<div style="font-size:0.75rem;color:var(--text-muted)">${r.directory_email}</div>` : ''}
                       </td>
                       <td>
                         <span class="badge ${cls}">${label}</span>
+                        ${!link.done && r.status === 'email_differs' ? html`
+                          <label style="display:flex;gap:var(--sp-1);align-items:center;margin-top:var(--sp-1);font-size:0.75rem;cursor:pointer">
+                            <input type="checkbox" checked=${link.confirmed.has(r.guid)} disabled=${link.applying} onChange=${() => toggleConfirmed(r.guid)} />
+                            Same person: link
+                          </label>` : ''}
                         ${!link.done && willRemovePassword(r, link.removePassword) ? html`<div style="font-size:0.75rem;color:var(--text-muted)">SimpleAuth password will be removed</div>` : ''}
                         ${link.removePassword && r.status === 'already_linked' && !r.has_local_password && !r.local_password_removed ? html`<div style="font-size:0.75rem;color:var(--text-muted)">No SimpleAuth password</div>` : ''}
                         ${r.conflict_guid ? html`<div style="font-size:0.75rem;color:var(--text-muted)">held by <span class="guid">${r.conflict_guid.substring(0, 8)}…</span></div>` : ''}
@@ -830,6 +891,11 @@ function UsersPage() {
             <p style="margin:var(--sp-2) 0 0 0;font-size:0.8rem;color:var(--text-muted)">
               ${Object.entries(linkView.summary || {}).map(([k, n]) => `${linkStatusBadge(k)[1]}: ${n}`).join(' · ')}
             </p>
+          `}
+          ${emailDiffersCount > 0 && html`
+            <div class="alert" style="margin-top:var(--sp-3);background:var(--status-warning-bg);color:var(--status-warning-text)">
+              ${emailDiffersCount} user${emailDiffersCount !== 1 ? 's have' : ' has'} a different email in AD. The same name is not proof of the same person: tick "Same person" only after checking, or they are left as they are.
+            </div>
           `}
           ${spellingCount > 0 && html`
             <div class="alert" style="margin-top:var(--sp-3);background:var(--status-warning-bg);color:var(--status-warning-text)">
