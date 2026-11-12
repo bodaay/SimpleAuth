@@ -321,7 +321,7 @@ func (s *PostgresStore) GetUser(guid string) (*User, error) {
 	var data []byte
 	err := s.db.QueryRow(`SELECT data FROM sa_users WHERE guid = $1`, guid).Scan(&data)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found: %s", guid)
+		return nil, notFound("user not found: %s", guid)
 	}
 	if err != nil {
 		return nil, err
@@ -438,7 +438,7 @@ func (s *PostgresStore) ResolveMapping(provider, externalID string) (string, err
 		provider, externalID,
 	).Scan(&guid)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("mapping not found: %s:%s", provider, externalID)
+		return "", notFound("mapping not found: %s:%s", provider, externalID)
 	}
 	return guid, err
 }

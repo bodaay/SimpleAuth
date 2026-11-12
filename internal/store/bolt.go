@@ -419,7 +419,7 @@ func (s *BoltStore) GetUser(guid string) (*User, error) {
 	err := s.view(func(tx *bolt.Tx) error {
 		data := tx.Bucket(bucketUsers).Get([]byte(guid))
 		if data == nil {
-			return fmt.Errorf("user not found: %s", guid)
+			return notFound("user not found: %s", guid)
 		}
 		return json.Unmarshal(data, &u)
 	})
@@ -614,7 +614,7 @@ func (s *BoltStore) ResolveMapping(provider, externalID string) (string, error) 
 	err := s.view(func(tx *bolt.Tx) error {
 		v := tx.Bucket(bucketIdentityMappings).Get(mappingKey(provider, externalID))
 		if v == nil {
-			return fmt.Errorf("mapping not found: %s:%s", provider, externalID)
+			return notFound("mapping not found: %s:%s", provider, externalID)
 		}
 		guid = string(v)
 		return nil
