@@ -460,6 +460,22 @@ function RolesPage() {
 }
 
 // === Users Page ===
+// Link to AD: how each result of POST /api/admin/ldap/link-users is shown.
+const LINK_STATUS = {
+  linkable: ['badge-success', 'Will be linked'],
+  linked: ['badge-success', 'Linked'],
+  not_in_directory: ['', 'Not found in AD'],
+  disabled_in_directory: ['badge-warning', 'Disabled in AD'],
+  conflict: ['badge-error', 'AD account used by another user'],
+  ambiguous: ['badge-warning', 'Names match different AD accounts'],
+  already_linked: ['', 'Already linked'],
+  skipped_app_local: ['', 'App-local user'],
+  skipped_merged: ['', 'Merged user'],
+  no_local_username: ['', 'No SimpleAuth username'],
+  not_found: ['badge-error', 'User not found'],
+};
+const linkStatusBadge = (status) => LINK_STATUS[status] || ['', status];
+
 function UsersPage() {
   const [users, setUsers] = useState([]);
   const [modal, setModal] = useState(null);
@@ -476,11 +492,22 @@ function UsersPage() {
   const [definedPermsList, setDefinedPermsList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Link to AD: the users ticked in the table, and the open link dialog
+  // ({ scope, preview, done, loading, applying, removePassword, error }).
+  const [selected, setSelected] = useState(new Set());
+  const [link, setLink] = useState(null);
 
   const load = () => { setLoading(true); setError(null); return api('GET', '/api/admin/users?include=identities').then(setUsers).catch(e => setError(e.message)).finally(() => setLoading(false)); };
   useEffect(load, []);
 
   const isLocked = (u) => !!(u && u.locked_until && new Date(u.locked_until) > new Date());
+
+  // A user with a SimpleAuth ("local") username, not app-local or merged: the
+  // users the link dialog is about. canLink: no AD link yet. isLinked: linked
+  // already (the dialog can still remove their SimpleAuth password).
+  const hasLocalName = (u) => !!u && !u.owner_app_id && !u.merged_into && (u.identities || []).some(id => id.provider === 'local');
+  const isLinked = (u) => hasLocalName(u) && (u.identities || []).some(id => id.provider === 'ldap');
+  const canLink = (u) => hasLocalName(u) && !isLinked(u);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -534,6 +561,53 @@ function UsersPage() {
       load();
       showToast(user.disabled ? 'User enabled' : 'User disabled');
     } catch (e) { showToast(e.message, 'error'); }
+  };
+
+  // Link to AD, for one user, the ticked users, or all ({ all: true }). The
+  // dialog first shows a dry run (again whenever "remove password" changes,
+  // since that changes who is in scope); confirming applies it to exactly the
+  // users the dry run marked, in batches the server accepts.
+  const openLink = async (scope, removePassword = false) => {
+    setLink({ scope, loading: true, removePassword });
+    try {
+      const preview = await api('POST', '/api/admin/ldap/link-users', { ...scope, dry_run: true, remove_local_password: removePassword });
+      setLink(l => l && { ...l, loading: false, preview });
+    } catch (e) { setLink(l => l && { ...l, loading: false, error: e.message }); }
+  };
+
+  // Results the confirm button acts on: users to link, and (when removing
+  // passwords) linked users that still have a SimpleAuth password.
+  const willLink = (r) => r.status === 'linkable';
+  const willRemovePassword = (r, removePassword) => removePassword && r.status === 'already_linked' && r.has_local_password;
+
+  const applyLink = async () => {
+    const guids = link.preview.results.filter(r => willLink(r) || willRemovePassword(r, link.removePassword)).map(r => r.guid);
+    setLink({ ...link, applying: true, error: null });
+    const results = [];
+    const summary = {};
+    try {
+      for (let i = 0; i < guids.length; i += 1000) {
+        const resp = await api('POST', '/api/admin/ldap/link-users', { guids: guids.slice(i, i + 1000), remove_local_password: link.removePassword });
+        results.push(...resp.results);
+        Object.entries(resp.summary || {}).forEach(([k, n]) => { summary[k] = (summary[k] || 0) + n; });
+      }
+      setLink(l => l && { ...l, applying: false, done: { results, summary } });
+      const n = summary.linked || 0;
+      const p = results.filter(r => r.local_password_removed).length;
+      const parts = [n ? `linked ${n} user${n !== 1 ? 's' : ''} to AD` : '', p ? `removed ${p} SimpleAuth password${p !== 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+      showToast(parts ? parts[0].toUpperCase() + parts.slice(1) : 'Nothing was changed');
+    } catch (e) {
+      // Batches before the failing one are linked; show them with the error.
+      setLink(l => l && { ...l, applying: false, error: e.message, done: { results, summary } });
+    }
+    setSelected(new Set());
+    load();
+  };
+
+  const toggleSelected = (guid) => {
+    const next = new Set(selected);
+    next.has(guid) ? next.delete(guid) : next.add(guid);
+    setSelected(next);
   };
 
   const setPassword = async () => {
@@ -632,26 +706,57 @@ function UsersPage() {
            (u.identities || []).some(id => id.external_id.toLowerCase().includes(q));
   });
 
+  const linkView = link && (link.done || link.preview);
+  const linkCount = link && link.preview ? link.preview.results.filter(willLink).length : 0;
+  const passwordCount = link && link.preview ? link.preview.results.filter(r => willRemovePassword(r, link.removePassword)).length : 0;
+  const applyLabel = linkCount && passwordCount
+    ? `Link ${linkCount}, remove ${passwordCount} password${passwordCount !== 1 ? 's' : ''}`
+    : passwordCount
+      ? `Remove ${passwordCount} password${passwordCount !== 1 ? 's' : ''}`
+      : linkCount
+        ? `Link ${linkCount} user${linkCount !== 1 ? 's' : ''}`
+        : 'Nothing to change';
+  const spellingCount = linkView ? linkView.results.filter(r => r.spelling_differs).length : 0;
+  const linkable = filtered.filter(hasLocalName);
+  const allTicked = linkable.length > 0 && linkable.every(u => selected.has(u.guid));
+  const toggleAllTicked = () => setSelected(allTicked ? new Set() : new Set(linkable.map(u => u.guid)));
+
   return html`
     <div class="page-header">
       <h2>Users</h2>
       <div class="page-header-actions">
         <input class="form-input" style="max-width:250px" placeholder="Search users..." value=${search} onInput=${e => setSearch(e.target.value)} />
+        <button class="btn btn-secondary" onClick=${() => openLink({ all: true })}>Link all to AD</button>
         <button class="btn btn-primary" onClick=${() => { setForm({}); setModal('create'); }}>${icons.plus} New User</button>
       </div>
     </div>
+    ${selected.size > 0 && html`
+      <div class="card" role="region" aria-label="Selected users" style="position:fixed;bottom:var(--sp-6);left:50%;transform:translateX(-50%);z-index:50;display:flex;justify-content:space-between;align-items:center;gap:var(--sp-4);padding:var(--sp-3) var(--sp-4);box-shadow:0 8px 24px rgba(0,0,0,0.25)">
+        <span style="color:var(--text-secondary);font-size:0.875rem">${selected.size} user${selected.size !== 1 ? 's' : ''} selected</span>
+        <div style="display:flex;gap:var(--sp-2)">
+          <button class="btn btn-sm btn-secondary" onClick=${() => setSelected(new Set())}>Clear selection</button>
+          <button class="btn btn-sm btn-primary" onClick=${() => openLink({ guids: [...selected] })}>Link selected to AD</button>
+        </div>
+      </div>
+    `}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Identities</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr>
+          <th style="width:30px"><input type="checkbox" aria-label="Select every user that can be linked to AD" disabled=${linkable.length === 0} checked=${allTicked} onChange=${toggleAllTicked} /></th>
+          <th>Identities</th><th>Display Name</th><th>Email</th><th>Status</th><th>Created</th><th>Actions</th>
+        </tr></thead>
         <tbody>
           ${loading
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>Loading users…</p></div></td></tr>`
+            ? html`<tr><td colspan="7"><div class="empty-state"><p>Loading users…</p></div></td></tr>`
             : error
-            ? html`<tr><td colspan="6"><div class="empty-state"><p style="color:var(--burgundy)">Failed to load users — ${error}</p><button class="btn btn-sm btn-secondary" onClick=${load}>Retry</button></div></td></tr>`
+            ? html`<tr><td colspan="7"><div class="empty-state"><p style="color:var(--burgundy)">Failed to load users — ${error}</p><button class="btn btn-sm btn-secondary" onClick=${load}>Retry</button></div></td></tr>`
             : filtered.length === 0
-            ? html`<tr><td colspan="6"><div class="empty-state"><p>${search ? 'No users match your search.' : 'No users yet — create one or import from LDAP.'}</p></div></td></tr>`
+            ? html`<tr><td colspan="7"><div class="empty-state"><p>${search ? 'No users match your search.' : 'No users yet — create one or import from LDAP.'}</p></div></td></tr>`
             : filtered.map(u => html`
               <tr style="cursor:pointer" onClick=${() => openDetail(u)}>
+                <td onClick=${e => e.stopPropagation()}>${hasLocalName(u)
+                  ? html`<input type="checkbox" aria-label=${'Select ' + (u.display_name || u.guid) + ' for linking to AD'} checked=${selected.has(u.guid)} onChange=${() => toggleSelected(u.guid)} />`
+                  : ''}</td>
                 <td>${(u.identities || []).length > 0
                   ? (u.identities || []).map(id => html`<div style="font-size:0.8rem;"><span style="font-weight:600">${id.external_id}</span> <span style="color:var(--text-muted);font-size:0.7rem">(${id.provider})</span></div>`)
                   : html`<span class="guid" style="font-size:0.75rem">${u.guid.substring(0, 8)}...</span>`
@@ -671,6 +776,7 @@ function UsersPage() {
                 <td style="font-size:0.75rem;color:var(--text-muted)">${new Date(u.created_at).toLocaleDateString()}</td>
                 <td onClick=${e => e.stopPropagation()} style="white-space:nowrap">
                   ${isLocked(u) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => unlock(u.guid)}>Unlock</button>` : ''}
+                  ${canLink(u) ? html`<button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => openLink({ guids: [u.guid] })}>Link to AD</button>` : ''}
                   <button class="btn btn-sm btn-secondary" style="margin-left:var(--sp-1)" onClick=${() => toggleDisabled(u)}>${u.disabled ? 'Enable' : 'Disable'}</button>
                   <button class="btn btn-sm btn-danger" style="margin-left:var(--sp-1)" onClick=${() => deleteUser(u.guid)}>Delete</button>
                 </td>
@@ -680,6 +786,73 @@ function UsersPage() {
         </tbody>
       </table>
     </div>
+
+    ${link && html`
+      <${Modal} title="Link to Active Directory" size="lg" onClose=${() => !link.applying && setLink(null)}>
+        <div class="modal-body">
+          <p style="margin:0 0 var(--sp-3) 0;color:var(--text-secondary);font-size:0.875rem;line-height:1.55">
+            Each user keeps their SimpleAuth account (roles, permissions, app access) and signs in with their AD password from now on. The AD account is found by the user's SimpleAuth username.
+          </p>
+          ${link.loading && html`<div class="empty-state"><p>Looking the users up in AD…</p></div>`}
+          ${link.error && html`<div class="alert alert-error">${link.error}</div>`}
+          ${linkView && linkView.results.length === 0 && html`
+            <div class="empty-state"><p>${link.removePassword
+              ? 'Nothing to change: every user created in SimpleAuth is linked to AD and has no SimpleAuth password.'
+              : 'No users to link: every user created in SimpleAuth is already linked to AD.'}</p></div>
+          `}
+          ${linkView && linkView.results.length > 0 && html`
+            <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+              <table>
+                <thead><tr><th>User</th><th>AD account</th><th>Result</th></tr></thead>
+                <tbody>
+                  ${linkView.results.map(r => { const [cls, label] = linkStatusBadge(r.status); return html`
+                    <tr>
+                      <td>
+                        <div>${r.display_name || '—'}</div>
+                        <div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-muted)">${r.local_username || r.guid.substring(0, 8) + '…'}</div>
+                      </td>
+                      <td style="font-family:var(--font-mono);font-size:0.8rem">
+                        ${r.directory_username || '—'}
+                        ${r.spelling_differs ? html` <span class="badge badge-warning" title="AD spells this name differently">spelled differently</span>` : ''}
+                      </td>
+                      <td>
+                        <span class="badge ${cls}">${label}</span>
+                        ${!link.done && willRemovePassword(r, link.removePassword) ? html`<div style="font-size:0.75rem;color:var(--text-muted)">SimpleAuth password will be removed</div>` : ''}
+                        ${link.removePassword && r.status === 'already_linked' && !r.has_local_password && !r.local_password_removed ? html`<div style="font-size:0.75rem;color:var(--text-muted)">No SimpleAuth password</div>` : ''}
+                        ${r.conflict_guid ? html`<div style="font-size:0.75rem;color:var(--text-muted)">held by <span class="guid">${r.conflict_guid.substring(0, 8)}…</span></div>` : ''}
+                        ${r.local_password_removed ? html`<div style="font-size:0.75rem;color:var(--text-muted)">SimpleAuth password removed</div>` : ''}
+                      </td>
+                    </tr>
+                  `; })}
+                </tbody>
+              </table>
+            </div>
+            <p style="margin:var(--sp-2) 0 0 0;font-size:0.8rem;color:var(--text-muted)">
+              ${Object.entries(linkView.summary || {}).map(([k, n]) => `${linkStatusBadge(k)[1]}: ${n}`).join(' · ')}
+            </p>
+          `}
+          ${spellingCount > 0 && html`
+            <div class="alert" style="margin-top:var(--sp-3);background:var(--status-warning-bg);color:var(--status-warning-text)">
+              AD spells ${spellingCount} of these names differently. Apps that match users by name (the samaccountname claim) see AD's spelling from now on.
+            </div>
+          `}
+          ${!link.done && html`
+            <label style="display:flex;gap:var(--sp-2);align-items:flex-start;margin-top:var(--sp-3);font-size:0.875rem;cursor:pointer">
+              <input type="checkbox" style="margin-top:3px" checked=${link.removePassword} disabled=${link.loading || link.applying} onChange=${e => openLink(link.scope, e.target.checked)} />
+              <span>Also remove their SimpleAuth password, so they can sign in only with AD. Leave this off to keep the old password working until AD sign-in is confirmed; you can remove it later from here.</span>
+            </label>
+          `}
+        </div>
+        <div class="modal-footer">
+          ${link.done
+            ? html`<button class="btn btn-primary" onClick=${() => setLink(null)}>Close</button>`
+            : html`
+              <button class="btn btn-secondary" disabled=${link.applying} onClick=${() => setLink(null)}>Cancel</button>
+              <button class="btn btn-primary" disabled=${link.loading || link.applying || linkCount + passwordCount === 0} onClick=${applyLink}>${link.applying ? 'Working…' : applyLabel}</button>
+            `}
+        </div>
+      <//>
+    `}
 
     ${modal === 'create' && html`
       <${Modal} title="Create User" onClose=${() => setModal(null)}>
@@ -744,6 +917,8 @@ function UsersPage() {
           <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({ display_name: detail.display_name, email: detail.email, department: detail.department, job_title: detail.job_title, company: detail.company }); setModal('editProfile'); }}>Edit Profile</button>
           <button class="btn btn-sm btn-secondary" onClick=${() => { setForm({}); setModal('password'); }}>Set Password</button>
           ${isLocked(detail) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => unlock(detail.guid)}>Unlock Account</button>` : ''}
+          ${canLink(detail) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => { const guid = detail.guid; setDetail(null); openLink({ guids: [guid] }); }}>Link to AD</button>` : ''}
+          ${isLinked(detail) ? html`<button class="btn btn-sm btn-secondary" onClick=${() => { const guid = detail.guid; setDetail(null); openLink({ guids: [guid] }, true); }}>Remove SimpleAuth Password</button>` : ''}
           <button class="btn btn-sm btn-danger" onClick=${revokeSessions}>Revoke All Sessions</button>
         </div>
 
