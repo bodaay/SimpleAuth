@@ -8,6 +8,12 @@ Each version's section is published as the top of its GitHub Release (the
 release workflow extracts the `## vX.Y.Z` section matching the pushed tag). The
 auto-generated list of merged PRs follows it.
 
+## Unreleased
+
+### Security fixes
+
+- **`GET /api/admin/users` returned every user's password hash (bcrypt) and password history**, with and without `?include=identities`, and the Admin UI's Users page loaded them into the browser. Every other admin response already left them out, as `docs/ARCHITECTURE.md` says ("omitted in API responses"). Now no admin response carries them. The stored hashes are unchanged, so sign-in is unaffected.
+
 ## v2.3.0
 
 ### ⭐ Highlight: users disabled in Active Directory now lose access

@@ -13,6 +13,16 @@ import (
 
 // --- User Management ---
 
+// withoutPasswords is a copy of u for an API response: no password hash and no
+// password history. The hashes never leave the server (docs/ARCHITECTURE.md:
+// "omitted in API responses"); the stored user is not touched.
+func withoutPasswords(u *store.User) *store.User {
+	c := *u
+	c.PasswordHash = ""
+	c.PasswordHistory = nil
+	return &c
+}
+
 type userResponse struct {
 	*store.User
 	Identities []identityInfo `json:"identities,omitempty"`
@@ -37,7 +47,11 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	if !includeIdentities {
 		// Backward compatible — return plain user list
-		jsonResp(w, users, http.StatusOK)
+		out := make([]*store.User, 0, len(users))
+		for _, u := range users {
+			out = append(out, withoutPasswords(u))
+		}
+		jsonResp(w, out, http.StatusOK)
 		return
 	}
 
@@ -53,7 +67,7 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		}
-		result = append(result, userResponse{User: u, Identities: identities})
+		result = append(result, userResponse{User: withoutPasswords(u), Identities: identities})
 	}
 	jsonResp(w, result, http.StatusOK)
 }
@@ -121,8 +135,7 @@ func (h *Handler) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "user not found", http.StatusNotFound)
 		return
 	}
-	user.PasswordHash = ""
-	user.PasswordHistory = nil
+	user = withoutPasswords(user)
 
 	if r.URL.Query().Get("include") == "identities" {
 		var identities []identityInfo
@@ -177,8 +190,7 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to update user", http.StatusInternalServerError)
 		return
 	}
-	user.PasswordHash = ""
-	user.PasswordHistory = nil
+	user = withoutPasswords(user)
 	jsonResp(w, user, http.StatusOK)
 }
 
@@ -875,8 +887,7 @@ func (h *Handler) handleSyncUser(w http.ResponseWriter, r *http.Request) {
 		"username": req.Username, "user_guid": user.GUID,
 	})
 
-	user.PasswordHash = ""
-	user.PasswordHistory = nil
+	user = withoutPasswords(user)
 	jsonResp(w, map[string]interface{}{
 		"status": "synced",
 		"user":   user,
